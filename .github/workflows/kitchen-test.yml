@@ -26,6 +26,10 @@ on:
         description: Output scale for the Wayland session (e.g. 1, 1.5, 2)
         type: string
         default: '1'
+      env:
+        description: Extra environment for the app, space-separated KEY=VALUE (e.g. ELECTROBUN_WAYLAND_CSD=1)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -53,7 +57,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libpipewire-0.3-dev build-essential cmake pkg-config xvfb xauth openbox dbus-x11
       - name: Install sway (headless Wayland)
         if: runner.os == 'Linux' && inputs.display == 'wayland'
-        run: sudo apt-get install -y sway jq
+        run: sudo apt-get install -y sway jq grim
       - name: Build the devkit
         working-directory: package
         run: |
@@ -78,9 +82,19 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: '1'
           WEBKIT_DISABLE_DMABUF_RENDERER: '1'
           SCALE: ${{ inputs.scale }}
+          EXTRA_ENV: ${{ inputs.env }}
         run: |
           export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
-          dbus-run-session -- "$GITHUB_WORKSPACE/.github/scripts/run-under-sway.sh" --scale "$SCALE" -- hutch electrobun dev
+          read -r -a extra_env <<< "$EXTRA_ENV"
+          dbus-run-session -- env "${extra_env[@]}" "$GITHUB_WORKSPACE/.github/scripts/run-under-sway.sh" \
+            --scale "$SCALE" --screenshots "$RUNNER_TEMP/screenshots" -- hutch electrobun dev
+      - name: Upload Wayland screenshots
+        if: always() && runner.os == 'Linux' && inputs.display == 'wayland'
+        uses: actions/upload-artifact@v6
+        with:
+          name: wayland-screenshots
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: ignore
       - name: Run the test (macOS)
         if: runner.os == 'macOS'
         working-directory: kitchen
