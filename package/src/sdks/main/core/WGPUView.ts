@@ -36,6 +36,8 @@ const defaultOptions: Partial<WGPUViewOptions> = {
 export class WGPUView {
 	id: number = 0;
 	windowId!: number;
+	// The view whose <electrobun-wgpu> or <electrobun-ui> tag created this one.
+	hostWebviewId?: number;
 	autoResize: boolean = true;
 	frame: {
 		x: number;

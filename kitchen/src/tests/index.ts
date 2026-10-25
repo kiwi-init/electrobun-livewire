@@ -14,6 +14,7 @@ import { snapshotTests } from "./snapshot.test";
 import { newWindowTests } from "./new-window.test";
 import { cspTests } from "./csp.test";
 import { fileDragTests } from "./file-drag.test";
+import { internalBridgeTests } from "./internal-bridge.test";
 import { utilsTests } from "./utils.test";
 import { screenTests } from "./screen.test";
 import { sessionTests } from "./session.test";
@@ -64,6 +65,7 @@ export const allTests: TestDefinition[] = [
   ...newWindowTests,
   ...cspTests,
   ...fileDragTests,
+  ...internalBridgeTests,
   ...utilsTests,
   ...screenTests,
   ...sessionTests,
@@ -122,6 +124,7 @@ export {
   newWindowTests,
   cspTests,
   fileDragTests,
+  internalBridgeTests,
   utilsTests,
   screenTests,
   sessionTests,
