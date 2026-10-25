@@ -1763,7 +1763,7 @@ async function vendorCEF() {
 			await $`rm -f src/native/build/process_helper_mac.o src/native/build/process_helper_win.obj src/native/linux/build/process_helper_linux.o`;
 			await $`rm -f src/native/build/libNativeWrapper.dylib src/native/build/libNativeWrapper.so src/native/build/libNativeWrapper_cef.so`;
 			await $`rm -f src/native/win/build/libNativeWrapper.dll src/native/win/build/nativeWrapper.obj`;
-			await $`rm -f src/native/macos/build/nativeWrapper.o src/native/linux/build/nativeWrapper.o src/native/linux/build/wayland_screen_capture.o src/native/linux/build/wayland_pipewire_capture.o`;
+			await $`rm -f src/native/macos/build/nativeWrapper.o src/native/linux/build/nativeWrapper.o src/native/linux/build/wayland_screen_capture.o src/native/linux/build/wayland_pipewire_capture.o src/native/linux/build/sni_tray.o`;
 		}
 	} else if (existsSync(cefDir) && !existsSync(versionFile)) {
 		// CEF dir exists but no version file (legacy state) — force re-vendor
@@ -1775,7 +1775,7 @@ async function vendorCEF() {
 		await $`rm -f src/native/build/process_helper_mac.o src/native/build/process_helper_win.obj src/native/linux/build/process_helper_linux.o`;
 		await $`rm -f src/native/build/libNativeWrapper.dylib src/native/build/libNativeWrapper.so src/native/build/libNativeWrapper_cef.so`;
 		await $`rm -f src/native/win/build/libNativeWrapper.dll src/native/win/build/nativeWrapper.obj`;
-		await $`rm -f src/native/macos/build/nativeWrapper.o src/native/linux/build/nativeWrapper.o src/native/linux/build/wayland_screen_capture.o src/native/linux/build/wayland_pipewire_capture.o`;
+		await $`rm -f src/native/macos/build/nativeWrapper.o src/native/linux/build/nativeWrapper.o src/native/linux/build/wayland_screen_capture.o src/native/linux/build/wayland_pipewire_capture.o src/native/linux/build/sni_tray.o`;
 	}
 
 	if (OS === "macos") {
@@ -2506,6 +2506,16 @@ async function buildNative() {
 			];
 			await $`${waylandPipeWireCaptureCompileCmd}`;
 
+			const sniTrayCompileCmd = [
+				"g++",
+				"-c",
+				...compileFlags,
+				"-o",
+				"src/native/linux/build/sni_tray.o",
+				"src/native/linux/sni_tray.cpp",
+			];
+			await $`${sniTrayCompileCmd}`;
+
 			// Link with WebKitGTK, and optionally CEF libraries using weak linking
 			await $`mkdir -p src/native/build`;
 
@@ -2521,6 +2531,7 @@ async function buildNative() {
 				"src/native/linux/build/nativeWrapper.o",
 				"src/native/linux/build/wayland_screen_capture.o",
 				"src/native/linux/build/wayland_pipewire_capture.o",
+				"src/native/linux/build/sni_tray.o",
 				asarLib,
 				...pkgConfigLibs.split(/\s+/).filter((f) => f),
 				"-ldl",
@@ -2543,6 +2554,7 @@ async function buildNative() {
 					"src/native/linux/build/nativeWrapper.o",
 					"src/native/linux/build/wayland_screen_capture.o",
 					"src/native/linux/build/wayland_pipewire_capture.o",
+					"src/native/linux/build/sni_tray.o",
 					"src/native/linux/build/cef_loader.o",
 					asarLib,
 					...pkgConfigLibs.split(/\s+/).filter((f) => f),

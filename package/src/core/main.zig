@@ -110,6 +110,7 @@ const WebviewEventHandler = *const fn (u32, [*:0]const u8, [*:0]const u8) callco
 const WebviewPostMessageHandler = *const fn (u32, [*:0]const u8) callconv(.c) void;
 const StatusItemHandler = *const fn (u32, [*:0]const u8) callconv(.c) void;
 const GlobalShortcutHandler = *const fn ([*:0]const u8) callconv(.c) void;
+const TrayHostHandler = *const fn (bool) callconv(.c) void;
 const QuitRequestedHandler = *const fn () callconv(.c) void;
 const URLOpenHandler = *const fn ([*:0]const u8) callconv(.c) void;
 const AppReopenHandler = *const fn () callconv(.c) void;
@@ -4397,6 +4398,22 @@ export fn setDockIconVisible(visible: bool) void {
     const SetDockIconVisibleFn = *const fn (bool) callconv(.c) void;
     const set_dock_icon_visible = lookupNativeSymbol(SetDockIconVisibleFn, "setDockIconVisible") orelse return;
     set_dock_icon_visible(visible);
+}
+
+// Linux: an SNI host (Waybar, KDE, the GNOME AppIndicator extension) can show
+// tray icons. macOS and Windows always have a tray.
+export fn isTrayHostAvailable() bool {
+    const IsTrayHostAvailableFn = *const fn () callconv(.c) bool;
+    const is_tray_host_available = lookupNativeSymbol(IsTrayHostAvailableFn, "isTrayHostAvailable") orelse return true;
+    return is_tray_host_available();
+}
+
+// Linux: handler(available) runs when isTrayHostAvailable changes. A no-op
+// where the native layer has no tray host to watch.
+export fn setTrayHostHandler(handler: ?TrayHostHandler) void {
+    const SetTrayHostHandlerFn = *const fn (?TrayHostHandler) callconv(.c) void;
+    const set_tray_host_handler = lookupNativeSymbol(SetTrayHostHandlerFn, "setTrayHostHandler") orelse return;
+    set_tray_host_handler(handler);
 }
 
 export fn isDockIconVisible() bool {

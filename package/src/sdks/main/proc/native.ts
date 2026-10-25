@@ -766,6 +766,14 @@ const core = (() => {
 				args: [],
 				returns: FFIType.bool,
 			},
+			isTrayHostAvailable: {
+				args: [],
+				returns: FFIType.bool,
+			},
+			setTrayHostHandler: {
+				args: [FFIType.function],
+				returns: FFIType.void,
+			},
 			setExitOnLastWindowClosed: {
 				args: [FFIType.bool],
 				returns: FFIType.void,
@@ -2632,6 +2640,9 @@ const _ffiImpl = {
 		isDockIconVisible: (): boolean => {
 			return core_.symbols.isDockIconVisible();
 		},
+		isTrayHostAvailable: (): boolean => {
+			return core_.symbols.isTrayHostAvailable();
+		},
 		openFileDialog: (params: {
 			startingFolder: string;
 			allowedFileTypes: string;
@@ -3360,6 +3371,21 @@ if (native) {
 		{ args: [FFIType.cstring], returns: "void", threadsafe: true },
 	);
 	native_.symbols.setGlobalShortcutCallback(globalShortcutCallback);
+
+	// Only Linux has a tray host that comes and goes (Waybar, KDE, the GNOME
+	// AppIndicator extension).
+	if (process.platform === "linux") {
+		const trayHostCallback = new JSCallback(
+			(available: boolean) => {
+				const event = electrobunEventEmitter.events.tray.trayHostChanged({
+					available: Boolean(available),
+				});
+				electrobunEventEmitter.emitEvent(event);
+			},
+			{ args: [FFIType.bool], returns: "void", threadsafe: true },
+		);
+		core_.symbols.setTrayHostHandler(trayHostCallback);
+	}
 }
 
 // GlobalShortcut module for external use

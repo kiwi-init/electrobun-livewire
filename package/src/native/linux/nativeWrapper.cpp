@@ -79,6 +79,7 @@
 #include "../shared/linux_dpi.h"
 #include "../shared/linux_x11_geometry.h"
 #include "wayland_screen_capture.h"
+#include "sni_tray.h"
 #include "window_resize_handles.h"
 
 using namespace electrobun;
@@ -5983,12 +5984,15 @@ static gboolean onWindowDeleteEvent(GtkWidget* widget, GdkEvent* event, gpointer
     return TRUE;
 }
 
-// Tray implementation using AppIndicator
+// Tray: a StatusNotifierItem on the session bus (sni_tray.cpp), which Waybar,
+// KDE, the GNOME AppIndicator extension and other SNI hosts show, with left
+// click as tray-clicked and right click as the menu. AppIndicator is the
+// fallback when no StatusNotifierWatcher is on the bus (GNOME without the
+// extension, X11 panels with only an XEmbed tray).
 #ifndef NO_APPINDICATOR
 // AppIndicator is loaded when the first tray is made, not linked: many
 // distributions (Fedora, Arch) don't install it by default, and a missing
-// tray library shouldn't keep the whole app from starting. Without it,
-// createTray returns no tray, as in a NO_APPINDICATOR build.
+// tray library shouldn't keep the whole app from starting.
 struct AppIndicatorApi {
     decltype(&::app_indicator_new) indicatorNew;
     decltype(&::app_indicator_set_status) setStatus;
@@ -6025,45 +6029,103 @@ static const AppIndicatorApi* appIndicatorApi() {
 #define app_indicator_set_title appIndicatorApi()->setTitle
 #define app_indicator_set_icon_full appIndicatorApi()->setIconFull
 #define app_indicator_set_menu appIndicatorApi()->setMenu
+#endif // NO_APPINDICATOR
+
+static GDBusConnection* traySessionBus() {
+    static GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
+    return bus;
+}
+
+// SNI hosts draw IconPixmap at panel size; 64 px keeps it sharp on HiDPI.
+static bool trayPixmapFromFile(const std::string& path, sni::Pixmap& out) {
+    GError* error = nullptr;
+    GdkPixbuf* loaded = gdk_pixbuf_new_from_file_at_size(path.c_str(), 64, 64, &error);
+    if (!loaded) {
+        fprintf(stderr, "Tray: can't load icon %s: %s\n", path.c_str(), error ? error->message : "unknown error");
+        g_clear_error(&error);
+        return false;
+    }
+    GdkPixbuf* pixbuf = gdk_pixbuf_add_alpha(loaded, FALSE, 0, 0, 0);
+    g_object_unref(loaded);
+    const int width = gdk_pixbuf_get_width(pixbuf);
+    const int height = gdk_pixbuf_get_height(pixbuf);
+    const int stride = gdk_pixbuf_get_rowstride(pixbuf);
+    const guchar* pixels = gdk_pixbuf_read_pixels(pixbuf);
+    out.width = width;
+    out.height = height;
+    out.argb.resize(static_cast<size_t>(width) * height);
+    for (int y = 0; y < height; ++y) {
+        const guchar* row = pixels + static_cast<size_t>(y) * stride;
+        for (int x = 0; x < width; ++x) {
+            const guchar* px = row + x * 4;
+            out.argb[static_cast<size_t>(y) * width + x] =
+                (uint32_t(px[3]) << 24) | (uint32_t(px[0]) << 16) | (uint32_t(px[1]) << 8) | uint32_t(px[2]);
+        }
+    }
+    g_object_unref(pixbuf);
+    return true;
+}
+
+// The same items the GTK menu shows: hidden items are left out, labels fall
+// back to the role, and a click sends the action (or the role).
+static std::vector<sni::MenuItem> trayMenuItems(const std::vector<MenuJsonValue>& items) {
+    std::vector<sni::MenuItem> result;
+    for (const auto& item : items) {
+        sni::MenuItem entry;
+        if (item.type == "divider" || item.type == "separator") {
+            entry.type = "separator";
+            result.push_back(std::move(entry));
+            continue;
+        }
+        if (item.hidden) {
+            continue;
+        }
+        entry.label = !item.label.empty() ? item.label : (!item.role.empty() ? item.role : "Menu Item");
+        entry.action = !item.action.empty() ? item.action : item.role;
+        entry.enabled = item.enabled;
+        entry.checked = item.checked;
+        entry.children = trayMenuItems(item.submenu);
+        result.push_back(std::move(entry));
+    }
+    return result;
+}
 
 class TrayItem {
 public:
     uint32_t trayId;
-    AppIndicator* indicator;
-    GtkWidget* menu;
     ZigStatusItemHandler clickHandler;
     std::string title;
     std::string imagePath;
-    
-    TrayItem(uint32_t id, const char* title, const char* pathToImage, bool isTemplate, ZigStatusItemHandler handler) 
-        : trayId(id), indicator(nullptr), menu(nullptr), clickHandler(handler),
+    std::unique_ptr<sni::StatusNotifierItem> sniItem;
+#ifndef NO_APPINDICATOR
+    AppIndicator* indicator = nullptr;
+    GtkWidget* menu = nullptr;
+#endif
+
+    TrayItem(uint32_t id, const char* title, const char* pathToImage, bool isTemplate, ZigStatusItemHandler handler)
+        : trayId(id), clickHandler(handler),
           title(title ? title : ""), imagePath(pathToImage ? pathToImage : "") {
-        
-        // Hide/show recreates the native tray while the previous indicator
-        // may still be registered on D-Bus, so the ID must be unique per
-        // instance, not per tray: AppIndicator derives its object path from it.
-        static std::atomic<uint64_t> nextIndicatorInstance{0};
-        std::string indicatorId = "electrobun-tray-" + std::to_string(id) + "-" +
-            std::to_string(nextIndicatorInstance.fetch_add(1));
-        
-        // Create app indicator
-        indicator = app_indicator_new(indicatorId.c_str(), 
-                                    !imagePath.empty() ? imagePath.c_str() : "application-default-icon",
-                                    APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
-        
-        if (indicator) {
-            app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
-            
-            if (!this->title.empty()) {
-                app_indicator_set_title(indicator, title);
-            }
-            
-            // Create default menu (required for AppIndicator)
-            createDefaultMenu();
+        GDBusConnection* bus = traySessionBus();
+#ifndef NO_APPINDICATOR
+        // With a watcher on the bus, or no AppIndicator to fall back on, use
+        // SNI: it registers whenever a watcher shows up.
+        const bool useSni = bus && (sni::watcherAvailable(bus) || !appIndicatorApi());
+#else
+        const bool useSni = bus != nullptr;
+#endif
+        if (useSni) {
+            createStatusNotifierItem(bus);
         }
+#ifndef NO_APPINDICATOR
+        else if (appIndicatorApi()) {
+            createIndicator();
+        }
+#endif
     }
-    
+
     ~TrayItem() {
+        sniItem.reset();
+#ifndef NO_APPINDICATOR
         if (indicator) {
             app_indicator_set_status(indicator, APP_INDICATOR_STATUS_PASSIVE);
         }
@@ -6075,88 +6137,148 @@ public:
         if (indicator) {
             g_object_unref(indicator);
         }
+#endif
     }
-    
+
+    bool valid() const {
+#ifndef NO_APPINDICATOR
+        if (indicator) return true;
+#endif
+        return sniItem != nullptr;
+    }
+
     void setTitle(const char* newTitle) {
         title = newTitle ? newTitle : "";
+        if (sniItem) {
+            sniItem->setTitle(title);
+        }
+#ifndef NO_APPINDICATOR
         if (indicator) {
             app_indicator_set_title(indicator, title.c_str());
         }
+#endif
     }
-    
+
     void setImage(const char* newImage) {
         imagePath = newImage ? newImage : "";
+        if (sniItem) {
+            applySniIcon();
+        }
+#ifndef NO_APPINDICATOR
         if (indicator && !imagePath.empty()) {
             app_indicator_set_icon_full(indicator, imagePath.c_str(), "Electrobun Tray Icon");
         }
+#endif
     }
-    
+
     void setMenu(const char* jsonString) {
-        if (menu) {
-            gtk_widget_destroy(menu);
-            menu = nullptr;
+        std::vector<MenuJsonValue> menuItems;
+        bool parsed = false;
+        if (jsonString && strlen(jsonString) > 0) {
+            try {
+                menuItems = parseMenuJson(std::string(jsonString));
+                parsed = true;
+            } catch (const std::exception&) {
+            }
         }
-        
-        if (!jsonString || strlen(jsonString) == 0) {
-            createDefaultMenu();
-            return;
+        if (sniItem) {
+            sniItem->setMenu(parsed ? trayMenuItems(menuItems) : std::vector<sni::MenuItem>{});
         }
-        
-        // Parse JSON menu configuration using our simple parser
-        try {
-            std::vector<MenuJsonValue> menuItems = parseMenuJson(std::string(jsonString));
+#ifndef NO_APPINDICATOR
+        if (indicator) {
+            if (menu) {
+                gtk_widget_destroy(menu);
+                menu = nullptr;
+            }
+            if (!parsed) {
+                createDefaultMenu();
+                return;
+            }
             menu = createMenuFromParsedItems(menuItems, this->clickHandler, trayId);
-            
             if (menu) {
                 gtk_widget_show_all(menu);
-                if (indicator) {
-                    app_indicator_set_menu(indicator, GTK_MENU(menu));
-                }
+                app_indicator_set_menu(indicator, GTK_MENU(menu));
             }
-        } catch (const std::exception& e) {
-            // Fallback to default menu
+        }
+#endif
+    }
+
+private:
+    void createStatusNotifierItem(GDBusConnection* bus) {
+        const uint32_t id = trayId;
+        const ZigStatusItemHandler handler = clickHandler;
+        auto item = std::make_unique<sni::StatusNotifierItem>(
+            bus, g_electrobunWindowClass,
+            [id, handler]() {
+                if (handler) handler(id, "");
+            },
+            [id, handler](const std::string& action) {
+                if (handler) handler(id, action.c_str());
+            });
+        item->setTitle(title);
+        sniItem = std::move(item);
+        applySniIcon();
+        if (!sniItem->start()) {
+            sniItem.reset();
+        }
+    }
+
+    // A file is sent as pixels; anything else is taken as an icon theme name.
+    void applySniIcon() {
+        sni::Pixmap pixmap;
+        if (!imagePath.empty() && g_file_test(imagePath.c_str(), G_FILE_TEST_IS_REGULAR) &&
+            trayPixmapFromFile(imagePath, pixmap)) {
+            sniItem->setIconPixmap(std::move(pixmap));
+        } else {
+            sniItem->setIconName(!imagePath.empty() && imagePath.find('/') == std::string::npos
+                                     ? imagePath
+                                     : "application-x-executable");
+        }
+    }
+
+#ifndef NO_APPINDICATOR
+    void createIndicator() {
+        // Hide/show recreates the native tray while the previous indicator
+        // may still be registered on D-Bus, so the ID must be unique per
+        // instance, not per tray: AppIndicator derives its object path from it.
+        static std::atomic<uint64_t> nextIndicatorInstance{0};
+        std::string indicatorId = "electrobun-tray-" + std::to_string(trayId) + "-" +
+            std::to_string(nextIndicatorInstance.fetch_add(1));
+
+        indicator = app_indicator_new(indicatorId.c_str(),
+                                      !imagePath.empty() ? imagePath.c_str() : "application-default-icon",
+                                      APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+        if (indicator) {
+            app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
+            if (!title.empty()) {
+                app_indicator_set_title(indicator, title.c_str());
+            }
+            // Create default menu (required for AppIndicator)
             createDefaultMenu();
         }
     }
-    
-private:
+
     void createDefaultMenu() {
         menu = gtk_menu_new();
-        
+
         GtkWidget* defaultItem = gtk_menu_item_new_with_label("Electrobun App");
         gtk_widget_set_sensitive(defaultItem, FALSE);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), defaultItem);
-        
+
         gtk_widget_show_all(menu);
-        
+
         if (indicator) {
             app_indicator_set_menu(indicator, GTK_MENU(menu));
         }
     }
-    
-    static void onMenuItemClick(GtkMenuItem* menuItem, gpointer userData) {
-        TrayItem* tray = static_cast<TrayItem*>(userData);
-        if (tray->clickHandler) {
-            tray->clickHandler(tray->trayId, "menu-click");
-        }
-    }
-    
-    static void onQuitClick(GtkMenuItem* menuItem, gpointer userData) {
-        TrayItem* tray = static_cast<TrayItem*>(userData);
-        if (tray->clickHandler) {
-            tray->clickHandler(tray->trayId, "quit");
-        }
-    }
+#endif
 };
-#endif // NO_APPINDICATOR
 
 // Global state
 static std::map<uint32_t, std::shared_ptr<ContainerView>> g_containers;
 static std::mutex g_containersMutex;
-#ifndef NO_APPINDICATOR
 static std::map<uint32_t, std::shared_ptr<TrayItem>> g_trays;
 static std::mutex g_traysMutex;
-#endif
 static bool g_gtkInitialized = false;
 static std::mutex g_gtkInitMutex;
 static std::condition_variable g_gtkInitCondition;
@@ -10754,17 +10876,13 @@ ELECTROBUN_EXPORT const char* clipboardAvailableFormats() {
 // NOTE: Removed deferred tray creation code - now creating TrayItem synchronously
 // The TrayItem constructor handles deferred AppIndicator creation internally
 
-#ifndef NO_APPINDICATOR
 ELECTROBUN_EXPORT void* createTray(uint32_t trayId, const char* title, const char* pathToImage, bool isTemplate, uint32_t width, uint32_t height, void* clickHandler) {
-    // NOTE: width and height parameters are ignored on Linux since AppIndicator doesn't support custom sizing
-    // These parameters are included for FFI consistency across platforms (macOS and Windows use them)
-    
+    // NOTE: width and height are ignored on Linux: SNI hosts and AppIndicator
+    // size the icon to the panel. They're here for FFI consistency with macOS
+    // and Windows.
+
     // Wait for GTK initialization to complete
     waitForGTKInit();
-
-    if (!appIndicatorApi()) {
-        return nullptr;
-    }
 
     return dispatch_sync_main([&]() -> void* {
         // Create the TrayItem on main thread
@@ -10776,7 +10894,11 @@ ELECTROBUN_EXPORT void* createTray(uint32_t trayId, const char* title, const cha
                 isTemplate,
                 reinterpret_cast<ZigStatusItemHandler>(clickHandler)
             );
-            
+            if (!tray->valid()) {
+                fprintf(stderr, "Tray: no tray icon: no session bus and no AppIndicator\n");
+                return nullptr;
+            }
+
             TrayItem* trayPtr = tray.get();
             g_trays[trayId] = std::move(tray);
             
@@ -10845,19 +10967,36 @@ ELECTROBUN_EXPORT const char* getTrayBounds(void* statusItem) {
     (void)statusItem;
     return strdup("{\"x\":0,\"y\":0,\"width\":0,\"height\":0}");
 }
-#else // NO_APPINDICATOR
-// Stub implementations when AppIndicator is not available
-ELECTROBUN_EXPORT void* createTray(uint32_t trayId, const char* title, const char* pathToImage, bool isTemplate, uint32_t width, uint32_t height, void* clickHandler) {
-    return nullptr;
+
+// Whether an SNI host can show a tray icon: a StatusNotifierWatcher is on the
+// session bus and reports a registered host. Apps check it before hiding a
+// window to the tray, so it doesn't vanish with no way back.
+ELECTROBUN_EXPORT bool isTrayHostAvailable() {
+    GDBusConnection* bus = traySessionBus();
+    return bus && sni::hostAvailable(bus);
 }
 
-ELECTROBUN_EXPORT void setTrayTitle(void* statusItem, const char* title) {}
-ELECTROBUN_EXPORT void setTrayImage(void* statusItem, const char* image) {}
-ELECTROBUN_EXPORT void setTrayMenuFromJSON(void* statusItem, const char* jsonString) {}
-ELECTROBUN_EXPORT void setTrayMenu(void* statusItem, const char* menuConfig) {}
-ELECTROBUN_EXPORT void removeTray(void* statusItem) {}
-ELECTROBUN_EXPORT const char* getTrayBounds(void* statusItem) { return strdup("{\"x\":0,\"y\":0,\"width\":0,\"height\":0}"); }
-#endif // NO_APPINDICATOR
+typedef void (*TrayHostHandler)(bool available);
+static TrayHostHandler g_trayHostHandler = nullptr;
+static guint g_trayHostWatch = 0;
+
+// Calls handler(available) when isTrayHostAvailable() changes (a bar starts,
+// quits or reloads). Starts watching on the GTK main loop; null stops it.
+ELECTROBUN_EXPORT void setTrayHostHandler(TrayHostHandler handler) {
+    g_trayHostHandler = handler;
+    g_idle_add([](gpointer) -> gboolean {
+        GDBusConnection* bus = traySessionBus();
+        if (g_trayHostHandler && !g_trayHostWatch && bus) {
+            g_trayHostWatch = sni::watchHost(bus, [](bool available) {
+                if (g_trayHostHandler) g_trayHostHandler(available);
+            });
+        } else if (!g_trayHostHandler && g_trayHostWatch) {
+            sni::unwatchHost(g_trayHostWatch);
+            g_trayHostWatch = 0;
+        }
+        return G_SOURCE_REMOVE;
+    }, nullptr);
+}
 
 ELECTROBUN_EXPORT void setApplicationMenu(const char* jsonString, void* applicationMenuHandler) {
     if (!jsonString || strlen(jsonString) == 0) {

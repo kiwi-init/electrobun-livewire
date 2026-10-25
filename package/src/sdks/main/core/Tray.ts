@@ -149,6 +149,24 @@ export class Tray {
 		console.log("Tray removed from TrayMap");
 	}
 
+	// Whether a tray icon can be seen. On Linux that needs a StatusNotifierItem
+	// host (Waybar, KDE, the GNOME AppIndicator extension); without one, a
+	// window hidden to the tray has no way back. Always true on macOS and
+	// Windows.
+	static hostAvailable(): boolean {
+		return Boolean(ffi.request.isTrayHostAvailable());
+	}
+
+	// Runs handler when hostAvailable() changes (a bar starts, quits or
+	// reloads). Only fires on Linux. Returns a function that stops it.
+	static onHostChanged(handler: (available: boolean) => void): () => void {
+		const listener = (event: { data: { available: boolean } }) => handler(event.data.available);
+		electrobunEventEmitter.on("tray-host-changed", listener);
+		return () => {
+			electrobunEventEmitter.off("tray-host-changed", listener);
+		};
+	}
+
 	static getById(id: number) {
 		return TrayMap[id];
 	}
