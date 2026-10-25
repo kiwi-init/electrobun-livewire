@@ -67,8 +67,10 @@ public:
         eventBridge->SetValue("postMessage", eventPostMessage, V8_PROPERTY_ATTRIBUTE_NONE);
         window->SetValue("__electrobunEventBridge", eventBridge, V8_PROPERTY_ATTRIBUTE_NONE);
 
-        // Only create hostBridge/bunBridge aliases and internalBridge for non-sandboxed webviews
-        if (!is_sandboxed) {
+        // Only create hostBridge/bunBridge aliases and internalBridge for the
+        // main frame of non-sandboxed webviews: subframes (iframes of any
+        // origin) get the event bridge only.
+        if (!is_sandboxed && frame->IsMain()) {
             // Create hostBridge - user RPC bridge
             CefRefPtr<CefV8Value> bunBridge = CefV8Value::CreateObject(nullptr, nullptr);
             CefRefPtr<CefV8Value> bunPostMessage = CreatePostMessageFunction(browser, "BunBridgeMessage");

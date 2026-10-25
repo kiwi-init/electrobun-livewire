@@ -154,6 +154,73 @@ export function createTestHarnessRPC(
   });
 }
 
+// Take the name as the first argument so scripts/check-*-test-mirrors.ts can
+// resolve the literal test names.
+function iframeBridgeTest(name: string, renderer: "native" | "cef") {
+  return defineTest({
+    name,
+    category: "RPC",
+    description: `Test that a cross-origin iframe inside a views:// page gets neither the RPC secrets nor a working RPC bridge (${renderer} renderer)`,
+    timeout: 20000,
+    async run({ createWindow, log }) {
+      const received: number[] = [];
+      const rpc = createTestHarnessRPC(3000, {
+        bunStressMessages: { record: (id: number) => received.push(id) } as any,
+      });
+      await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        renderer,
+        title: `Iframe bridge (${renderer})`,
+      });
+      await sleep(2000);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+
+      // The iframe tries every way to post an RPC message straight to Bun,
+      // then reports which Electrobun globals it can see.
+      const iframeHtml = `<script>
+        const packet = (id) => JSON.stringify({ type: "message", id: "stressMessageToBun", payload: { id } });
+        try { window.webkit.messageHandlers.hostBridge.postMessage(packet(777)); } catch (e) {}
+        try { window.__electrobunHostBridge.postMessage(packet(778)); } catch (e) {}
+        parent.postMessage({ iframeProbe: {
+          key: typeof window.__electrobunSecretKeyBytes,
+          port: typeof window.__electrobunRpcSocketPort,
+          hostBridge: typeof window.__electrobunHostBridge,
+          internalBridge: typeof window.__electrobunInternalBridge,
+        } }, "*");
+      <\/script>`;
+      log("Loading a cross-origin data: iframe");
+      const probe = await rpc.request.evaluateJavascriptWithResponse({
+        script: `return new Promise((resolve) => {
+          window.addEventListener("message", (event) => {
+            if (event.data && event.data.iframeProbe) resolve(event.data.iframeProbe);
+          });
+          const frame = document.createElement("iframe");
+          frame.src = "data:text/html," + encodeURIComponent(${JSON.stringify(iframeHtml)});
+          document.body.appendChild(frame);
+          setTimeout(() => resolve("no probe"), 5000);
+        });`,
+      });
+      log(`iframe sees: ${JSON.stringify(probe)}`);
+      expect(probe).toEqual({
+        key: "undefined",
+        port: "undefined",
+        hostBridge: "undefined",
+        internalBridge: "undefined",
+      });
+
+      // Control: the page itself can still post through its bridge.
+      await rpc.request.evaluateJavascriptWithResponse({
+        script: `window.__electrobunHostBridge.postMessage(JSON.stringify({ type: "message", id: "stressMessageToBun", payload: { id: 1 } })); return true;`,
+      });
+      await sleep(1000);
+      log(`Bun received: ${JSON.stringify(received)}`);
+      expect(received.includes(1)).toBe(true);
+      expect(received.includes(777) || received.includes(778)).toBe(false);
+    },
+  });
+}
+
 export const rpcTests = [
 	defineTest({
 		name: "Webview tag BrowserView created event",
@@ -290,6 +357,9 @@ export const rpcTests = [
       expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
     },
   }),
+
+  iframeBridgeTest("cross-origin iframe can't reach RPC (system webview)", "native"),
+  iframeBridgeTest("cross-origin iframe can't reach RPC (CEF)", "cef"),
 
   defineTest({
     name: "rpc socket closes connections that never authenticate",
