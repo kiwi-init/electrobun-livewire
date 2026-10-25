@@ -3579,25 +3579,42 @@ fn setNativeWebviewContentSecurityPolicy(webview_id: u32, policy: [*:0]const u8)
     set_policy(webview_id, policy);
 }
 
+// The policy goes into a response header as is, so a CR or LF would let it
+// add headers of its own.
+fn isHeaderSafe(value: []const u8) bool {
+    return std.mem.indexOfAny(u8, value, "\r\n") == null;
+}
+
 // Content-Security-Policy header for the next createWebview's views:// and
-// appdata:// responses.
-export fn setNextWebviewContentSecurityPolicy(policy: [*:0]const u8) void {
+// appdata:// responses. False, with nothing stored, for a policy with CR or LF.
+export fn setNextWebviewContentSecurityPolicy(policy: [*:0]const u8) bool {
     clearLastError();
+    if (!isHeaderSafe(std.mem.span(policy))) {
+        setLastError("A content security policy can't contain CR or LF", .{});
+        return false;
+    }
     const copy = allocator.dupeSentinel(u8, std.mem.span(policy), 0) catch {
         setLastError("Failed to store the content security policy", .{});
-        return;
+        return false;
     };
     webview_registry_mutex.lockUncancelable(coreIo());
     const previous = next_webview_content_security_policy;
     next_webview_content_security_policy = copy;
     webview_registry_mutex.unlock(coreIo());
     if (previous) |old| allocator.free(old);
+    return true;
 }
 
-// Replaces a view's policy for its later responses; "" removes it.
-export fn setWebviewContentSecurityPolicy(webview_id: u32, policy: [*:0]const u8) void {
+// Replaces a view's policy for its later responses; "" removes it. False,
+// leaving the old policy, for one with CR or LF.
+export fn setWebviewContentSecurityPolicy(webview_id: u32, policy: [*:0]const u8) bool {
     clearLastError();
+    if (!isHeaderSafe(std.mem.span(policy))) {
+        setLastError("A content security policy can't contain CR or LF", .{});
+        return false;
+    }
     setNativeWebviewContentSecurityPolicy(webview_id, policy);
+    return true;
 }
 
 // Bridge origins for the next createWebview: a JSON array of navigationRules-

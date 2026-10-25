@@ -95,6 +95,15 @@ export type BrowserViewOptions<T = undefined> = {
 
 export type BrowserViewCreatedHandler = (view: BrowserView) => void;
 
+// The policy is sent as a response header, so CR, LF or NUL in it could add
+// headers of its own (AppEngine may take policies from manifest data).
+function assertHeaderSafePolicy(policy: string | null): string | null {
+	if (policy !== null && /[\r\n\0]/.test(policy)) {
+		throw new Error("contentSecurityPolicy can't contain CR, LF or NUL");
+	}
+	return policy;
+}
+
 const buildConfig = BuildConfig.getSync();
 
 const defaultOptions: Partial<BrowserViewOptions> = {
@@ -197,7 +206,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		this.navigationRules = options.navigationRules || null;
 		this.newWindow = options.newWindow ?? "deny";
 		this.bridgeOrigins = options.bridgeOrigins ?? null;
-		this.contentSecurityPolicy = options.contentSecurityPolicy ?? null;
+		this.contentSecurityPolicy = assertHeaderSafePolicy(options.contentSecurityPolicy ?? null);
 		this.renderer = options.renderer ?? defaultOptions.renderer ?? "native";
 		this.sandbox = options.sandbox ?? false;
 		this.startTransparent = options.startTransparent ?? false;
@@ -334,7 +343,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	// Applies to the view's next views:// and appdata:// responses; reload to
 	// put it on the current page. null removes it.
 	setContentSecurityPolicy(policy: string | null) {
-		this.contentSecurityPolicy = policy;
+		this.contentSecurityPolicy = assertHeaderSafePolicy(policy);
 		ffi.request.webviewSetContentSecurityPolicy({ id: this.id, policy });
 	}
 
