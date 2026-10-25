@@ -14677,6 +14677,16 @@ extern "C" ELECTROBUN_EXPORT char *getDockBadge() {
     return nullptr;
 }
 
+// Accent color isn't read on Windows yet: Bun reports null.
+extern "C" ELECTROBUN_EXPORT char *getAccentColor() {
+    return nullptr;
+}
+
+extern "C" ELECTROBUN_EXPORT void setAccentColorChangedHandler(void (*handler)(const char*)) {
+    (void)handler;
+    // Not supported on Windows yet - stub to prevent dlopen failure
+}
+
 extern "C" ELECTROBUN_EXPORT void setDockProgress(double progress) {
     (void)progress;
     // Not supported on Windows yet - stub to prevent dlopen failure

@@ -98,6 +98,24 @@ export const getDockProgress = (): number | null => {
 	return ffi.request.getDockProgress() ?? null;
 };
 
+/**
+ * The system accent color as a lowercase "#rrggbb" sRGB hex, or null when
+ * there isn't one to read: on Windows, and on Linux desktops whose Settings
+ * portal doesn't publish one. On macOS it's the color chosen in System
+ * Settings > Appearance (blue for "Multicolor").
+ *
+ * Changes arrive as the `accent-color-changed` event:
+ *
+ * ```ts
+ * Electrobun.events.on("accent-color-changed", (event) => {
+ *   applyTint(event.data.color); // "#rrggbb" or null
+ * });
+ * ```
+ */
+export const getAccentColor = (): string | null => {
+	return ffi.request.getAccentColor() ?? null;
+};
+
 export type NotificationAction = {
 	/** Reported as `action` in the notification-response event */
 	id: string;

@@ -5,6 +5,8 @@ type OpenUrlData = { url: string };
 // `action` is "default" (the notification itself was clicked), "dismiss", or
 // the id of the action button or reply field; `reply` is the text typed.
 type NotificationResponseData = { id: string; action: string; reply?: string };
+// "#rrggbb", or null when the desktop no longer sets an accent color.
+type AccentColorChangedData = { color: string | null };
 
 export default {
 	applicationMenuClicked: (data: MenuClickedData) =>
@@ -25,6 +27,10 @@ export default {
 	wake: (data: {}) => new ElectrobunEvent<{}, { recover?: boolean }>("did-wake", data),
 	notificationResponse: (data: NotificationResponseData) =>
 		new ElectrobunEvent<NotificationResponseData, void>("notification-response", data),
+	// The system accent color changed (macOS, and Linux desktops that publish
+	// one through the Settings portal). See Utils.getAccentColor.
+	accentColorChanged: (data: AccentColorChangedData) =>
+		new ElectrobunEvent<AccentColorChangedData, void>("accent-color-changed", data),
 	beforeQuit: (data: {}) =>
 		new ElectrobunEvent<{}, { allow: boolean }>("before-quit", data),
 };

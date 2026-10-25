@@ -560,6 +560,30 @@ ELECTROBUN_EXPORT double getDockProgress() {
     return -1;
 }
 
+// The desktop's accent color as "#rrggbb" from the Settings portal, or null
+// when there's no portal or the desktop doesn't set one. Free with
+// freeNativeString.
+ELECTROBUN_EXPORT char *getAccentColor() {
+    std::string hex = electrobun::xdg_portal::readAccentColor();
+    return hex.empty() ? nullptr : strdup(hex.c_str());
+}
+
+static void (*g_accentColorChangedHandler)(const char *) = nullptr;
+
+// Calls `handler` with "#rrggbb", or "" when the accent color was unset, each
+// time the Settings portal reports a change.
+ELECTROBUN_EXPORT void setAccentColorChangedHandler(void (*handler)(const char *)) {
+    g_accentColorChangedHandler = handler;
+    static std::once_flag watching;
+    std::call_once(watching, []() {
+        dispatch_async_main_void([]() {
+            electrobun::xdg_portal::watchAccentColor([](const std::string &hex) {
+                if (g_accentColorChangedHandler) g_accentColorChangedHandler(hex.c_str());
+            });
+        });
+    });
+}
+
 ELECTROBUN_EXPORT void setDockIconVisible(bool visible) {
     (void)visible;
     // Not supported on Linux - stub to prevent dlopen failure

@@ -1,8 +1,9 @@
 // xdg_portal.h against a mock portal on a private session bus. Run under
 // dbus-run-session (scripts/test-linux-xdg-portal.sh). The mock owns
 // org.freedesktop.portal.Desktop on a second connection, implements
-// GlobalShortcuts (CreateSession, BindShortcuts) and the version properties,
-// answers through Request objects and emits Activated.
+// GlobalShortcuts (CreateSession, BindShortcuts), Settings (ReadOne, Read)
+// and the version properties, answers through Request objects and emits
+// Activated and SettingChanged.
 
 #include "../xdg_portal.h"
 
@@ -44,6 +45,24 @@ static const char* kIntrospection = R"XML(
     </signal>
     <property name="version" type="u" access="read"/>
   </interface>
+  <interface name="org.freedesktop.portal.Settings">
+    <method name="ReadOne">
+      <arg type="s" name="namespace" direction="in"/>
+      <arg type="s" name="key" direction="in"/>
+      <arg type="v" name="value" direction="out"/>
+    </method>
+    <method name="Read">
+      <arg type="s" name="namespace" direction="in"/>
+      <arg type="s" name="key" direction="in"/>
+      <arg type="v" name="value" direction="out"/>
+    </method>
+    <signal name="SettingChanged">
+      <arg type="s" name="namespace"/>
+      <arg type="s" name="key"/>
+      <arg type="v" name="value"/>
+    </signal>
+    <property name="version" type="u" access="read"/>
+  </interface>
   <interface name="org.freedesktop.portal.FileChooser">
     <property name="version" type="u" access="read"/>
   </interface>
@@ -55,6 +74,8 @@ struct Mock {
     std::string sessionHandle;
     std::vector<std::pair<std::string, std::string>> bound;  // id, preferred_trigger
     int binds = 0;
+    GVariant* accentColor = nullptr;  // (ddd), or null when the desktop sets none
+    bool settingsV1 = false;          // only Read, as before Settings version 2
 };
 
 static std::string senderPath(const char* sender) {
@@ -111,6 +132,21 @@ static void onMethod(GDBusConnection*, const char* sender, const char*, const ch
         mock->binds++;
         respond(mock, invocation, sender, options, g_variant_builder_end(&results));
         g_variant_unref(options);
+    } else if ((g_strcmp0(method, "ReadOne") == 0 && !mock->settingsV1) || g_strcmp0(method, "Read") == 0) {
+        g_variant_builder_clear(&results);
+        const char* ns = nullptr;
+        const char* key = nullptr;
+        g_variant_get(parameters, "(&s&s)", &ns, &key);
+        if (g_strcmp0(ns, "org.freedesktop.appearance") != 0 || g_strcmp0(key, "accent-color") != 0 ||
+            !mock->accentColor) {
+            g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.portal.Error.NotFound",
+                                                       "Requested setting not found");
+            return;
+        }
+        GVariant* value = g_variant_new_variant(mock->accentColor);
+        // Read wraps the value in one more variant.
+        if (g_strcmp0(method, "Read") == 0) value = g_variant_new_variant(value);
+        g_dbus_method_invocation_return_value(invocation, g_variant_new_tuple(&value, 1));
     } else {
         g_variant_builder_clear(&results);
         g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.UnknownMethod", method);
@@ -226,6 +262,58 @@ int main() {
     CHECK(runUntil([&] { return !activated.empty(); }));
     runUntil([] { return false; }, 100);
     CHECK((activated == std::vector<std::string>{"CommandOrControl+Shift+Space"}));
+
+    // Settings: the accent color, read on another thread for the same reason.
+    CHECK(portal::accentColorHex(nullptr).empty());
+    {
+        GVariant* blue = g_variant_ref_sink(g_variant_new("(ddd)", 0.0, 0.478, 1.0));
+        GVariant* wrapped = g_variant_ref_sink(g_variant_new_variant(g_variant_new_variant(blue)));
+        GVariant* unset = g_variant_ref_sink(g_variant_new("(ddd)", -1.0, -1.0, -1.0));
+        GVariant* notColor = g_variant_ref_sink(g_variant_new_string("#ff0000"));
+        CHECK(portal::accentColorHex(blue) == "#007aff");
+        CHECK(portal::accentColorHex(wrapped) == "#007aff");
+        CHECK(portal::accentColorHex(unset).empty());
+        CHECK(portal::accentColorHex(notColor).empty());
+        g_variant_unref(blue);
+        g_variant_unref(wrapped);
+        g_variant_unref(unset);
+        g_variant_unref(notColor);
+    }
+    auto readAccent = []() {
+        struct Job { std::string hex; gint done = 0; } job;
+        GThread* thread = g_thread_new("accent", [](gpointer data) -> gpointer {
+            auto* j = static_cast<Job*>(data);
+            j->hex = portal::readAccentColor();
+            g_atomic_int_set(&j->done, 1);
+            return nullptr;
+        }, &job);
+        runUntil([&] { return g_atomic_int_get(&job.done) != 0; });
+        g_thread_join(thread);
+        return job.hex;
+    };
+    CHECK(readAccent().empty());  // NotFound: the desktop sets none
+    mock.accentColor = g_variant_ref_sink(g_variant_new("(ddd)", 0.2, 0.6, 0.4));
+    CHECK(readAccent() == "#339966");
+    mock.settingsV1 = true;
+    CHECK(readAccent() == "#339966");  // through Read when ReadOne is unknown
+    mock.settingsV1 = false;
+
+    std::vector<std::string> accentChanges;
+    guint accentWatch = portal::watchAccentColor([&](const std::string& hex) { accentChanges.push_back(hex); });
+    CHECK(accentWatch != 0);
+    auto settingChanged = [&](const char* ns, const char* key, GVariant* value) {
+        g_dbus_connection_emit_signal(mock.bus, clientName, portal::kObjectPath, portal::kSettingsInterface,
+                                      "SettingChanged", g_variant_new("(ssv)", ns, key, value), nullptr);
+    };
+    settingChanged("org.freedesktop.appearance", "color-scheme", g_variant_new_uint32(1));
+    settingChanged("org.gnome.desktop.interface", "accent-color", g_variant_new_string("red"));
+    settingChanged("org.freedesktop.appearance", "accent-color", g_variant_new("(ddd)", 1.0, 0.0, 0.0));
+    settingChanged("org.freedesktop.appearance", "accent-color", g_variant_new("(ddd)", -1.0, -1.0, -1.0));
+    CHECK(runUntil([&] { return accentChanges.size() >= 2; }));
+    runUntil([] { return false; }, 100);
+    CHECK((accentChanges == std::vector<std::string>{"#ff0000", ""}));
+    g_dbus_connection_signal_unsubscribe(client, accentWatch);
+    g_variant_unref(mock.accentColor);
 
     // FileChooser opt-in, run on another thread for the same reason as above.
     g_unsetenv("GTK_USE_PORTAL");

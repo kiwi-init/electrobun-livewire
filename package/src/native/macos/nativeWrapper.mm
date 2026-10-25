@@ -10710,6 +10710,63 @@ extern "C" void setAppWakeHandler(AppReopenHandler handler) {
   });
 }
 
+// The system accent color (System Settings > Appearance) as "#rrggbb" sRGB,
+// resolved for the app's appearance. Main thread only.
+static NSString *currentAccentColorHex(void) {
+  __block NSColor *color = nil;
+  [NSApp.effectiveAppearance performAsCurrentDrawingAppearance:^{
+    color = [[NSColor controlAccentColor]
+        colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+  }];
+  if (!color) return nil;
+  auto channel = [](CGFloat value) {
+    return (unsigned)lround(MIN(MAX(value, 0.0), 1.0) * 255);
+  };
+  return [NSString stringWithFormat:@"#%02x%02x%02x",
+                                    channel(color.redComponent),
+                                    channel(color.greenComponent),
+                                    channel(color.blueComponent)];
+}
+
+extern "C" char *getAccentColor() {
+  __block char *result = NULL;
+  runOnMainThreadSyncVoid(^{
+    NSString *hex = currentAccentColorHex();
+    if (hex) result = strdup(hex.UTF8String);
+  });
+  return result;
+}
+
+typedef void (*AccentColorChangedHandler)(const char *hex);
+static AccentColorChangedHandler g_accentColorChangedHandler = nullptr;
+
+// Tells Bun when the accent color changes. AppKit posts
+// NSSystemColorsDidChangeNotification for other system colors too (the
+// highlight color), so only an actual change of the accent is reported.
+extern "C" void setAccentColorChangedHandler(AccentColorChangedHandler handler) {
+  g_accentColorChangedHandler = handler;
+  static dispatch_once_t observing;
+  dispatch_once(&observing, ^{
+    runOnMainThreadAsyncVoid(^{
+      static NSString *lastHex = nil;
+      lastHex = currentAccentColorHex();
+      [[NSNotificationCenter defaultCenter]
+          addObserverForName:NSSystemColorsDidChangeNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification *note) {
+                    (void)note;
+                    NSString *hex = currentAccentColorHex();
+                    if (hex == lastHex || [hex isEqualToString:lastHex]) return;
+                    lastHex = hex;
+                    if (g_accentColorChangedHandler) {
+                      g_accentColorChangedHandler(hex ? hex.UTF8String : "");
+                    }
+                  }];
+    });
+  });
+}
+
 // Nonces of probes whose script ran: the page's JS is alive. Recorded from
 // the evaluate's completion, which doesn't go through the Networking process.
 static NSMutableSet<NSString *> *g_probeAnsweredNonces = nil;
