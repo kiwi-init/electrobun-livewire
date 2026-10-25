@@ -103,6 +103,7 @@ export class TestExecutor {
           navigationRules: options.navigationRules,
           newWindow: options.newWindow,
           bridgeOrigins: options.bridgeOrigins,
+          contentSecurityPolicy: options.contentSecurityPolicy,
         });
 
         // Wait a bit for window to be created

@@ -384,6 +384,8 @@ var next_window_id: u32 = 1;
 var next_webview_id: u32 = 1;
 // Set by setNextWebviewBridgeOrigins, consumed by the next createWebview.
 var next_webview_bridge_origins: ?[:0]u8 = null;
+// Set by setNextWebviewContentSecurityPolicy, consumed by the next createWebview.
+var next_webview_content_security_policy: ?[:0]u8 = null;
 var next_wgpu_view_id: u32 = 1;
 var tray_registry = std.AutoHashMap(u32, TrayState).init(allocator);
 var window_registry = std.AutoHashMap(u32, WindowState).init(allocator);
@@ -3455,6 +3457,16 @@ export fn createWebview(
 
     set_next_webview_flags(start_transparent, start_passthrough);
 
+    // The policy has to be in place before the view requests its first page.
+    webview_registry_mutex.lockUncancelable(coreIo());
+    const content_security_policy = next_webview_content_security_policy;
+    next_webview_content_security_policy = null;
+    webview_registry_mutex.unlock(coreIo());
+    if (content_security_policy) |policy| {
+        setNativeWebviewContentSecurityPolicy(webview_id, policy.ptr);
+        allocator.free(policy);
+    }
+
     const webview_ptr = init_webview(
         webview_id,
         window,
@@ -3479,6 +3491,7 @@ export fn createWebview(
     );
 
     if (webview_ptr == null) {
+        setNativeWebviewContentSecurityPolicy(webview_id, "");
         webview_registry_mutex.lockUncancelable(coreIo());
         _ = webview_registry.remove(webview_id);
         webview_registry_mutex.unlock(coreIo());
@@ -3507,6 +3520,33 @@ export fn createWebview(
     }
 
     return webview_id;
+}
+
+fn setNativeWebviewContentSecurityPolicy(webview_id: u32, policy: [*:0]const u8) void {
+    const SetWebviewContentSecurityPolicyFn = *const fn (u32, [*:0]const u8) callconv(.c) void;
+    const set_policy = lookupNativeSymbol(SetWebviewContentSecurityPolicyFn, "setWebviewContentSecurityPolicy") orelse return;
+    set_policy(webview_id, policy);
+}
+
+// Content-Security-Policy header for the next createWebview's views:// and
+// appdata:// responses.
+export fn setNextWebviewContentSecurityPolicy(policy: [*:0]const u8) void {
+    clearLastError();
+    const copy = allocator.dupeSentinel(u8, std.mem.span(policy), 0) catch {
+        setLastError("Failed to store the content security policy", .{});
+        return;
+    };
+    webview_registry_mutex.lockUncancelable(coreIo());
+    const previous = next_webview_content_security_policy;
+    next_webview_content_security_policy = copy;
+    webview_registry_mutex.unlock(coreIo());
+    if (previous) |old| allocator.free(old);
+}
+
+// Replaces a view's policy for its later responses; "" removes it.
+export fn setWebviewContentSecurityPolicy(webview_id: u32, policy: [*:0]const u8) void {
+    clearLastError();
+    setNativeWebviewContentSecurityPolicy(webview_id, policy);
 }
 
 // Bridge origins for the next createWebview: a JSON array of navigationRules-
@@ -3637,6 +3677,7 @@ export fn webviewReload(webview_id: u32) void {
 export fn webviewRemove(webview_id: u32) void {
     clearLastError();
     const WebviewRemoveFn = *const fn (WebviewPtr) callconv(.c) void;
+    setNativeWebviewContentSecurityPolicy(webview_id, "");
 
     webview_registry_mutex.lockUncancelable(coreIo());
     const removed = webview_registry.fetchRemove(webview_id);

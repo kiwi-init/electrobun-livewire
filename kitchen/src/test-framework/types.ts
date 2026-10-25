@@ -81,6 +81,7 @@ export interface WindowOptions {
   navigationRules?: string; // JSON array of rules, as BrowserWindow takes it
   newWindow?: 'deny' | 'external' | 'popup';
   bridgeOrigins?: string[];
+  contentSecurityPolicy?: string;
 }
 
 export interface TestWindow {

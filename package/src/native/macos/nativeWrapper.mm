@@ -88,6 +88,7 @@ static bool wgpuDebugEnabled() {
 #include "../shared/preload_injection.h"
 #include "../shared/shutdown_guard.h"
 #include "../shared/thread_safe_map.h"
+#include "../shared/view_content_security_policy.h"
 #include "../shared/views_url.h"
 #include "../shared/webview_storage.h"
 
@@ -2534,11 +2535,17 @@ static void schedulePendingResizeDrain() {
       mimeType = rawMimeType;
     }
 
-    NSDictionary *headers = @{
+    NSMutableDictionary *headers = [@{
       @"Content-Type" : mimeType,
       @"Access-Control-Allow-Origin" : @"*",
       @"X-Content-Type-Options" : @"nosniff",
-    };
+    } mutableCopy];
+    std::string contentSecurityPolicy =
+        electrobun::viewContentSecurityPolicy(self.webviewId);
+    if (!contentSecurityPolicy.empty()) {
+      headers[@"Content-Security-Policy"] =
+          [NSString stringWithUTF8String:contentSecurityPolicy.c_str()];
+    }
     NSHTTPURLResponse *response =
         [[NSHTTPURLResponse alloc] initWithURL:url
                                     statusCode:200
@@ -7603,6 +7610,12 @@ public:
 
     CefResponse::HeaderMap headers;
     headers.insert(std::make_pair("Access-Control-Allow-Origin", "*"));
+    std::string contentSecurityPolicy =
+        electrobun::viewContentSecurityPolicy(webviewId_);
+    if (!contentSecurityPolicy.empty()) {
+      headers.insert(
+          std::make_pair("Content-Security-Policy", contentSecurityPolicy));
+    }
     response->SetHeaderMap(headers);
   }
 
@@ -9125,6 +9138,11 @@ extern "C" void webviewSetHidden(AbstractView *abstractView, BOOL hidden) {
   runOnMainThreadAsyncVoid(^{
     [abstractView setHidden:hidden];
   });
+}
+
+extern "C" void setWebviewContentSecurityPolicy(uint32_t webviewId,
+                                                const char *policy) {
+  electrobun::setViewContentSecurityPolicy(webviewId, policy);
 }
 
 extern "C" void webviewSetNewWindowPolicy(AbstractView *abstractView,

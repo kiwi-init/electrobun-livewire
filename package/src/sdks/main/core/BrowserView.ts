@@ -76,6 +76,9 @@ export type BrowserViewOptions<T = undefined> = {
 	// same-origin iframe can still reach its parent's bridge through `parent`).
 	// ["*"] gives RPC to any top-level page the view shows.
 	bridgeOrigins: string[] | null;
+	// Sent as the Content-Security-Policy header on this view's views:// and
+	// appdata:// responses (macOS, Linux). null sends none.
+	contentSecurityPolicy: string | null;
 	// Sandbox mode: when true, disables RPC and only allows event emission
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
 	// accessing internal APIs, creating OOPIFs, or communicating with Bun
@@ -150,6 +153,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	navigationRules: string | null = null;
 	newWindow: NewWindowPolicy = "deny";
 	bridgeOrigins: string[] | null = null;
+	contentSecurityPolicy: string | null = null;
 	// Sandbox mode disables RPC and only allows event emission (for untrusted content)
 	sandbox: boolean = false;
 	startTransparent: boolean = false;
@@ -190,6 +194,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		this.navigationRules = options.navigationRules || null;
 		this.newWindow = options.newWindow ?? "deny";
 		this.bridgeOrigins = options.bridgeOrigins ?? null;
+		this.contentSecurityPolicy = options.contentSecurityPolicy ?? null;
 		this.renderer = options.renderer ?? defaultOptions.renderer ?? "native";
 		this.sandbox = options.sandbox ?? false;
 		this.startTransparent = options.startTransparent ?? false;
@@ -232,6 +237,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 			navigationRules: this.navigationRules,
 			newWindow: this.newWindow,
 			bridgeOrigins: this.bridgeOrigins,
+			contentSecurityPolicy: this.contentSecurityPolicy,
 			sandbox: this.sandbox,
 			startTransparent: this.startTransparent,
 			startPassthrough: this.startPassthrough,
@@ -322,6 +328,13 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	 * Toggles macOS system spell checking for native WKWebView content.
 	 * Returns false when the current renderer/platform does not support it.
 	 */
+	// Applies to the view's next views:// and appdata:// responses; reload to
+	// put it on the current page. null removes it.
+	setContentSecurityPolicy(policy: string | null) {
+		this.contentSecurityPolicy = policy;
+		ffi.request.webviewSetContentSecurityPolicy({ id: this.id, policy });
+	}
+
 	setNewWindowPolicy(policy: NewWindowPolicy) {
 		this.newWindow = policy;
 		ffi.request.webviewSetNewWindowPolicy({ id: this.id, policy });

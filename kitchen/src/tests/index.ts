@@ -12,6 +12,7 @@ import { windowTests } from "./window.test";
 import { navigationTests } from "./navigation.test";
 import { snapshotTests } from "./snapshot.test";
 import { newWindowTests } from "./new-window.test";
+import { cspTests } from "./csp.test";
 import { utilsTests } from "./utils.test";
 import { screenTests } from "./screen.test";
 import { sessionTests } from "./session.test";
@@ -58,6 +59,7 @@ export const allTests: TestDefinition[] = [
   ...navigationTests,
   ...snapshotTests,
   ...newWindowTests,
+  ...cspTests,
   ...utilsTests,
   ...screenTests,
   ...sessionTests,
@@ -112,6 +114,7 @@ export {
   navigationTests,
   snapshotTests,
   newWindowTests,
+  cspTests,
   utilsTests,
   screenTests,
   sessionTests,

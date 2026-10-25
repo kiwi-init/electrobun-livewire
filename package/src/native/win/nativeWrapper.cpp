@@ -61,6 +61,7 @@
 #include "../shared/webview_storage.h"
 #include "../shared/navigation_rules.h"
 #include "../shared/thread_safe_map.h"
+#include "../shared/view_content_security_policy.h"
 #include "../shared/shutdown_guard.h"
 #include "../shared/ffi_helpers.h"
 #include "../shared/json_menu_parser.h"
@@ -11159,6 +11160,10 @@ ELECTROBUN_EXPORT void webviewSetHidden(AbstractView *abstractView, bool hidden)
             abstractView->setTransparent(hidden);
         });
     }
+}
+
+ELECTROBUN_EXPORT void setWebviewContentSecurityPolicy(uint32_t webviewId, const char* policy) {
+    electrobun::setViewContentSecurityPolicy(webviewId, policy);
 }
 
 ELECTROBUN_EXPORT void webviewSetNewWindowPolicy(AbstractView* abstractView, int32_t policy) {
