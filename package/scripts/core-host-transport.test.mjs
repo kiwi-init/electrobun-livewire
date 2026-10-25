@@ -78,7 +78,6 @@ export fn testInstallTransportWebview(webview_id: u32, key_byte: u8) bool {
         .secret_key = @splat(key_byte),
         .socket_handle = null,
         .transport_ready = false,
-        .plaintext_transport = false,
     }) catch return false;
     return true;
 }
