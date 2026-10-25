@@ -22,7 +22,7 @@ export function waitForAgentEval(
 			pending.delete(token);
 			resolve({
 				ok: false,
-				error: `no result within ${timeoutMs}ms (the page may have navigated, or the view has no internal bridge)`,
+				error: `no result within ${timeoutMs}ms (the page may have navigated or be stuck)`,
 			});
 		}, timeoutMs);
 		pending.set(token, { resolve, timer });

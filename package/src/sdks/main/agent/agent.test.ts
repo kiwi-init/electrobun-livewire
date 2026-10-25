@@ -23,6 +23,7 @@ const AsyncFunction = (async () => {}).constructor as FunctionConstructor;
 function runInFakePage(code: string) {
 	const window = {
 		__electrobunInternalBridge: {
+			__electrobunSigned: true,
 			postMessage(batch: string) {
 				for (const message of JSON.parse(batch)) {
 					const parsed = JSON.parse(message);
@@ -108,6 +109,18 @@ describe("page scripts", () => {
 		expect(outcome.ok).toBe(false);
 		expect(!outcome.ok && outcome.error).toContain("https://other.example/x");
 		expect(!outcome.ok && outcome.error).toContain("bridgeOrigins");
+		// CEF leaves a raw, unsigned internal bridge on pages outside bridgeOrigins:
+		// it must be treated as absent, not posted to.
+		const raw: string[] = [];
+		const cefPage = { ...page, __electrobunInternalBridge: { postMessage: (message: string) => raw.push(message) } };
+		posted.length = 0;
+		const pendingCef = waitForAgentEval("tok-cef", 1_000);
+		new Function("window", "location", wrapEval("1", "tok-cef"))(cefPage, { href: "https://cef.example/" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(raw).toHaveLength(0);
+		expect(JSON.parse(posted[0]!).payload.eventName).toBe("agent-eval-no-bridge");
+		settleAgentEvalNoBridge(JSON.parse(posted[0]!).payload.detail);
+		expect((await pendingCef).ok).toBe(false);
 		// Only failures travel this way: a forged "value" isn't accepted.
 		expect(() => settleAgentEvalNoBridge("not json")).not.toThrow();
 	});
