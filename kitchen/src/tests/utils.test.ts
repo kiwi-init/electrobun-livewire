@@ -362,12 +362,15 @@ export const utilsTests = [
       // What System Settings does: write the preference, then tell apps.
       const setAccent = (value: number | null) => {
         spawnSync("defaults", value === null ? ["delete", "-g", "AppleAccentColor"] : ["write", "-g", "AppleAccentColor", "-int", String(value)]);
-        spawnSync("osascript", [
-          "-l",
-          "JavaScript",
-          "-e",
-          "ObjC.import('Foundation'); $.NSDistributedNotificationCenter.defaultCenter.postNotificationNameObjectUserInfoDeliverImmediately('AppleColorPreferencesChangedNotification', $(), $(), true)",
-        ]);
+        for (const name of ["AppleColorPreferencesChangedNotification", "AppleAquaColorVariantChanged"]) {
+          const posted = spawnSync("osascript", [
+            "-l",
+            "JavaScript",
+            "-e",
+            `ObjC.import('Foundation'); $.NSDistributedNotificationCenter.defaultCenter.postNotificationNameObjectUserInfoDeliverImmediately('${name}', $(), $(), true)`,
+          ]);
+          log(`posted ${name}: exit ${posted.status} ${posted.stderr?.toString().trim() ?? ""}`);
+        }
       };
       const nextChange = (timeoutMs = 5000) =>
         new Promise<string | null>((resolve, reject) => {
@@ -389,6 +392,8 @@ export const utilsTests = [
       try {
         const toRed = nextChange();
         setAccent(0);
+        await sleep(1000);
+        log(`getAccentColor after the change: ${Utils.getAccentColor()}`);
         const red = await toRed;
         log(`changed to: ${red}`);
         expect(red !== null && red !== before, "a new color").toBe(true);
