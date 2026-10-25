@@ -13,3 +13,5 @@ export {
 	verifyManifest,
 } from "../appengine/format";
 export type { TrustedKeys, UiConfig, UiManifest } from "../appengine/format";
+export { EngineStore, StorageError, storageCapabilities } from "../appengine/storage";
+export type { EngineStoreOptions, StorageOp } from "../appengine/storage";
