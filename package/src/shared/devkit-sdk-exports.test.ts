@@ -50,6 +50,7 @@ const focusedImports = {
 	"electrobun/main/webgpu": "webgpu",
 	"electrobun/main/wgpu-view": "WGPUView",
 	"electrobun/main/agent-control": "AgentControl",
+	"electrobun/main/appengine": "UiChannel",
 	"electrobun/rpc": "defineElectrobunRPC",
 } as const;
 
