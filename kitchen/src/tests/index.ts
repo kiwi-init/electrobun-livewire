@@ -10,6 +10,7 @@ import { wgpuAdapterExtendedTests } from "./wgpu-adapter-extended.test";
 import { rpcTests } from "./rpc.test";
 import { windowTests } from "./window.test";
 import { navigationTests } from "./navigation.test";
+import { snapshotTests } from "./snapshot.test";
 import { utilsTests } from "./utils.test";
 import { screenTests } from "./screen.test";
 import { sessionTests } from "./session.test";
@@ -53,6 +54,7 @@ export const allTests: TestDefinition[] = [
   ...rpcTests,
   ...windowTests,
   ...navigationTests,
+  ...snapshotTests,
   ...utilsTests,
   ...screenTests,
   ...sessionTests,
@@ -104,6 +106,7 @@ export {
   rpcTests,
   windowTests,
   navigationTests,
+  snapshotTests,
   utilsTests,
   screenTests,
   sessionTests,

@@ -438,6 +438,10 @@ const core = (() => {
 				args: [FFIType.u32],
 				returns: FFIType.void,
 			},
+			getWebviewSnapshot: {
+				args: [FFIType.u32, FFIType.u32, FFIType.function],
+				returns: FFIType.bool,
+			},
 			evaluateJavaScriptWithNoCompletion: {
 				args: [FFIType.u32, FFIType.cstring],
 				returns: FFIType.void,
@@ -2114,6 +2118,21 @@ const _ffiImpl = {
 		webviewStopFind: (params: { id: number }) => {
 			core_.symbols.webviewStopFind(params.id);
 		},
+		webviewSnapshot: (params: { id: number; timeoutMs: number }): Promise<string> => {
+			const requestId = nextWebviewSnapshotRequestId++;
+			return new Promise<string>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					pendingWebviewSnapshots.delete(requestId);
+					reject(new Error(`Webview ${params.id} took no snapshot within ${params.timeoutMs} ms`));
+				}, params.timeoutMs);
+				pendingWebviewSnapshots.set(requestId, { resolve, reject, timer });
+				if (!core_.symbols.getWebviewSnapshot(params.id, requestId, webviewSnapshotCallback)) {
+					clearTimeout(timer);
+					pendingWebviewSnapshots.delete(requestId);
+					reject(new Error(getCoreLastError() ?? `Webview ${params.id} can't take snapshots`));
+				}
+			});
+		},
 
 		createWGPUView: (params: {
 			windowId: number;
@@ -3622,6 +3641,40 @@ const internalBridgeHandler = new JSCallback(
 	{
 		// Keep the owned allocation as a pointer so it can be released after use.
 		args: [FFIType.u32, FFIType.ptr],
+		returns: FFIType.void,
+		threadsafe: true,
+	},
+);
+
+type PendingWebviewSnapshot = {
+	resolve: (dataUrl: string) => void;
+	reject: (error: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
+};
+const pendingWebviewSnapshots = new Map<number, PendingWebviewSnapshot>();
+let nextWebviewSnapshotRequestId = 1;
+
+const webviewSnapshotCallback = new JSCallback(
+	(requestId: number, dataUrl: Pointer | null, error: Pointer | null) => {
+		try {
+			const pending = pendingWebviewSnapshots.get(requestId);
+			if (!pending) return;
+			pendingWebviewSnapshots.delete(requestId);
+			clearTimeout(pending.timer);
+			if (dataUrl) {
+				pending.resolve(new CString(dataUrl).toString());
+			} else {
+				pending.reject(new Error(error ? new CString(error).toString() : "The webview returned no snapshot"));
+			}
+		} catch (err) {
+			console.error("error in webviewSnapshotCallback: ", err);
+		} finally {
+			core_.symbols.freeCoreString(dataUrl);
+			core_.symbols.freeCoreString(error);
+		}
+	},
+	{
+		args: [FFIType.u32, FFIType.ptr, FFIType.ptr],
 		returns: FFIType.void,
 		threadsafe: true,
 	},
