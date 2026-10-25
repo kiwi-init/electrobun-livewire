@@ -1990,6 +1990,7 @@ const _ffiImpl = {
 				allowedProtocols,
 				frame: { x, y, width, height },
 				autoResize,
+				navigationRules,
 				sandbox,
 				startTransparent,
 				startPassthrough,
@@ -2028,6 +2029,15 @@ const _ffiImpl = {
 
 			if (!webviewId) {
 				throw getCoreLastError() || "Failed to create webview";
+			}
+
+			// Same order as the core's webview-tag path: rules land right after
+			// creation, before any navigation the page itself can start.
+			if (navigationRules) {
+				core_.symbols.setWebviewNavigationRules(
+					webviewId,
+					toCString(navigationRules),
+				);
 			}
 
 			return webviewId;
