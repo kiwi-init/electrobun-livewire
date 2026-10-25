@@ -1,7 +1,7 @@
 // @hutch cli=0.28.2-canary.8 cottontail=0.7.3-canary.8
 export default {
 	electrobun: {
-		version: "2.1.0-livewire.rc.3",
+		version: "2.1.0-livewire.rc.4",
 	},
 	packageManager: "npm",
 	scripts: {

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "electrobun"
-version = "2.1.0-livewire.rc.3"
+version = "2.1.0-livewire.rc.4"
 
 [[package]]
 name = "electrobun-kitchen"
