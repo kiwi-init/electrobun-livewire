@@ -25,9 +25,11 @@ export interface TestDefinition {
 
 export type WindowRenderer = 'cef' | 'native';
 
+export type TestPlatform = 'win32' | 'darwin' | 'linux';
+
 export interface TestRequirements {
   /** Native platform behavior that must be reported as skipped elsewhere. */
-  platform?: 'win32' | 'darwin' | 'linux';
+  platform?: TestPlatform | readonly TestPlatform[];
   /**
    * A hard runtime prerequisite proven by the test's stated purpose/assertions.
    * Never infer this from WindowOptions.renderer: Kitchen deliberately requests

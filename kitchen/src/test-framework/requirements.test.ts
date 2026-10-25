@@ -61,6 +61,13 @@ describe("Kitchen native platform requirements", () => {
     expect(getTestSkipReason(windowsTest, ["native"], "win32")).toBeUndefined();
   });
 
+  test("runs a test on any platform it lists", () => {
+    const webkitTest = { ...windowsTest, requires: { platform: ["darwin", "linux"] as const } };
+    expect(getTestSkipReason(webkitTest, ["native"], "linux")).toBeUndefined();
+    expect(getTestSkipReason(webkitTest, ["native"], "darwin")).toBeUndefined();
+    expect(getTestSkipReason(webkitTest, ["native"], "win32")).toBe("requires darwin or linux, running on win32");
+  });
+
   test("retains independent renderer requirements on the matching platform", () => {
     const both = { ...windowsTest, requires: { platform: "win32" as const, renderer: "cef" as const } };
     expect(getTestSkipReason(both, ["native"], "win32")).toContain("requires the CEF renderer");
