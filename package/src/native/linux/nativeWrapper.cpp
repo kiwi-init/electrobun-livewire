@@ -10715,8 +10715,54 @@ ELECTROBUN_EXPORT void showContextMenu(const char* jsonString, void* contextMenu
     fflush(stdout);
 }
 
-ELECTROBUN_EXPORT bool getWebviewSnapshot(void* webview, uint32_t requestId, SnapshotCallback callback) {
-    return false;
+struct WebviewSnapshotRequest {
+    uint32_t requestId;
+    SnapshotCallback callback;
+};
+
+static cairo_status_t appendSnapshotPngBytes(void* closure, const unsigned char* data, unsigned int length) {
+    auto* png = static_cast<std::vector<unsigned char>*>(closure);
+    png->insert(png->end(), data, data + length);
+    return CAIRO_STATUS_SUCCESS;
+}
+
+static void onWebviewSnapshotReady(GObject* source, GAsyncResult* result, gpointer data) {
+    std::unique_ptr<WebviewSnapshotRequest> request(static_cast<WebviewSnapshotRequest*>(data));
+    GError* error = nullptr;
+    cairo_surface_t* surface = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(source), result, &error);
+    std::vector<unsigned char> png;
+    if (surface) {
+        if (cairo_surface_write_to_png_stream(surface, appendSnapshotPngBytes, &png) != CAIRO_STATUS_SUCCESS) {
+            png.clear();
+        }
+        cairo_surface_destroy(surface);
+    }
+    if (png.empty()) {
+        request->callback(request->requestId, nullptr, strdup(error ? error->message : "WebKitGTK returned no image"));
+        if (error) g_error_free(error);
+        return;
+    }
+    gchar* base64 = g_base64_encode(png.data(), png.size());
+    std::string dataUrl = std::string("data:image/png;base64,") + base64;
+    g_free(base64);
+    request->callback(request->requestId, strdup(dataUrl.c_str()), nullptr);
+}
+
+ELECTROBUN_EXPORT bool getWebviewSnapshot(AbstractView* abstractView, uint32_t requestId, SnapshotCallback callback) {
+    auto* view = dynamic_cast<WebKitWebViewImpl*>(abstractView);
+    if (!view || !callback) {
+        return false;
+    }
+    dispatch_async_main_void([view, requestId, callback]() {
+        if (view->isRemoved || !view->webview) {
+            callback(requestId, nullptr, strdup("the webview was removed"));
+            return;
+        }
+        webkit_web_view_get_snapshot(WEBKIT_WEB_VIEW(view->webview), WEBKIT_SNAPSHOT_REGION_VISIBLE,
+                                     WEBKIT_SNAPSHOT_OPTIONS_NONE, nullptr, onWebviewSnapshotReady,
+                                     new WebviewSnapshotRequest{requestId, callback});
+    });
+    return true;
 }
 
 void setJSUtils(void* getMimeType, void* getHTMLForWebviewSync) {

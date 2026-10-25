@@ -356,7 +356,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 
 	/**
 	 * Captures what the view shows as a PNG data URL, also while its window is
-	 * hidden. Native WebKit views on macOS only for now; elsewhere it rejects.
+	 * hidden. Native WebKit views on macOS and Linux; CEF and Windows reject.
 	 */
 	snapshot(options?: { timeoutMs?: number }): Promise<string> {
 		return ffi.request.webviewSnapshot({

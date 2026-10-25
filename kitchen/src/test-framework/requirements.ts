@@ -8,8 +8,9 @@ export function getTestSkipReason(
   availableRenderers: readonly WindowRenderer[],
   platform: string = process.platform,
 ): string | undefined {
-  if (test.requires?.platform && test.requires.platform !== platform) {
-    return `requires ${test.requires.platform}, running on ${platform}`;
+  const platforms = test.requires?.platform === undefined ? [] : [test.requires.platform].flat();
+  if (platforms.length > 0 && !platforms.some((candidate) => candidate === platform)) {
+    return `requires ${platforms.join(" or ")}, running on ${platform}`;
   }
   const requiredRenderer = test.requires?.renderer;
   if (!requiredRenderer || availableRenderers.includes(requiredRenderer)) {

@@ -82,7 +82,7 @@ export const snapshotTests = [
     name: "BrowserView.snapshot",
     category: "Snapshot",
     description: "snapshot() returns a PNG of what the view shows now, also while its window is hidden or minimized",
-    requires: { platform: "darwin", renderer: "native" },
+    requires: { platform: ["darwin", "linux"], renderer: "native" },
     timeout: 30000,
     async run({ createWindow, log }) {
       const win = await createWindow({
