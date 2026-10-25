@@ -11,6 +11,7 @@ import { rpcTests } from "./rpc.test";
 import { windowTests } from "./window.test";
 import { navigationTests } from "./navigation.test";
 import { snapshotTests } from "./snapshot.test";
+import { newWindowTests } from "./new-window.test";
 import { utilsTests } from "./utils.test";
 import { screenTests } from "./screen.test";
 import { sessionTests } from "./session.test";
@@ -55,6 +56,7 @@ export const allTests: TestDefinition[] = [
   ...windowTests,
   ...navigationTests,
   ...snapshotTests,
+  ...newWindowTests,
   ...utilsTests,
   ...screenTests,
   ...sessionTests,
@@ -107,6 +109,7 @@ export {
   windowTests,
   navigationTests,
   snapshotTests,
+  newWindowTests,
   utilsTests,
   screenTests,
   sessionTests,

@@ -101,6 +101,7 @@ export class TestExecutor {
           allowedProtocols: options.allowedProtocols,
           spellCheck: options.spellCheck ?? false,
           navigationRules: options.navigationRules,
+          newWindow: options.newWindow,
         });
 
         // Wait a bit for window to be created

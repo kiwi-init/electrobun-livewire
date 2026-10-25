@@ -3484,6 +3484,17 @@ export fn webviewSetHidden(webview_id: u32, hidden: bool) void {
     webview_set_hidden(webview, hidden);
 }
 
+export fn webviewSetNewWindowPolicy(webview_id: u32, policy: i32) void {
+    clearLastError();
+    const WebviewSetNewWindowPolicyFn = *const fn (WebviewPtr, i32) callconv(.c) void;
+    const webview = requireWebviewPtr(webview_id) orelse return;
+    const webview_set_new_window_policy = lookupNativeSymbol(
+        WebviewSetNewWindowPolicyFn,
+        "webviewSetNewWindowPolicy",
+    ) orelse return;
+    webview_set_new_window_policy(webview, policy);
+}
+
 export fn webviewSetSpellCheck(webview_id: u32, enabled: bool) bool {
     clearLastError();
     const WebviewSetSpellCheckFn = *const fn (WebviewPtr, bool) callconv(.c) bool;

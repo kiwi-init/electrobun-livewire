@@ -11176,6 +11176,11 @@ ELECTROBUN_EXPORT void webviewSetHidden(AbstractView *abstractView, bool hidden)
     }
 }
 
+ELECTROBUN_EXPORT void webviewSetNewWindowPolicy(AbstractView* abstractView, int32_t policy) {
+    (void)abstractView;
+    (void)policy;
+}
+
 ELECTROBUN_EXPORT bool webviewSetSpellCheck(AbstractView* abstractView, bool enabled) {
     (void)abstractView;
     (void)enabled;

@@ -8,6 +8,7 @@ import {
 	emitWebviewTagBrowserViewCreated,
 } from "../core/BrowserView";
 import { WGPUView } from "../core/WGPUView";
+import { NEW_WINDOW_POLICIES, type NewWindowPolicy } from "../core/newWindowPolicy";
 import {
 	preloadScript,
 	preloadScriptSandboxed,
@@ -430,6 +431,10 @@ const core = (() => {
 			webviewSetSpellCheck: {
 				args: [FFIType.u32, FFIType.bool],
 				returns: FFIType.bool,
+			},
+			webviewSetNewWindowPolicy: {
+				args: [FFIType.u32, FFIType.i32],
+				returns: FFIType.void,
 			},
 			setWebviewNavigationRules: {
 				args: [FFIType.u32, FFIType.cstring],
@@ -1982,6 +1987,7 @@ const _ffiImpl = {
 			};
 			autoResize: boolean;
 			navigationRules: string | null;
+			newWindow: NewWindowPolicy;
 			sandbox: boolean;
 			startTransparent: boolean;
 			startPassthrough: boolean;
@@ -2000,6 +2006,7 @@ const _ffiImpl = {
 				frame: { x, y, width, height },
 				autoResize,
 				navigationRules,
+				newWindow,
 				sandbox,
 				startTransparent,
 				startPassthrough,
@@ -2047,6 +2054,9 @@ const _ffiImpl = {
 					webviewId,
 					toCString(navigationRules),
 				);
+			}
+			if (newWindow !== "deny") {
+				core_.symbols.webviewSetNewWindowPolicy(webviewId, NEW_WINDOW_POLICIES.indexOf(newWindow));
 			}
 
 			return webviewId;
@@ -2116,6 +2126,9 @@ const _ffiImpl = {
 		},
 		webviewSetSpellCheck: (params: { id: number; enabled: boolean }) => {
 			return core_.symbols.webviewSetSpellCheck(params.id, params.enabled);
+		},
+		webviewSetNewWindowPolicy: (params: { id: number; policy: NewWindowPolicy }) => {
+			core_.symbols.webviewSetNewWindowPolicy(params.id, NEW_WINDOW_POLICIES.indexOf(params.policy));
 		},
 		setWebviewNavigationRules: (params: { id: number; rulesJson: string }) => {
 			core_.symbols.setWebviewNavigationRules(params.id, toCString(params.rulesJson));

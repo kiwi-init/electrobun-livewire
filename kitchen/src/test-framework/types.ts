@@ -79,6 +79,7 @@ export interface WindowOptions {
   allowedProtocols?: { views?: boolean; appData?: boolean };
   spellCheck?: boolean;
   navigationRules?: string; // JSON array of rules, as BrowserWindow takes it
+  newWindow?: 'deny' | 'external' | 'popup';
 }
 
 export interface TestWindow {

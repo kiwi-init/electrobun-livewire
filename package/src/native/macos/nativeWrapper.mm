@@ -1070,6 +1070,8 @@ static NSMutableDictionary<NSNumber *, AbstractView *> *globalAbstractViews =
 @interface MyWebViewUIDelegate : NSObject <WKUIDelegate>
 @property(nonatomic, assign) WebviewEventHandler zigEventHandler;
 @property(nonatomic, assign) uint32_t webviewId;
+// 0 deny, 1 external, 2 popup
+@property(nonatomic, assign) NSInteger newWindowPolicy;
 @end
 
 @interface MyScriptMessageHandler : NSObject <WKScriptMessageHandler>
@@ -2536,6 +2538,14 @@ static void schedulePendingResizeDrain() {
     decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
                     decisionHandler:
                         (void (^)(WKNavigationActionPolicy))decisionHandler {
+  // Only this view's own page or the app may navigate it. Another web view
+  // doing so is a popup reaching back through window.opener.
+  WKWebView *sourceWebView = navigationAction.sourceFrame.webView;
+  if (navigationAction.targetFrame.isMainFrame && sourceWebView &&
+      sourceWebView != webView) {
+    decisionHandler(WKNavigationActionPolicyCancel);
+    return;
+  }
   NSURL *newURL = navigationAction.request.URL;
 
   // Check if cmd key is held - if so, fire event and block navigation
@@ -2817,6 +2827,8 @@ static void schedulePendingResizeDrain() {
     [self emitRenderProcessGone:@"oom"];
     break;
   case 1:
+    [self emitRenderProcessGone:@"cpu"];
+    break;
   case 2:
     [self emitRenderProcessGone:@"killed"];
     break;
@@ -2843,36 +2855,105 @@ static void schedulePendingResizeDrain() {
 }
 @end
 
+// A window.open popup under the "popup" policy: a plain WKWebView in its own
+// window, related to the opener so window.opener works, but with an empty
+// content controller so the page gets none of Electrobun's preload or bridge.
+@interface LivewirePopupController : NSObject <WKUIDelegate, NSWindowDelegate>
+@property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, strong) WKWebView *webView;
+@end
+
+static NSMutableSet<LivewirePopupController *> *livewirePopups;
+
+@implementation LivewirePopupController
+- (void)webViewDidClose:(WKWebView *)webView {
+  [self.window close];
+}
+
+- (void)windowWillClose:(NSNotification *)notification {
+  self.webView.UIDelegate = nil;
+  self.window.delegate = nil;
+  [livewirePopups removeObject:self];
+}
+@end
+
+static BOOL isExternallyOpenableURL(NSURL *url) {
+  NSString *scheme = url.scheme.lowercaseString;
+  return [scheme isEqualToString:@"http"] ||
+         [scheme isEqualToString:@"https"] ||
+         [scheme isEqualToString:@"mailto"];
+}
+
 @implementation MyWebViewUIDelegate
 - (WKWebView *)webView:(WKWebView *)webView
     createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
                forNavigationAction:(WKNavigationAction *)navigationAction
                     windowFeatures:(WKWindowFeatures *)windowFeatures {
-
-  // Check if this is a cmd+click or a traditional popup window request
   BOOL isCmdClick =
       (navigationAction.modifierFlags & NSEventModifierFlagCommand) != 0;
-  BOOL isNewWindow = !navigationAction.targetFrame.isMainFrame || isCmdClick;
+  NSURL *url = navigationAction.request.URL;
+  NSString *policy = @"deny";
+  WKWebView *popup = nil;
 
-  if (isNewWindow) {
-    NSString *eventData = [NSString
-        stringWithFormat:
-            @"{\"url\":\"%@\",\"isCmdClick\":%@,\"modifierFlags\":%lu}",
-            navigationAction.request.URL.absoluteString,
-            isCmdClick ? @"true" : @"false",
-            (unsigned long)navigationAction.modifierFlags];
+  if (self.newWindowPolicy == 1 && isExternallyOpenableURL(url)) {
+    [[NSWorkspace sharedWorkspace] openURL:url];
+    policy = @"external";
+  } else if (self.newWindowPolicy == 2) {
+    configuration.userContentController =
+        [[WKUserContentController alloc] init];
+    NSRect frame = NSMakeRect(
+        0, 0,
+        MAX(windowFeatures.width ? windowFeatures.width.doubleValue : 500, 200),
+        MAX(windowFeatures.height ? windowFeatures.height.doubleValue : 600,
+            150));
+    NSWindow *window = [[NSWindow alloc]
+        initWithContentRect:frame
+                  styleMask:NSWindowStyleMaskTitled |
+                            NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskMiniaturizable |
+                            NSWindowStyleMaskResizable
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    window.releasedWhenClosed = NO;
+    window.title = url.host ?: @"";
+    popup = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
+    popup.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    window.contentView = popup;
 
-    if (self.zigEventHandler) {
-      // Use strdup to create a persistent copy of the string for the FFI
-      // callback
-      char *eventDataCopy = strdup([eventData UTF8String]);
-      self.zigEventHandler(self.webviewId, strdup("new-window-open"),
-                           eventDataCopy);
-    } else {
-      NSLog(@"[NEW_WINDOW] ERROR: zigEventHandler is NULL!");
+    LivewirePopupController *controller = [[LivewirePopupController alloc] init];
+    controller.window = window;
+    controller.webView = popup;
+    popup.UIDelegate = controller;
+    window.delegate = controller;
+    if (!livewirePopups) {
+      livewirePopups = [NSMutableSet set];
     }
+    [livewirePopups addObject:controller];
+
+    NSWindow *openerWindow = webView.window;
+    if (openerWindow) {
+      NSRect opener = openerWindow.frame;
+      [window setFrameOrigin:NSMakePoint(
+                                 NSMidX(opener) - window.frame.size.width / 2,
+                                 NSMidY(opener) - window.frame.size.height / 2)];
+    } else {
+      [window center];
+    }
+    [window makeKeyAndOrderFront:nil];
+    policy = @"popup";
   }
-  return nil;
+
+  if (self.zigEventHandler) {
+    NSString *eventData = [NSString
+        stringWithFormat:@"{\"url\":\"%@\",\"isCmdClick\":%@,"
+                         @"\"modifierFlags\":%lu,\"policy\":\"%@\"}",
+                         url.absoluteString ?: @"",
+                         isCmdClick ? @"true" : @"false",
+                         (unsigned long)navigationAction.modifierFlags, policy];
+    self.zigEventHandler(self.webviewId, strdup("new-window-open"),
+                         strdup(eventData.UTF8String));
+  }
+  return popup;
 }
 
 // Handle file input elements (<input type="file">)
@@ -9036,6 +9117,20 @@ extern "C" void webviewSetPassthrough(AbstractView *abstractView,
 extern "C" void webviewSetHidden(AbstractView *abstractView, BOOL hidden) {
   runOnMainThreadAsyncVoid(^{
     [abstractView setHidden:hidden];
+  });
+}
+
+extern "C" void webviewSetNewWindowPolicy(AbstractView *abstractView,
+                                          int32_t policy) {
+  if (![abstractView isKindOfClass:[WKWebViewImpl class]]) {
+    return;
+  }
+  WKWebViewImpl *view = (WKWebViewImpl *)abstractView;
+  runOnMainThreadAsyncVoid(^{
+    id delegate = view.webView.UIDelegate;
+    if ([delegate isKindOfClass:[MyWebViewUIDelegate class]]) {
+      ((MyWebViewUIDelegate *)delegate).newWindowPolicy = policy;
+    }
   });
 }
 
