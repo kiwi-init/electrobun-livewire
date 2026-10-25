@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: Kitchen test name, as given to defineTest
+        description: Kitchen test name, as given to defineTest, or "all" for every automated test
         type: string
         required: true
       runner:
@@ -36,7 +36,8 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 45
     env:
-      AUTO_RUN_TEST_NAME: ${{ inputs.test }}
+      AUTO_RUN: ${{ inputs.test == 'all' && '1' || '' }}
+      AUTO_RUN_TEST_NAME: ${{ inputs.test != 'all' && inputs.test || '' }}
       ELECTROBUN_KITCHEN_MAIN_PROCESS: bun
       ELECTROBUN_KITCHEN_RENDERER: native
     steps:
