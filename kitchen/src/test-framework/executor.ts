@@ -104,6 +104,7 @@ export class TestExecutor {
           newWindow: options.newWindow,
           bridgeOrigins: options.bridgeOrigins,
           contentSecurityPolicy: options.contentSecurityPolicy,
+          fileDragRoots: options.fileDragRoots,
         });
 
         // Wait a bit for window to be created

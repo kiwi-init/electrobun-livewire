@@ -63,6 +63,8 @@ export type WindowOptionsType<T = undefined> = {
 	bridgeOrigins: string[] | null;
 	// See BrowserViewOptions.contentSecurityPolicy.
 	contentSecurityPolicy: string | null;
+	// See BrowserViewOptions.fileDragRoots.
+	fileDragRoots: string[];
 	// Sandbox mode: when true, disables RPC and only allows event emission
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
 	// accessing internal APIs, creating OOPIFs, or communicating with Bun
@@ -95,6 +97,7 @@ const defaultOptions: WindowOptionsType = {
 	newWindow: "deny",
 	bridgeOrigins: null,
 	contentSecurityPolicy: null,
+	fileDragRoots: [],
 	sandbox: false,
 };
 
@@ -148,6 +151,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	newWindow: NewWindowPolicy = "deny";
 	bridgeOrigins: string[] | null = null;
 	contentSecurityPolicy: string | null = null;
+	fileDragRoots: string[] = [];
 	// Sandbox mode disables RPC and only allows event emission (for untrusted content)
 	sandbox: boolean = false;
 	frame: {
@@ -208,6 +212,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 		this.newWindow = options.newWindow ?? "deny";
 		this.bridgeOrigins = options.bridgeOrigins ?? null;
 		this.contentSecurityPolicy = options.contentSecurityPolicy ?? null;
+		this.fileDragRoots = options.fileDragRoots ?? [];
 		this.sandbox = options.sandbox ?? false;
 
 		this.init(options, centered);
@@ -344,6 +349,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 			newWindow: this.newWindow,
 			bridgeOrigins: this.bridgeOrigins,
 			contentSecurityPolicy: this.contentSecurityPolicy,
+			fileDragRoots: this.fileDragRoots,
 			sandbox: this.sandbox,
 			startPassthrough: this.passthrough,
 			spellCheck: this.spellCheck,

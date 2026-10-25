@@ -16,7 +16,7 @@
 
 import "./globals.d.ts";
 import { initEncryption } from "./encryption";
-import { handleResponse } from "./internalRpc";
+import { handleResponse, request } from "./internalRpc";
 import { initDragRegions } from "./dragRegions";
 import { initExternalDropFocusRestoration } from "./externalDropFocus";
 import { initWebviewTag } from "./webviewTag";
@@ -63,6 +63,10 @@ if (!window.__electrobun) {
 	window.__electrobun.receiveInternalMessageFromBun = internalMessageHandler;
 	window.__electrobun.receiveMessageFromBun = defaultUserMessageHandler;
 }
+
+// startFileDrag() in electrobun/view. Bun checks the paths against the view's
+// fileDragRoots.
+window.__electrobun.startFileDrag = (paths) => request("startFileDrag", { paths });
 
 // Initialize all features
 initHostMessageBridge();

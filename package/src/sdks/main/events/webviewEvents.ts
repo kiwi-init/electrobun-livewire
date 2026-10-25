@@ -3,6 +3,7 @@ import ElectrobunEvent from "./event";
 type DetailData = { detail: string };
 type RenderProcessGoneReason = "crashed" | "killed" | "oom" | "cpu";
 type RenderProcessGoneData = { detail: { reason: RenderProcessGoneReason } };
+type FileDragEndData = { detail: { operation: "copy" | "none" } };
 type NewWindowOpenData = {
 	detail:
 		| string
@@ -41,6 +42,8 @@ export default {
 		new ElectrobunEvent<DetailData, {}>("download-failed", data),
 	renderProcessGone: (data: RenderProcessGoneData) =>
 		new ElectrobunEvent<RenderProcessGoneData, {}>("render-process-gone", data),
+	fileDragEnd: (data: FileDragEndData) =>
+		new ElectrobunEvent<FileDragEndData, {}>("file-drag-end", data),
 	unresponsive: (data: DetailData) =>
 		new ElectrobunEvent<DetailData, {}>("unresponsive", data),
 	responsive: (data: DetailData) =>

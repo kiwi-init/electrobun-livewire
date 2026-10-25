@@ -944,6 +944,8 @@ void releaseObjCObject(id objcObject) {
 @interface AbstractView : NSObject
 @property(nonatomic, assign) uint32_t webviewId;
 @property(nonatomic, assign) NSView *nsView;
+// For events that don't come from a WebKit or CEF delegate (file-drag-end).
+@property(nonatomic, assign) WebviewEventHandler webviewEventHandler;
 @property(nonatomic, assign) BOOL isMousePassthroughEnabled;
 @property(nonatomic, assign) BOOL mirrorModeEnabled;
 @property(nonatomic, assign) BOOL fullSize;
@@ -3267,6 +3269,7 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
   self = [super init];
   if (self) {
     self.webviewId = webviewId;
+    self.webviewEventHandler = webviewEventHandler;
     self.isSandboxed = sandbox;
     NSString *viewsRootString = (viewsRoot && strlen(viewsRoot) > 0)
                                     ? [NSString stringWithUTF8String:viewsRoot]
@@ -7773,6 +7776,7 @@ CreateRequestContextForPartition(const char *partitionIdentifier,
   self = [super init];
   if (self) {
     self.webviewId = webviewId;
+    self.webviewEventHandler = webviewEventHandler;
     self.isSandboxed = sandbox;
     {
       std::lock_guard<std::mutex> lock(webviewAllowedProtocolsMutex);
@@ -10592,6 +10596,136 @@ extern "C" bool webviewProbeAnswered(const char *nonce) {
     if (answered) [g_probeAnsweredNonces removeObject:nonceString];
   });
   return answered;
+}
+
+// ----------------------- File drag out of a view -----------------------
+
+@interface ElectrobunFileDragSource : NSObject <NSDraggingSource>
+@property(nonatomic, strong) AbstractView *view;
+@end
+
+// The session doesn't retain its source, so the one in flight is kept here.
+static ElectrobunFileDragSource *g_fileDragSource = nil;
+
+@implementation ElectrobunFileDragSource
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session
+    sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+  // Copy only, so a drop never moves the app's file away. Not into the app
+  // itself: the page that started the drag has its own drop handling.
+  return context == NSDraggingContextOutsideApplication ? NSDragOperationCopy
+                                                        : NSDragOperationNone;
+}
+
+- (void)draggingSession:(NSDraggingSession *)session
+           endedAtPoint:(NSPoint)screenPoint
+              operation:(NSDragOperation)operation {
+  AbstractView *view = self.view;
+  NSView *nsView = view.nsView;
+  NSWindow *window = nsView.window;
+  // The view saw the mouse down that started the drag but not its mouse up,
+  // which the drag consumed. Without one the page thinks the button is held.
+  if (window && !view.isRemoved) {
+    NSEvent *up = [NSEvent
+        mouseEventWithType:NSEventTypeLeftMouseUp
+                  location:[window convertPointFromScreen:screenPoint]
+             modifierFlags:0
+                 timestamp:[NSProcessInfo processInfo].systemUptime
+              windowNumber:window.windowNumber
+                   context:nil
+               eventNumber:0
+                clickCount:1
+                  pressure:0];
+    [nsView mouseUp:up];
+  }
+  if (view.webviewEventHandler && !view.isRemoved) {
+    const char *detail = (operation & NSDragOperationCopy)
+                             ? "{\"operation\":\"copy\"}"
+                             : "{\"operation\":\"none\"}";
+    view.webviewEventHandler(view.webviewId, strdup("file-drag-end"),
+                             strdup(detail));
+  }
+  if (g_fileDragSource == self) {
+    g_fileDragSource = nil;
+  }
+}
+@end
+
+// Starts dragging `pathsJson` (a JSON array of absolute paths to existing
+// files or folders) out of the view, for the drag the user is making right
+// now. Refuses when the left mouse button isn't down: a session started
+// without one would end at the user's next click, wherever that lands.
+extern "C" bool webviewStartFileDrag(AbstractView *abstractView,
+                                     const char *pathsJson) {
+  if (!abstractView || !pathsJson ||
+      !globalAbstractViews[@(abstractView.webviewId)]) {
+    return false;
+  }
+  NSData *json = [NSData dataWithBytes:pathsJson length:strlen(pathsJson)];
+  NSArray *paths = [NSJSONSerialization JSONObjectWithData:json
+                                                   options:0
+                                                     error:nil];
+  if (![paths isKindOfClass:[NSArray class]] || paths.count == 0) {
+    return false;
+  }
+  for (id path in paths) {
+    if (![path isKindOfClass:[NSString class]] || ![path isAbsolutePath] ||
+        ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+      return false;
+    }
+  }
+
+  return runOnMainThreadSyncBool(^bool {
+    NSView *view = abstractView.nsView;
+    NSWindow *window = view.window;
+    if (!view || !window || abstractView.isRemoved || g_fileDragSource ||
+        !([NSEvent pressedMouseButtons] & 1)) {
+      return false;
+    }
+
+    // The page asks from its dragstart handler, so the event AppKit is
+    // handling is normally that drag; otherwise stand one in at the cursor.
+    NSEvent *event = NSApp.currentEvent;
+    if (event.window != window ||
+        (event.type != NSEventTypeLeftMouseDown &&
+         event.type != NSEventTypeLeftMouseDragged)) {
+      event = [NSEvent
+          mouseEventWithType:NSEventTypeLeftMouseDragged
+                    location:window.mouseLocationOutsideOfEventStream
+               modifierFlags:0
+                   timestamp:[NSProcessInfo processInfo].systemUptime
+                windowNumber:window.windowNumber
+                     context:nil
+                 eventNumber:0
+                  clickCount:1
+                    pressure:1];
+    }
+
+    const NSPoint origin = [view convertPoint:event.locationInWindow
+                                     fromView:nil];
+    NSMutableArray<NSDraggingItem *> *items = [NSMutableArray array];
+    for (NSString *path in paths) {
+      NSDraggingItem *item = [[NSDraggingItem alloc]
+          initWithPasteboardWriter:[NSURL fileURLWithPath:path]];
+      NSImage *icon = [[NSWorkspace sharedWorkspace] iconForFile:path];
+      icon.size = NSMakeSize(64, 64);
+      const CGFloat step = 10 * (CGFloat)items.count;
+      [item setDraggingFrame:NSMakeRect(origin.x - 32 + step,
+                                        origin.y - 32 + step, 64, 64)
+                    contents:icon];
+      [items addObject:item];
+    }
+
+    ElectrobunFileDragSource *source = [ElectrobunFileDragSource new];
+    source.view = abstractView;
+    NSDraggingSession *session =
+        [view beginDraggingSessionWithItems:items event:event source:source];
+    if (!session) {
+      return false;
+    }
+    session.animatesToStartingPositionsOnCancelOrFail = YES;
+    g_fileDragSource = source;
+    return true;
+  });
 }
 
 extern "C" void setDockIconVisible(bool visible) {
