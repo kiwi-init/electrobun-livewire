@@ -854,6 +854,8 @@ const AppState = struct {
     cef_available: bool = false,
     cef_version: ?[]u8 = null,
     child_webviews: std.AutoHashMap(u32, ChildWebviewState),
+    // <electrobun-wgpu> views, keyed by id, to the webview whose page made them.
+    wgpu_view_hosts: std.AutoHashMap(u32, u32),
     top_level_webview_windows: std.AutoHashMap(u32, u32),
     test_runner_window_id: u32 = 0,
     test_runner_webview_id: u32 = 0,
@@ -892,12 +894,15 @@ const AppState = struct {
         }
         self.menu_data_registry.deinit();
         self.child_webviews.deinit();
+        self.wgpu_view_hosts.deinit();
         self.top_level_webview_windows.deinit();
     }
 };
 
 const ChildWebviewState = struct {
     renderer: electrobun.Renderer,
+    // The webview whose page created this <electrobun-webview> tag.
+    host_webview_id: u32,
 };
 
 const CreateUiContext = struct {
@@ -1543,11 +1548,43 @@ fn childWebviewRenderer(webview_id: u32) electrobun.Renderer {
     return .native;
 }
 
-fn rememberChildWebview(webview_id: u32, renderer: electrobun.Renderer) !void {
+fn rememberChildWebview(webview_id: u32, renderer: electrobun.Renderer, host_webview_id: u32) !void {
     const state = appState();
     state.mutex.lock();
     defer state.mutex.unlock();
-    try state.child_webviews.put(webview_id, .{ .renderer = renderer });
+    try state.child_webviews.put(webview_id, .{ .renderer = renderer, .host_webview_id = host_webview_id });
+}
+
+// Internal bridge packets carry whatever ids the page wrote. A page may act
+// only on its own window and the webview and wgpu tags it created.
+fn ownsChildWebview(sender_webview_id: u32, webview_id: u32) bool {
+    const state = appState();
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const child = state.child_webviews.get(webview_id) orelse return false;
+    return child.host_webview_id == sender_webview_id;
+}
+
+fn rememberWgpuViewHost(wgpu_view_id: u32, host_webview_id: u32) !void {
+    const state = appState();
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    try state.wgpu_view_hosts.put(wgpu_view_id, host_webview_id);
+}
+
+fn forgetWgpuViewHost(wgpu_view_id: u32) void {
+    const state = appState();
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    _ = state.wgpu_view_hosts.remove(wgpu_view_id);
+}
+
+fn ownsWgpuView(sender_webview_id: u32, wgpu_view_id: u32) bool {
+    const state = appState();
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const host = state.wgpu_view_hosts.get(wgpu_view_id) orelse return false;
+    return host == sender_webview_id;
 }
 
 fn forgetChildWebview(webview_id: u32) void {
@@ -1583,6 +1620,7 @@ fn clearChildWebviews() void {
     state.mutex.lock();
     defer state.mutex.unlock();
     state.child_webviews.clearRetainingCapacity();
+    state.wgpu_view_hosts.clearRetainingCapacity();
 }
 
 const electrobun_menu_delimiter = "|EB|";
@@ -1919,7 +1957,8 @@ fn createChildWebviewFromInternalBridge(host_webview_id: u32, params_object: *co
     const html = getJsonNullableStringField(params_object, "html");
     const preload = getJsonNullableStringField(params_object, "preload") orelse "";
     const partition = getJsonNullableStringField(params_object, "partition") orelse "persist:default";
-    const window_id = getJsonU32Field(params_object, "windowId", 0);
+    // The tag goes in the asking page's window, whatever windowId it sent.
+    const window_id = windowIdForTopLevelWebview(host_webview_id) orelse return error.UnknownSenderWindow;
     const sandbox = getJsonBoolField(params_object, "sandbox", false);
     const transparent = getJsonBoolField(params_object, "transparent", false);
     const passthrough = getJsonBoolField(params_object, "passthrough", false);
@@ -1967,7 +2006,7 @@ fn createChildWebviewFromInternalBridge(host_webview_id: u32, params_object: *co
         .spell_check = spell_check,
     });
 
-    try rememberChildWebview(webview_id, renderer);
+    try rememberChildWebview(webview_id, renderer, host_webview_id);
     recordWebviewTagInit();
 
     if (html) |html_value| {
@@ -1982,8 +2021,8 @@ fn createChildWebviewFromInternalBridge(host_webview_id: u32, params_object: *co
     return webview_id;
 }
 
-fn createWgpuViewFromInternalBridge(params_object: *const std.json.ObjectMap) !u32 {
-    const window_id = getJsonU32Field(params_object, "windowId", 0);
+fn createWgpuViewFromInternalBridge(host_webview_id: u32, params_object: *const std.json.ObjectMap) !u32 {
+    const window_id = windowIdForTopLevelWebview(host_webview_id) orelse return error.UnknownSenderWindow;
     const transparent = getJsonBoolField(params_object, "transparent", false);
     const passthrough = getJsonBoolField(params_object, "passthrough", false);
 
@@ -2007,6 +2046,7 @@ fn createWgpuViewFromInternalBridge(params_object: *const std.json.ObjectMap) !u
         .start_passthrough = passthrough,
     });
 
+    try rememberWgpuViewHost(wgpu_view_id, host_webview_id);
     recordWgpuTagInit();
     return wgpu_view_id;
 }
@@ -2021,19 +2061,35 @@ fn handleInternalBridgeRequest(host_webview_id: u32, request_id: []const u8, met
         return;
     }
 
+    if (std.mem.eql(u8, method, "wgpuTagInit")) {
+        const wgpu_view_id = createWgpuViewFromInternalBridge(host_webview_id, params_object) catch |err| {
+            sendInternalBridgeError(host_webview_id, request_id, @errorName(err));
+            return;
+        };
+        sendInternalBridgeResponse(host_webview_id, request_id, true, wgpu_view_id);
+        return;
+    }
+
+    // The remaining requests act on a tag, which must be the sender's own.
+    const tag_id = getJsonU32Field(params_object, "id", 0);
+    if (!ownsChildWebview(host_webview_id, tag_id)) {
+        sendInternalBridgeError(host_webview_id, request_id, "Not a tag of this view");
+        return;
+    }
+
     if (std.mem.eql(u8, method, "webviewTagCanGoBack")) {
-        sendInternalBridgeResponse(host_webview_id, request_id, true, appState().core.canWebviewGoBack(getJsonU32Field(params_object, "id", 0)));
+        sendInternalBridgeResponse(host_webview_id, request_id, true, appState().core.canWebviewGoBack(tag_id));
         return;
     }
 
     if (std.mem.eql(u8, method, "webviewTagCanGoForward")) {
-        sendInternalBridgeResponse(host_webview_id, request_id, true, appState().core.canWebviewGoForward(getJsonU32Field(params_object, "id", 0)));
+        sendInternalBridgeResponse(host_webview_id, request_id, true, appState().core.canWebviewGoForward(tag_id));
         return;
     }
 
     if (std.mem.eql(u8, method, "webviewTagSetSpellCheck")) {
         const supported = appState().core.setWebviewSpellCheck(
-            getJsonU32Field(params_object, "id", 0),
+            tag_id,
             getJsonBoolField(params_object, "enabled", false),
         ) catch |err| {
             sendInternalBridgeError(host_webview_id, request_id, @errorName(err));
@@ -2043,21 +2099,21 @@ fn handleInternalBridgeRequest(host_webview_id: u32, request_id: []const u8, met
         return;
     }
 
-    if (std.mem.eql(u8, method, "wgpuTagInit")) {
-        const wgpu_view_id = createWgpuViewFromInternalBridge(params_object) catch |err| {
-            sendInternalBridgeError(host_webview_id, request_id, @errorName(err));
-            return;
-        };
-        sendInternalBridgeResponse(host_webview_id, request_id, true, wgpu_view_id);
-        return;
-    }
-
     sendInternalBridgeError(host_webview_id, request_id, "Unsupported internal bridge request");
 }
 
-fn handleInternalBridgeMessage(message_id: []const u8, params_object: *const std.json.ObjectMap) void {
+fn handleInternalBridgeMessage(sender_webview_id: u32, message_id: []const u8, params_object: *const std.json.ObjectMap) void {
     const webview_id = getJsonU32Field(params_object, "id", 0);
     if (webview_id == 0) {
+        return;
+    }
+    // Every message names a tag: a wgpuTag* one a wgpu view, the rest a
+    // webview. Either way it has to be one the sender created.
+    const owned = if (std.mem.startsWith(u8, message_id, "wgpuTag"))
+        ownsWgpuView(sender_webview_id, webview_id)
+    else
+        ownsChildWebview(sender_webview_id, webview_id);
+    if (!owned) {
         return;
     }
 
@@ -2205,6 +2261,7 @@ fn handleInternalBridgeMessage(message_id: []const u8, params_object: *const std
 
     if (std.mem.eql(u8, message_id, "wgpuTagRemove")) {
         appState().core.removeWGPUView(webview_id) catch {};
+        forgetWgpuViewHost(webview_id);
         return;
     }
 
@@ -2265,7 +2322,7 @@ fn playgroundInternalBridge(host_webview_id: u32, message: [*:0]const u8) callco
             if (payload_value != .object) {
                 continue;
             }
-            handleInternalBridgeMessage(message_id, &payload_value.object);
+            handleInternalBridgeMessage(host_webview_id, message_id, &payload_value.object);
         } else if (std.mem.eql(u8, packet_type, "request")) {
             const request_id = getJsonStringField(&packet.value.object, "id") orelse continue;
             const method = getJsonStringField(&packet.value.object, "method") orelse continue;
@@ -3191,6 +3248,8 @@ fn runWebviewTagPlaygroundIntegrationTest(state: *AppState) !void {
         },
         .sandbox = false,
     });
+    try rememberTopLevelWebview(webview_id, window_id);
+    defer forgetTopLevelWebview(webview_id);
 
     const deadline_ms = nowMs() + 8000;
     while (nowMs() < deadline_ms) {
@@ -3235,6 +3294,8 @@ fn runWgpuTagPlaygroundIntegrationTest(state: *AppState) !void {
         },
         .sandbox = false,
     });
+    try rememberTopLevelWebview(webview_id, window_id);
+    defer forgetTopLevelWebview(webview_id);
 
     const deadline_ms = nowMs() + 8000;
     while (nowMs() < deadline_ms) {
@@ -4801,6 +4862,7 @@ pub fn main() !void {
         .bundle_paths = &bundle_paths,
         .app_info = app_info,
         .child_webviews = std.AutoHashMap(u32, ChildWebviewState).init(allocator),
+        .wgpu_view_hosts = std.AutoHashMap(u32, u32).init(allocator),
         .top_level_webview_windows = std.AutoHashMap(u32, u32).init(allocator),
         .menu_data_registry = std.StringHashMap([]u8).init(allocator),
         .auto_run_test_name = auto_run_test_name,

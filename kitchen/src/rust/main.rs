@@ -41,7 +41,10 @@ struct AppState {
     search_query: Mutex<String>,
     test_runner_webview_id: Mutex<Option<u32>>,
     top_level_webviews: Mutex<Vec<(u32, u32)>>,
-    child_webviews: Mutex<Vec<(u32, Renderer)>>,
+    // <electrobun-webview> tags: (id, renderer, the webview whose page made it).
+    child_webviews: Mutex<Vec<(u32, Renderer, u32)>>,
+    // <electrobun-wgpu> tags: (id, the webview whose page made it).
+    wgpu_view_hosts: Mutex<Vec<(u32, u32)>>,
     menu_bridge: Mutex<MenuBridgeState>,
     auto_run_all: bool,
     auto_run_test_name: Option<String>,
@@ -852,6 +855,7 @@ fn run() -> Result<(), String> {
             test_runner_webview_id: Mutex::new(None),
             top_level_webviews: Mutex::new(Vec::new()),
             child_webviews: Mutex::new(Vec::new()),
+            wgpu_view_hosts: Mutex::new(Vec::new()),
             menu_bridge: Mutex::new(MenuBridgeState::default()),
             auto_run_all: std::env::var("AUTO_RUN").is_ok(),
             auto_run_test_name: std::env::var("AUTO_RUN_TEST_NAME").ok(),
@@ -1777,16 +1781,16 @@ fn window_id_for_top_level_webview(webview_id: u32) -> Option<u32> {
         })
 }
 
-fn remember_child_webview(webview_id: u32, renderer: Renderer) {
+fn remember_child_webview(webview_id: u32, renderer: Renderer, host_webview_id: u32) {
     if let Ok(mut items) = app_state().child_webviews.lock() {
-        items.retain(|(id, _)| *id != webview_id);
-        items.push((webview_id, renderer));
+        items.retain(|(id, _, _)| *id != webview_id);
+        items.push((webview_id, renderer, host_webview_id));
     }
 }
 
 fn forget_child_webview(webview_id: u32) {
     if let Ok(mut items) = app_state().child_webviews.lock() {
-        items.retain(|(id, _)| *id != webview_id);
+        items.retain(|(id, _, _)| *id != webview_id);
     }
 }
 
@@ -1798,10 +1802,49 @@ fn child_webview_renderer(webview_id: u32) -> Renderer {
         .and_then(|items| {
             items
                 .iter()
-                .find(|(id, _)| *id == webview_id)
-                .map(|(_, renderer)| *renderer)
+                .find(|(id, _, _)| *id == webview_id)
+                .map(|(_, renderer, _)| *renderer)
         })
         .unwrap_or(Renderer::Native)
+}
+
+// Internal bridge packets carry whatever ids the page wrote. A page may act
+// only on its own window and the webview and wgpu tags it created.
+fn owns_child_webview(sender_webview_id: u32, webview_id: u32) -> bool {
+    app_state()
+        .child_webviews
+        .lock()
+        .map(|items| {
+            items
+                .iter()
+                .any(|(id, _, host)| *id == webview_id && *host == sender_webview_id)
+        })
+        .unwrap_or(false)
+}
+
+fn remember_wgpu_view_host(wgpu_view_id: u32, host_webview_id: u32) {
+    if let Ok(mut items) = app_state().wgpu_view_hosts.lock() {
+        items.retain(|(id, _)| *id != wgpu_view_id);
+        items.push((wgpu_view_id, host_webview_id));
+    }
+}
+
+fn forget_wgpu_view_host(wgpu_view_id: u32) {
+    if let Ok(mut items) = app_state().wgpu_view_hosts.lock() {
+        items.retain(|(id, _)| *id != wgpu_view_id);
+    }
+}
+
+fn owns_wgpu_view(sender_webview_id: u32, wgpu_view_id: u32) -> bool {
+    app_state()
+        .wgpu_view_hosts
+        .lock()
+        .map(|items| {
+            items
+                .iter()
+                .any(|(id, host)| *id == wgpu_view_id && *host == sender_webview_id)
+        })
+        .unwrap_or(false)
 }
 
 const MENU_DATA_PREFIX: &str = "|EB|";
@@ -3602,7 +3645,7 @@ extern "C" fn playground_internal_bridge(host_webview_id: u32, message: *const c
             let Some(payload) = json_object_field(&packet, "payload") else {
                 continue;
             };
-            handle_internal_bridge_message(&message_id, payload);
+            handle_internal_bridge_message(host_webview_id, &message_id, payload);
         }
     }
 }
@@ -3616,23 +3659,19 @@ fn handle_internal_bridge_request(
     let result = match method {
         "webviewTagInit" => create_child_webview_from_internal_bridge(host_webview_id, params)
             .map(|id| id.to_string()),
-        "webviewTagCanGoBack" => {
-            let id = json_u64_field(params, "id").unwrap_or_default() as u32;
-            Ok(app_state().core.can_webview_go_back(id).to_string())
-        }
-        "webviewTagCanGoForward" => {
-            let id = json_u64_field(params, "id").unwrap_or_default() as u32;
-            Ok(app_state().core.can_webview_go_forward(id).to_string())
-        }
-        "webviewTagSetSpellCheck" => {
-            let id = json_u64_field(params, "id").unwrap_or_default() as u32;
+        "webviewTagCanGoBack" => own_tag_id(host_webview_id, params)
+            .map(|id| app_state().core.can_webview_go_back(id).to_string()),
+        "webviewTagCanGoForward" => own_tag_id(host_webview_id, params)
+            .map(|id| app_state().core.can_webview_go_forward(id).to_string()),
+        "webviewTagSetSpellCheck" => own_tag_id(host_webview_id, params).and_then(|id| {
             let enabled = electrobun::json_bool_field(params, "enabled").unwrap_or(false);
             app_state()
                 .core
                 .set_webview_spell_check(id, enabled)
                 .map(|supported| supported.to_string())
-        }
-        "wgpuTagInit" => create_wgpu_view_from_internal_bridge(params).map(|id| id.to_string()),
+        }),
+        "wgpuTagInit" => create_wgpu_view_from_internal_bridge(host_webview_id, params)
+            .map(|id| id.to_string()),
         _ => Err(format!("Unsupported internal bridge request: {method}")),
     };
 
@@ -3649,10 +3688,30 @@ fn handle_internal_bridge_request(
     }
 }
 
-fn handle_internal_bridge_message(message_id: &str, payload: &str) {
+// The request's tag id, when it's a tag the sender created.
+fn own_tag_id(sender_webview_id: u32, params: &str) -> Result<u32, String> {
+    let id = json_u64_field(params, "id").unwrap_or_default() as u32;
+    if owns_child_webview(sender_webview_id, id) {
+        Ok(id)
+    } else {
+        Err("Not a tag of this view".to_string())
+    }
+}
+
+fn handle_internal_bridge_message(sender_webview_id: u32, message_id: &str, payload: &str) {
     let Some(id) = json_u64_field(payload, "id").map(|id| id as u32) else {
         return;
     };
+    // Every message names a tag: a wgpuTag* one a wgpu view, the rest a
+    // webview. Either way it has to be one the sender created.
+    let owned = if message_id.starts_with("wgpuTag") {
+        owns_wgpu_view(sender_webview_id, id)
+    } else {
+        owns_child_webview(sender_webview_id, id)
+    };
+    if !owned {
+        return;
+    }
 
     match message_id {
         "webviewTagResize" => {
@@ -3765,6 +3824,7 @@ fn handle_internal_bridge_message(message_id: &str, payload: &str) {
         }
         "wgpuTagRemove" => {
             let _ = app_state().core.remove_wgpu_view(id);
+            forget_wgpu_view_host(id);
         }
         "wgpuTagRunTest" => {
             let _ = app_state().core.run_wgpu_view_test(id);
@@ -3786,7 +3846,9 @@ fn create_child_webview_from_internal_bridge(
     let preload = electrobun::json_string_field(params, "preload").unwrap_or_default();
     let partition = electrobun::json_string_field(params, "partition")
         .unwrap_or_else(|| "persist:default".to_string());
-    let window_id = json_u64_field(params, "windowId").unwrap_or_default() as u32;
+    // The tag goes in the asking page's window, whatever windowId it sent.
+    let window_id = window_id_for_top_level_webview(host_webview_id)
+        .ok_or_else(|| "unknown window for the asking view".to_string())?;
     let frame = json_object_field(params, "frame")
         .map(parse_rect_json_local)
         .ok_or_else(|| "missing frame for webview tag".to_string())?;
@@ -3817,7 +3879,7 @@ fn create_child_webview_from_internal_bridge(
     };
 
     let webview_id = state.core.create_webview(options)?;
-    remember_child_webview(webview_id, renderer);
+    remember_child_webview(webview_id, renderer, host_webview_id);
     record_webview_tag_init();
 
     if let Some(rules) = json_value_field(params, "navigationRules") {
@@ -3841,8 +3903,9 @@ fn create_child_webview_from_internal_bridge(
     Ok(webview_id)
 }
 
-fn create_wgpu_view_from_internal_bridge(params: &str) -> Result<u32, String> {
-    let window_id = json_u64_field(params, "windowId").unwrap_or_default() as u32;
+fn create_wgpu_view_from_internal_bridge(host_webview_id: u32, params: &str) -> Result<u32, String> {
+    let window_id = window_id_for_top_level_webview(host_webview_id)
+        .ok_or_else(|| "unknown window for the asking view".to_string())?;
     let frame = json_object_field(params, "frame")
         .map(parse_rect_json_local)
         .ok_or_else(|| "missing frame for WGPU tag".to_string())?;
@@ -3851,6 +3914,7 @@ fn create_wgpu_view_from_internal_bridge(params: &str) -> Result<u32, String> {
     options.start_transparent = electrobun::json_bool_field(params, "transparent").unwrap_or(false);
     options.start_passthrough = electrobun::json_bool_field(params, "passthrough").unwrap_or(false);
     let wgpu_view_id = app_state().core.create_wgpu_view(options)?;
+    remember_wgpu_view_host(wgpu_view_id, host_webview_id);
     record_wgpu_tag_init();
     Ok(wgpu_view_id)
 }

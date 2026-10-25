@@ -51,7 +51,8 @@ type appState struct {
 	testRunnerWebview uint32
 	topLevelWebviews  map[uint32]uint32
 	closedWindows     map[uint32]struct{}
-	childWebviews     map[uint32]electrobun.Renderer
+	childWebviews     map[uint32]childWebview
+	wgpuViewHosts     map[uint32]uint32 // <electrobun-wgpu> tag -> the webview whose page made it
 	autoRunAll        bool
 	autoRunTestName   string
 	autoRunTriggered  atomic.Bool
@@ -367,7 +368,8 @@ func run() error {
 		goVersion:        runtimeConfig.GoVersion,
 		topLevelWebviews: map[uint32]uint32{},
 		closedWindows:    map[uint32]struct{}{},
-		childWebviews:    map[uint32]electrobun.Renderer{},
+		childWebviews:    map[uint32]childWebview{},
+		wgpuViewHosts:    map[uint32]uint32{},
 		autoRunAll:       os.Getenv("AUTO_RUN") != "",
 		autoRunTestName:  os.Getenv("AUTO_RUN_TEST_NAME"),
 	}
@@ -1451,10 +1453,44 @@ func windowIDForTopLevelWebview(webviewID uint32) (uint32, bool) {
 	return windowID, ok
 }
 
-func rememberChildWebview(webviewID uint32, renderer electrobun.Renderer) {
+// An <electrobun-webview> tag and the webview whose page created it.
+type childWebview struct {
+	renderer      electrobun.Renderer
+	hostWebviewID uint32
+}
+
+func rememberChildWebview(webviewID uint32, renderer electrobun.Renderer, hostWebviewID uint32) {
 	state.mu.Lock()
-	state.childWebviews[webviewID] = renderer
+	state.childWebviews[webviewID] = childWebview{renderer: renderer, hostWebviewID: hostWebviewID}
 	state.mu.Unlock()
+}
+
+// Internal bridge packets carry whatever ids the page wrote. A page may act
+// only on its own window and the webview and wgpu tags it created.
+func ownsChildWebview(senderWebviewID, webviewID uint32) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	child, ok := state.childWebviews[webviewID]
+	return ok && child.hostWebviewID == senderWebviewID
+}
+
+func rememberWGPUViewHost(wgpuViewID, hostWebviewID uint32) {
+	state.mu.Lock()
+	state.wgpuViewHosts[wgpuViewID] = hostWebviewID
+	state.mu.Unlock()
+}
+
+func forgetWGPUViewHost(wgpuViewID uint32) {
+	state.mu.Lock()
+	delete(state.wgpuViewHosts, wgpuViewID)
+	state.mu.Unlock()
+}
+
+func ownsWGPUView(senderWebviewID, wgpuViewID uint32) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	host, ok := state.wgpuViewHosts[wgpuViewID]
+	return ok && host == senderWebviewID
 }
 
 func forgetChildWebview(webviewID uint32) {
@@ -1466,8 +1502,8 @@ func forgetChildWebview(webviewID uint32) {
 func childWebviewRenderer(webviewID uint32) electrobun.Renderer {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if renderer, ok := state.childWebviews[webviewID]; ok {
-		return renderer
+	if child, ok := state.childWebviews[webviewID]; ok {
+		return child.renderer
 	}
 	return electrobun.RendererNative
 }
@@ -2964,7 +3000,7 @@ func handleInternalBridgePacket(hostWebviewID uint32, packet string) {
 	case "request":
 		handleInternalBridgeRequest(hostWebviewID, item.ID, item.Method, rawParams(item.Params))
 	case "message":
-		handleInternalBridgeMessage(item.ID, rawParams(item.Payload))
+		handleInternalBridgeMessage(hostWebviewID, item.ID, rawParams(item.Payload))
 	}
 }
 
@@ -2977,19 +3013,25 @@ func handleInternalBridgeRequest(hostWebviewID uint32, requestID, method, params
 		id, err = createChildWebviewFromInternalBridge(hostWebviewID, params)
 		payloadJSON = fmt.Sprintf("%d", id)
 	case "webviewTagCanGoBack":
-		id := uint32(numberField(params, "id"))
-		payloadJSON = fmt.Sprintf("%t", state.core.CanWebviewGoBack(id))
+		var id uint32
+		if id, err = ownTagID(hostWebviewID, params); err == nil {
+			payloadJSON = fmt.Sprintf("%t", state.core.CanWebviewGoBack(id))
+		}
 	case "webviewTagCanGoForward":
-		id := uint32(numberField(params, "id"))
-		payloadJSON = fmt.Sprintf("%t", state.core.CanWebviewGoForward(id))
+		var id uint32
+		if id, err = ownTagID(hostWebviewID, params); err == nil {
+			payloadJSON = fmt.Sprintf("%t", state.core.CanWebviewGoForward(id))
+		}
 	case "webviewTagSetSpellCheck":
-		id := uint32(numberField(params, "id"))
-		var supported bool
-		supported, err = state.core.SetWebviewSpellCheck(id, boolField(params, "enabled", false))
-		payloadJSON = fmt.Sprintf("%t", supported)
+		var id uint32
+		if id, err = ownTagID(hostWebviewID, params); err == nil {
+			var supported bool
+			supported, err = state.core.SetWebviewSpellCheck(id, boolField(params, "enabled", false))
+			payloadJSON = fmt.Sprintf("%t", supported)
+		}
 	case "wgpuTagInit":
 		var id uint32
-		id, err = createWGPUViewFromInternalBridge(params)
+		id, err = createWGPUViewFromInternalBridge(hostWebviewID, params)
 		payloadJSON = fmt.Sprintf("%d", id)
 	default:
 		err = fmt.Errorf("unsupported internal bridge request: %s", method)
@@ -3001,9 +3043,27 @@ func handleInternalBridgeRequest(hostWebviewID uint32, requestID, method, params
 	sendInternalBridgeResponse(hostWebviewID, requestID, true, payloadJSON)
 }
 
-func handleInternalBridgeMessage(messageID, payload string) {
+// The request's tag id, when it's a tag the sender created.
+func ownTagID(senderWebviewID uint32, params string) (uint32, error) {
+	id := uint32(numberField(params, "id"))
+	if !ownsChildWebview(senderWebviewID, id) {
+		return 0, fmt.Errorf("not a tag of this view")
+	}
+	return id, nil
+}
+
+func handleInternalBridgeMessage(senderWebviewID uint32, messageID, payload string) {
 	id := uint32(numberField(payload, "id"))
 	if id == 0 {
+		return
+	}
+	// Every message names a tag: a wgpuTag* one a wgpu view, the rest a
+	// webview. Either way it has to be one the sender created.
+	owned := ownsChildWebview(senderWebviewID, id)
+	if strings.HasPrefix(messageID, "wgpuTag") {
+		owned = ownsWGPUView(senderWebviewID, id)
+	}
+	if !owned {
 		return
 	}
 	switch messageID {
@@ -3069,6 +3129,7 @@ func handleInternalBridgeMessage(messageID, payload string) {
 		_ = state.core.SetWGPUViewHidden(id, boolField(payload, "hidden", false))
 	case "wgpuTagRemove":
 		_ = state.core.RemoveWGPUView(id)
+		forgetWGPUViewHost(id)
 	case "wgpuTagRunTest":
 		_ = state.core.RunWGPUViewTest(id)
 	}
@@ -3080,7 +3141,11 @@ func createChildWebviewFromInternalBridge(hostWebviewID uint32, params string) (
 	html := stringField(params, "html")
 	preload := stringField(params, "preload")
 	partition := electrobun.JsonStringField(params, "partition", "persist:default")
-	windowID := uint32(numberField(params, "windowId"))
+	// The tag goes in the asking page's window, whatever windowId it sent.
+	windowID, ok := windowIDForTopLevelWebview(hostWebviewID)
+	if !ok {
+		return 0, fmt.Errorf("unknown window for the asking view")
+	}
 	frameJSON, ok := objectField(params, "frame")
 	if !ok {
 		return 0, fmt.Errorf("missing frame for webview tag")
@@ -3105,7 +3170,7 @@ func createChildWebviewFromInternalBridge(hostWebviewID uint32, params string) (
 	if err != nil {
 		return 0, err
 	}
-	rememberChildWebview(webviewID, renderer)
+	rememberChildWebview(webviewID, renderer, hostWebviewID)
 	recordWebviewTagInit()
 	if rules, ok := valueField(params, "navigationRules"); ok {
 		_ = state.core.SetWebviewNavigationRules(webviewID, rules)
@@ -3125,8 +3190,11 @@ func createChildWebviewFromInternalBridge(hostWebviewID uint32, params string) (
 	return webviewID, nil
 }
 
-func createWGPUViewFromInternalBridge(params string) (uint32, error) {
-	windowID := uint32(numberField(params, "windowId"))
+func createWGPUViewFromInternalBridge(hostWebviewID uint32, params string) (uint32, error) {
+	windowID, ok := windowIDForTopLevelWebview(hostWebviewID)
+	if !ok {
+		return 0, fmt.Errorf("unknown window for the asking view")
+	}
 	frameJSON, ok := objectField(params, "frame")
 	if !ok {
 		return 0, fmt.Errorf("missing frame for WGPU tag")
@@ -3138,6 +3206,7 @@ func createWGPUViewFromInternalBridge(params string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	rememberWGPUViewHost(wgpuViewID, hostWebviewID)
 	recordWgpuTagInit()
 	return wgpuViewID, nil
 }

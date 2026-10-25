@@ -848,6 +848,8 @@ AppState :: struct {
 	cef_available:                      bool,
 	cef_version:                        Maybe(string),
 	child_webviews:                     map[u32]ChildWebviewState,
+	// <electrobun-wgpu> tags, keyed by id, to the webview whose page made them.
+	wgpu_view_hosts:                    map[u32]u32,
 	top_level_webview_windows:          map[u32]u32,
 	test_runner_window_id:              u32,
 	test_runner_webview_id:             u32,
@@ -886,11 +888,14 @@ appStateDeinit :: proc(self: ^AppState) {
 	}
 	delete(self.menu_data_registry)
 	delete(self.child_webviews)
+	delete(self.wgpu_view_hosts)
 	delete(self.top_level_webview_windows)
 }
 
 ChildWebviewState :: struct {
-	renderer: electrobun.Renderer,
+	renderer:        electrobun.Renderer,
+	// The webview whose page created this <electrobun-webview> tag.
+	host_webview_id: u32,
 }
 
 CreateUiContext :: struct {
@@ -1617,11 +1622,43 @@ childWebviewRenderer :: proc(webview_id: u32) -> electrobun.Renderer {
 	return .native
 }
 
-rememberChildWebview :: proc(webview_id: u32, renderer: electrobun.Renderer) {
+rememberChildWebview :: proc(webview_id: u32, renderer: electrobun.Renderer, host_webview_id: u32) {
 	state := appState()
 	sync.mutex_lock(&state.mutex)
 	defer sync.mutex_unlock(&state.mutex)
-	state.child_webviews[webview_id] = {renderer = renderer}
+	state.child_webviews[webview_id] = {renderer = renderer, host_webview_id = host_webview_id}
+}
+
+// Internal bridge packets carry whatever ids the page wrote. A page may act
+// only on its own window and the webview and wgpu tags it created.
+ownsChildWebview :: proc(sender_webview_id: u32, webview_id: u32) -> bool {
+	state := appState()
+	sync.mutex_lock(&state.mutex)
+	defer sync.mutex_unlock(&state.mutex)
+	child_state, found := state.child_webviews[webview_id]
+	return found && child_state.host_webview_id == sender_webview_id
+}
+
+rememberWgpuViewHost :: proc(wgpu_view_id: u32, host_webview_id: u32) {
+	state := appState()
+	sync.mutex_lock(&state.mutex)
+	defer sync.mutex_unlock(&state.mutex)
+	state.wgpu_view_hosts[wgpu_view_id] = host_webview_id
+}
+
+forgetWgpuViewHost :: proc(wgpu_view_id: u32) {
+	state := appState()
+	sync.mutex_lock(&state.mutex)
+	defer sync.mutex_unlock(&state.mutex)
+	delete_key(&state.wgpu_view_hosts, wgpu_view_id)
+}
+
+ownsWgpuView :: proc(sender_webview_id: u32, wgpu_view_id: u32) -> bool {
+	state := appState()
+	sync.mutex_lock(&state.mutex)
+	defer sync.mutex_unlock(&state.mutex)
+	host, found := state.wgpu_view_hosts[wgpu_view_id]
+	return found && host == sender_webview_id
 }
 
 forgetChildWebview :: proc(webview_id: u32) {
@@ -1658,6 +1695,7 @@ clearChildWebviews :: proc() {
 	sync.mutex_lock(&state.mutex)
 	defer sync.mutex_unlock(&state.mutex)
 	clear(&state.child_webviews)
+	clear(&state.wgpu_view_hosts)
 }
 
 electrobun_menu_delimiter :: "|EB|"
@@ -2128,7 +2166,11 @@ createChildWebviewFromInternalBridge :: proc(host_webview_id: u32, params_obj: j
 	if !has_partition {
 		partition = "persist:default"
 	}
-	window_id := getJsonU32Field(params_obj, "windowId", 0)
+	// The tag goes in the asking page's window, whatever windowId it sent.
+	window_id, has_window := windowIdForTopLevelWebview(host_webview_id)
+	if !has_window {
+		return 0, "UnknownSenderWindow"
+	}
 	sandbox := getJsonBoolField(params_obj, "sandbox", false)
 	transparent := getJsonBoolField(params_obj, "transparent", false)
 	passthrough := getJsonBoolField(params_obj, "passthrough", false)
@@ -2179,7 +2221,7 @@ createChildWebviewFromInternalBridge :: proc(host_webview_id: u32, params_obj: j
 		return 0, errName(create_err)
 	}
 
-	rememberChildWebview(webview_id, renderer)
+	rememberChildWebview(webview_id, renderer, host_webview_id)
 	recordWebviewTagInit()
 
 	if has_html {
@@ -2200,8 +2242,11 @@ createChildWebviewFromInternalBridge :: proc(host_webview_id: u32, params_obj: j
 	return webview_id, ""
 }
 
-createWgpuViewFromInternalBridge :: proc(params_obj: json.Object) -> (u32, string) {
-	window_id := getJsonU32Field(params_obj, "windowId", 0)
+createWgpuViewFromInternalBridge :: proc(host_webview_id: u32, params_obj: json.Object) -> (u32, string) {
+	window_id, has_window := windowIdForTopLevelWebview(host_webview_id)
+	if !has_window {
+		return 0, "UnknownSenderWindow"
+	}
 	transparent := getJsonBoolField(params_obj, "transparent", false)
 	passthrough := getJsonBoolField(params_obj, "passthrough", false)
 
@@ -2226,6 +2271,7 @@ createWgpuViewFromInternalBridge :: proc(params_obj: json.Object) -> (u32, strin
 		return 0, errName(create_err)
 	}
 
+	rememberWgpuViewHost(wgpu_view_id, host_webview_id)
 	recordWgpuTagInit()
 	return wgpu_view_id, ""
 }
@@ -2241,12 +2287,29 @@ handleInternalBridgeRequest :: proc(host_webview_id: u32, request_id: string, me
 		return
 	}
 
+	if method == "wgpuTagInit" {
+		wgpu_view_id, err_name := createWgpuViewFromInternalBridge(host_webview_id, params_obj)
+		if err_name != "" {
+			sendInternalBridgeError(host_webview_id, request_id, err_name)
+			return
+		}
+		sendInternalBridgeResponse(host_webview_id, request_id, true, wgpu_view_id)
+		return
+	}
+
+	// The remaining requests act on a tag, which must be the sender's own.
+	tag_id := getJsonU32Field(params_obj, "id", 0)
+	if !ownsChildWebview(host_webview_id, tag_id) {
+		sendInternalBridgeError(host_webview_id, request_id, "Not a tag of this view")
+		return
+	}
+
 	if method == "webviewTagCanGoBack" {
 		sendInternalBridgeResponse(
 			host_webview_id,
 			request_id,
 			true,
-			electrobun.canWebviewGoBack(appState().core, getJsonU32Field(params_obj, "id", 0)),
+			electrobun.canWebviewGoBack(appState().core, tag_id),
 		)
 		return
 	}
@@ -2256,7 +2319,7 @@ handleInternalBridgeRequest :: proc(host_webview_id: u32, request_id: string, me
 			host_webview_id,
 			request_id,
 			true,
-			electrobun.canWebviewGoForward(appState().core, getJsonU32Field(params_obj, "id", 0)),
+			electrobun.canWebviewGoForward(appState().core, tag_id),
 		)
 		return
 	}
@@ -2264,7 +2327,7 @@ handleInternalBridgeRequest :: proc(host_webview_id: u32, request_id: string, me
 	if method == "webviewTagSetSpellCheck" {
 		supported, err := electrobun.setWebviewSpellCheck(
 			appState().core,
-			getJsonU32Field(params_obj, "id", 0),
+			tag_id,
 			getJsonBoolField(params_obj, "enabled", false),
 		)
 		if err != .None {
@@ -2275,22 +2338,18 @@ handleInternalBridgeRequest :: proc(host_webview_id: u32, request_id: string, me
 		return
 	}
 
-	if method == "wgpuTagInit" {
-		wgpu_view_id, err_name := createWgpuViewFromInternalBridge(params_obj)
-		if err_name != "" {
-			sendInternalBridgeError(host_webview_id, request_id, err_name)
-			return
-		}
-		sendInternalBridgeResponse(host_webview_id, request_id, true, wgpu_view_id)
-		return
-	}
-
 	sendInternalBridgeError(host_webview_id, request_id, "Unsupported internal bridge request")
 }
 
-handleInternalBridgeMessage :: proc(message_id: string, params_obj: json.Object) {
+handleInternalBridgeMessage :: proc(sender_webview_id: u32, message_id: string, params_obj: json.Object) {
 	webview_id := getJsonU32Field(params_obj, "id", 0)
 	if webview_id == 0 {
+		return
+	}
+	// Every message names a tag: a wgpuTag* one a wgpu view, the rest a
+	// webview. Either way it has to be one the sender created.
+	owned := ownsWgpuView(sender_webview_id, webview_id) if strings.has_prefix(message_id, "wgpuTag") else ownsChildWebview(sender_webview_id, webview_id)
+	if !owned {
 		return
 	}
 
@@ -2460,6 +2519,7 @@ handleInternalBridgeMessage :: proc(message_id: string, params_obj: json.Object)
 
 	if message_id == "wgpuTagRemove" {
 		_ = electrobun.removeWGPUView(appState().core, webview_id)
+		forgetWgpuViewHost(webview_id)
 		return
 	}
 
@@ -2547,7 +2607,7 @@ playgroundInternalBridge :: proc "c" (host_webview_id: u32, message: cstring) {
 			if !payload_is_object {
 				continue
 			}
-			handleInternalBridgeMessage(message_id, payload_obj)
+			handleInternalBridgeMessage(host_webview_id, message_id, payload_obj)
 		} else if packet_type == "request" {
 			request_id, has_request_id := getJsonStringField(packet_obj, "id")
 			if !has_request_id {
@@ -3699,10 +3759,12 @@ runWebviewTagPlaygroundIntegrationTest :: proc(state: ^AppState) -> string {
 	}
 	webview_options.sandbox = false
 
-	_, webview_err := electrobun.createWebview(state.core, webview_options)
+	webview_id, webview_err := electrobun.createWebview(state.core, webview_options)
 	if webview_err != .None {
 		return errName(webview_err)
 	}
+	rememberTopLevelWebview(webview_id, window_id)
+	defer forgetTopLevelWebview(webview_id)
 
 	deadline_start := time.tick_now()
 	for time.tick_since(deadline_start) < 8000 * time.Millisecond {
@@ -3744,10 +3806,12 @@ runWgpuTagPlaygroundIntegrationTest :: proc(state: ^AppState) -> string {
 	}
 	webview_options.sandbox = false
 
-	_, webview_err := electrobun.createWebview(state.core, webview_options)
+	webview_id, webview_err := electrobun.createWebview(state.core, webview_options)
 	if webview_err != .None {
 		return errName(webview_err)
 	}
+	rememberTopLevelWebview(webview_id, window_id)
+	defer forgetTopLevelWebview(webview_id)
 
 	deadline_start := time.tick_now()
 	for time.tick_since(deadline_start) < 8000 * time.Millisecond {
@@ -5747,6 +5811,7 @@ main :: proc() {
 		app_info = app_info,
 		default_renderer = .native,
 		child_webviews = make(map[u32]ChildWebviewState),
+		wgpu_view_hosts = make(map[u32]u32),
 		top_level_webview_windows = make(map[u32]u32),
 		menu_data_registry = make(map[string]string),
 		auto_run_all = auto_run_all,
