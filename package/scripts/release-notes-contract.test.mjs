@@ -29,7 +29,7 @@ function validateReleaseWorkflow(source) {
 	const releaseJob = job(source, "release");
 	const npmPublishJob = job(source, "npm-publish");
 	const npmAcceptanceJob = job(source, "npm-acceptance");
-	const publishTemplatesJob = job(source, "publish-templates");
+	const publishKitchenJob = job(source, "publish-kitchen");
 	const createRelease = namedStep(releaseJob, "Create or refresh draft Release");
 	const buildVersionCheck = namedStep(buildJob, "Verify release tag and version");
 	const releaseVersionCheck = namedStep(
@@ -102,7 +102,7 @@ function validateReleaseWorkflow(source) {
 		releaseJob,
 		npmPublishJob,
 		npmAcceptanceJob,
-		publishTemplatesJob,
+		publishKitchenJob,
 	]) {
 		assert.match(
 			releasePath,
@@ -136,7 +136,7 @@ function validateReleaseWorkflow(source) {
 	);
 	assert.match(npmPublishJob, /^    needs: \[release\]$/m);
 	assert.match(npmAcceptanceJob, /^    needs: \[npm-publish\]$/m);
-	assert.match(publishTemplatesJob, /^    needs: \[npm-acceptance\]$/m);
+	assert.match(publishKitchenJob, /^    needs: \[npm-acceptance\]$/m);
 	assert.match(npmAcceptance, /accept-published-bootstrap\.mjs/);
 	assert.match(
 		npmAcceptance,
@@ -150,8 +150,8 @@ function validateReleaseWorkflow(source) {
 		source.indexOf("  npm-publish:\n") <
 			source.indexOf("  npm-acceptance:\n") &&
 			source.indexOf("  npm-acceptance:\n") <
-			source.indexOf("  publish-templates:\n"),
-		"public npm acceptance must run after npm publish and before mutable templates",
+			source.indexOf("  publish-kitchen:\n"),
+		"public npm acceptance must run after npm publish and before mutable Kitchen publication",
 	);
 	assert.match(
 		npmPublishJob,

@@ -1,8 +1,0 @@
-{
-	"name": "electrobun-photo-booth",
-	"version": "1.0.0",
-	"description": "A photo booth app demonstrating getUserMedia with Electrobun",
-	"devDependencies": {
-		"@types/bun": "latest"
-	}
-}

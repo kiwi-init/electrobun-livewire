@@ -18,7 +18,6 @@ import { dirname, join, relative } from "path";
 import { fileURLToPath } from "url";
 import { assertStrictSemVer } from "../src/shared/strict-semver.js";
 import {
-	assertTemplateSourcesUnpinned,
 	createRustSdkVersionUpdates,
 	parseRepositoryPragmaPins,
 	stampNpmBootstrapPairedVersions,
@@ -42,7 +41,6 @@ if (!type || !["beta", "patch", "minor", "major", "stable"].includes(type)) {
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = join(packageDir, "..");
 const packageJsonPath = join(packageDir, "package.json");
-const templatesDir = join(repoRoot, "templates");
 const npmBootstrapPath = join(repoRoot, "npm", "electrobun", "package.json");
 
 // Read current version
@@ -92,7 +90,6 @@ const kitchenVersions = updateKitchenVersions(
 	readFileSync(kitchenConfigPath, "utf-8"),
 	newVersion,
 );
-assertTemplateSourcesUnpinned(templatesDir);
 const npmBootstrap = updateNpmBootstrapVersion(
 	readFileSync(npmBootstrapPath, "utf-8"),
 	newVersion,
@@ -120,7 +117,7 @@ for (const rustSdkVersion of rustSdkVersions) {
 	writeFileSync(rustSdkVersion.path, rustSdkVersion.source);
 }
 console.log(
-	`Updated Kitchen, npm bootstrap (with paired toolchain pins), and Rust SDK identities to ${newVersion}; repository template sources are ready for release stamping`,
+	`Updated Kitchen, npm bootstrap (with paired toolchain pins), and Rust SDK identities to ${newVersion}`,
 );
 
 // Git operations from repo root
