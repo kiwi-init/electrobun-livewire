@@ -373,6 +373,14 @@ const core = (() => {
 				args: [FFIType.cstring],
 				returns: FFIType.void,
 			},
+			setNextWebviewContentSecurityPolicy: {
+				args: [FFIType.cstring],
+				returns: FFIType.void,
+			},
+			setWebviewContentSecurityPolicy: {
+				args: [FFIType.u32, FFIType.cstring],
+				returns: FFIType.void,
+			},
 			getWebviewPointer: {
 				args: [FFIType.u32],
 				returns: FFIType.ptr,
@@ -2012,6 +2020,7 @@ const _ffiImpl = {
 			navigationRules: string | null;
 			newWindow: NewWindowPolicy;
 			bridgeOrigins: string[] | null;
+			contentSecurityPolicy: string | null;
 			sandbox: boolean;
 			startTransparent: boolean;
 			startPassthrough: boolean;
@@ -2032,6 +2041,7 @@ const _ffiImpl = {
 				navigationRules,
 				newWindow,
 				bridgeOrigins,
+				contentSecurityPolicy,
 				sandbox,
 				startTransparent,
 				startPassthrough,
@@ -2047,6 +2057,9 @@ const _ffiImpl = {
 				core_.symbols.setNextWebviewBridgeOrigins(
 					toCString(JSON.stringify(bridgeOrigins)),
 				);
+			}
+			if (contentSecurityPolicy) {
+				core_.symbols.setNextWebviewContentSecurityPolicy(toCString(contentSecurityPolicy));
 			}
 
 			const webviewId = core_.symbols.createWebview(
@@ -2157,6 +2170,9 @@ const _ffiImpl = {
 		},
 		webviewSetSpellCheck: (params: { id: number; enabled: boolean }) => {
 			return core_.symbols.webviewSetSpellCheck(params.id, params.enabled);
+		},
+		webviewSetContentSecurityPolicy: (params: { id: number; policy: string | null }) => {
+			core_.symbols.setWebviewContentSecurityPolicy(params.id, toCString(params.policy ?? ""));
 		},
 		webviewSetNewWindowPolicy: (params: { id: number; policy: NewWindowPolicy }) => {
 			core_.symbols.webviewSetNewWindowPolicy(params.id, NEW_WINDOW_POLICIES.indexOf(params.policy));

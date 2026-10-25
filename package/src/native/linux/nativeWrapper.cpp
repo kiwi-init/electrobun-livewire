@@ -58,6 +58,7 @@
 #include "../shared/webview_storage.h"
 #include "../shared/navigation_rules.h"
 #include "../shared/thread_safe_map.h"
+#include "../shared/view_content_security_policy.h"
 #include "../shared/shutdown_guard.h"
 #include "../shared/ffi_helpers.h"
 #include "../shared/json_menu_parser.h"
@@ -881,6 +882,10 @@ public:
         CefResponse::HeaderMap headers;
         headers.emplace("Access-Control-Allow-Origin", "*");
         headers.emplace("X-Content-Type-Options", "nosniff");
+        std::string contentSecurityPolicy = electrobun::viewContentSecurityPolicy(webviewId_);
+        if (!contentSecurityPolicy.empty()) {
+            headers.emplace("Content-Security-Policy", contentSecurityPolicy);
+        }
         response->SetHeaderMap(headers);
         response_length = data_.length();
     }
@@ -6397,6 +6402,7 @@ static uint32_t webviewIdForSchemeRequest(WebKitURISchemeRequest* request) {
 }
 
 static void finishSchemeResponse(WebKitURISchemeRequest* request,
+                                 uint32_t webviewId,
                                  gchar* contents,
                                  gsize size,
                                  const char* mimeType) {
@@ -6407,6 +6413,10 @@ static void finishSchemeResponse(WebKitURISchemeRequest* request,
     SoupMessageHeaders* headers = soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
     soup_message_headers_append(headers, "Access-Control-Allow-Origin", "*");
     soup_message_headers_append(headers, "X-Content-Type-Options", "nosniff");
+    std::string contentSecurityPolicy = electrobun::viewContentSecurityPolicy(webviewId);
+    if (!contentSecurityPolicy.empty()) {
+        soup_message_headers_append(headers, "Content-Security-Policy", contentSecurityPolicy.c_str());
+    }
     webkit_uri_scheme_response_set_http_headers(response, headers);
     webkit_uri_scheme_request_finish_with_response(request, response);
     g_object_unref(response);
@@ -6434,7 +6444,7 @@ static void handleAppDataURIScheme(WebKitURISchemeRequest* request, gpointer use
         return;
     }
     gchar* contents = static_cast<gchar*>(g_memdup2(data.data(), data.size()));
-    finishSchemeResponse(request, contents, data.size(), getMimeTypeFromUrl(relative).c_str());
+    finishSchemeResponse(request, webviewId, contents, data.size(), getMimeTypeFromUrl(relative).c_str());
 }
 
 // views:// URI scheme handler callback
@@ -6474,20 +6484,14 @@ static void handleViewsURIScheme(WebKitURISchemeRequest* request, gpointer user_
         // Use stored HTML content for this specific webview
         const char* htmlContent = getWebviewHTMLContent(webviewId);
         if (htmlContent) {
-            gsize contentLength = strlen(htmlContent);
-            GInputStream* stream = g_memory_input_stream_new_from_data(g_strdup(htmlContent), contentLength, g_free);
-            webkit_uri_scheme_request_finish(request, stream, contentLength, "text/html");
-            g_object_unref(stream);
+            finishSchemeResponse(request, webviewId, g_strdup(htmlContent), strlen(htmlContent), "text/html");
             free((void*)htmlContent); // Free the strdup'd memory
             fflush(stdout);
             return;
         } else {
             fflush(stdout);
             const char* fallbackHTML = "<html><body>No content set</body></html>";
-            gsize contentLength = strlen(fallbackHTML);
-            GInputStream* stream = g_memory_input_stream_new_from_data(g_strdup(fallbackHTML), contentLength, g_free);
-            webkit_uri_scheme_request_finish(request, stream, contentLength, "text/html");
-            g_object_unref(stream);
+            finishSchemeResponse(request, webviewId, g_strdup(fallbackHTML), strlen(fallbackHTML), "text/html");
             return;
         }
     }
@@ -6600,12 +6604,7 @@ static void handleViewsURIScheme(WebKitURISchemeRequest* request, gpointer user_
         std::string mimeTypeStr = getMimeTypeFromUrl(fullPath);
         const char* mimeType = mimeTypeStr.c_str();
 
-        GInputStream* stream = g_memory_input_stream_new_from_data(
-            fileContents,
-            fileSize,
-            g_free);
-        webkit_uri_scheme_request_finish(request, stream, fileSize, mimeType);
-        g_object_unref(stream);
+        finishSchemeResponse(request, requestingWebviewId, fileContents, fileSize, mimeType);
     } else {
         // Return 404 error
         GError* responseError = g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "File not found: %s", fullPath);
@@ -9843,6 +9842,10 @@ void webviewSetHidden(AbstractView* abstractView, bool hidden) {
             abstractView->setHidden(hidden);
         });
     }
+}
+
+ELECTROBUN_EXPORT void setWebviewContentSecurityPolicy(uint32_t webviewId, const char* policy) {
+    electrobun::setViewContentSecurityPolicy(webviewId, policy);
 }
 
 ELECTROBUN_EXPORT void webviewSetNewWindowPolicy(AbstractView* abstractView, int32_t policy) {

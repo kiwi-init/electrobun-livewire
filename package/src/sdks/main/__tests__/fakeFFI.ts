@@ -5,8 +5,9 @@
 //   const { BrowserView } = await import("../core/BrowserView");
 //
 // Every ffi.request call is recorded in `calls`. Requests without a handler
-// return undefined, except the creators, which hand out ids, and the pointer
-// lookups, which return a non-null pointer for any id.
+// return undefined, except the creators, which hand out ids, the pointer
+// lookups, which return a non-null pointer for any id, and getWindowFrame,
+// which returns the frame the window was created with.
 
 type Params = Record<string, unknown>;
 type Handler = (params: Params) => unknown;
@@ -18,11 +19,17 @@ const FAKE_FFI_KEY = Symbol.for("electrobun.fakeFFI");
 export function installFakeFFI(handlers: Record<string, Handler> = {}) {
 	const calls: FakeFFICall[] = [];
 	let nextId = 1;
+	const windowFrames = new Map<number, unknown>();
 	const defaults: Record<string, Handler> = {
-		createWindow: () => nextId++,
+		createWindow: ({ frame }) => {
+			const id = nextId++;
+			windowFrames.set(id, frame);
+			return id;
+		},
 		createWebview: () => nextId++,
 		getWebviewPointer: ({ id }) => id,
 		getWindowPointer: ({ winId }) => winId,
+		getWindowFrame: ({ winId }) => windowFrames.get(Number(winId)),
 	};
 	const fake = new Proxy(
 		{},
