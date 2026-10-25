@@ -41,13 +41,13 @@ export const utilsTests = [
       }
 
       // A compositor only takes a selection from a client with an input
-      // event newer than the current selection. Headless sway on CI has no
+      // event newer than the current selection. A headless compositor on CI has no
       // keyboard or pointer, so press Shift on a virtual keyboard, as a real
       // click or keypress would.
       const giveAppAnInputEvent = async () => {
-        if (!process.env["KITCHEN_HEADLESS_SWAY"]) return;
+        if (!process.env["KITCHEN_HEADLESS_WAYLAND"]) return;
         const wtype = Bun.which("wtype");
-        if (!wtype) throw new Error("wtype is needed under headless sway");
+        if (!wtype) throw new Error("wtype is needed under a headless compositor");
         Bun.spawnSync([wtype, "-k", "Shift_L"], { timeout: 5000 });
         await sleep(100);
       };

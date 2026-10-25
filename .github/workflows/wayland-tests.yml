@@ -1,8 +1,9 @@
 name: Wayland tests
 
-# Every automated Kitchen test on native Wayland (headless sway, XWayland
-# off). Fails only on a failure that isn't in .github/wayland-known-failures.txt.
-# Advisory, like pr-checks.yml.
+# Every automated Kitchen test on native Wayland, with no X11 display, under
+# two headless compositors: sway (tiling) and labwc (stacking, like GNOME and
+# KDE). Each fails only on a failure that isn't in its
+# .github/wayland-known-failures/<compositor>.txt. Advisory, like pr-checks.yml.
 
 on:
   pull_request:
@@ -14,9 +15,9 @@ on:
       - 'package/src/sdks/main/**'
       - 'kitchen/**'
       - '.github/workflows/wayland-tests.yml'
-      - '.github/scripts/run-under-sway.sh'
+      - '.github/scripts/run-under-wayland.sh'
       - '.github/scripts/check-kitchen-results.sh'
-      - '.github/wayland-known-failures.txt'
+      - '.github/wayland-known-failures/**'
       - 'package/scripts/test-linux-xdg-portal.sh'
       - 'package/scripts/test-linux-sni-tray.sh'
       - 'package/scripts/test-linux-spawn-fallbacks.sh'
@@ -31,6 +32,11 @@ concurrency:
 
 jobs:
   kitchen:
+    name: kitchen (${{ matrix.compositor }})
+    strategy:
+      fail-fast: false
+      matrix:
+        compositor: [sway, labwc]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -43,17 +49,20 @@ jobs:
         with:
           node-version: '24.22.1'
       - uses: ./.github/actions/install-hutch
-      - name: Install Linux build dependencies and sway
+      - name: Install Linux build dependencies and the Wayland compositors
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libpipewire-0.3-dev build-essential cmake pkg-config dbus-x11 sway jq wl-clipboard wtype
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libpipewire-0.3-dev build-essential cmake pkg-config dbus-x11 sway labwc wlr-randr jq wl-clipboard wtype
       - name: xdg-desktop-portal client against a mock portal
+        if: matrix.compositor == 'sway'
         working-directory: package
         run: scripts/test-linux-xdg-portal.sh
       - name: StatusNotifierItem tray against a mock watcher
+        if: matrix.compositor == 'sway'
         working-directory: package
         run: scripts/test-linux-sni-tray.sh
       - name: Fallback launchers run without a shell
+        if: matrix.compositor == 'sway'
         working-directory: package
         run: scripts/test-linux-spawn-fallbacks.sh
       - name: Build the devkit
@@ -64,15 +73,16 @@ jobs:
       - name: Install Kitchen
         working-directory: kitchen
         run: hutch run install
-      - name: Run every automated test under headless sway
+      - name: Run every automated test under headless ${{ matrix.compositor }}
         working-directory: kitchen
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
           WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          COMPOSITOR: ${{ matrix.compositor }}
         run: |
           export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
           # Kitchen exits non-zero on any failure; the next step decides.
-          dbus-run-session -- "$GITHUB_WORKSPACE/.github/scripts/run-under-sway.sh" -- hutch electrobun dev 2>&1 \
+          dbus-run-session -- "$GITHUB_WORKSPACE/.github/scripts/run-under-wayland.sh" --compositor "$COMPOSITOR" -- hutch electrobun dev 2>&1 \
             | tee "$RUNNER_TEMP/kitchen.log" || true
       - name: Compare with known Wayland failures
-        run: .github/scripts/check-kitchen-results.sh "$RUNNER_TEMP/kitchen.log" .github/wayland-known-failures.txt
+        run: .github/scripts/check-kitchen-results.sh "$RUNNER_TEMP/kitchen.log" ".github/wayland-known-failures/${{ matrix.compositor }}.txt"
