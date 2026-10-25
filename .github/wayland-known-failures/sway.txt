@@ -12,9 +12,12 @@ Window setFrame
 Window getFrame
 Window getSize
 
-# Window state and focus never reach the app on Wayland (T313).
-Window minimize/unminimize
+# sway has no maximized state: it ignores xdg-shell maximize requests.
 Window maximize/unmaximize
+
+# Focus/blur now follow the compositor's activated state (T964), but on
+# headless sway window.focus() can't move focus between windows: there's no
+# input device, so no activation serial. Follow-up: a stacking compositor on CI.
 Window focus and blur events (titleBarStyle: default)
 Window focus and blur events (titleBarStyle: hiddenInset)
 Window focus and blur events (titleBarStyle: hidden)
