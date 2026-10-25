@@ -20,9 +20,6 @@ Window focus and blur events (titleBarStyle: hiddenInset)
 Window focus and blur events (titleBarStyle: hidden)
 Window state restore across launches
 
-# Screen.getAllDisplays returns no display on Wayland (T313).
-getAllDisplays
-
 # WGPU surfaces are X11 child windows; there is no Wayland surface yet.
 UIWindow mounts, lays out, and disposes
 Reactive props update the mounted tree
