@@ -74,6 +74,7 @@
 #include "../shared/console_forwarding.h"
 #include "native_file_dialog.h"
 #include "xdg_portal.h"
+#include "spawn_fallbacks.h"
 #include "../shared/dialog_paths.h"
 #include "../shared/cef_find_session.h"
 #include "../shared/linux_dpi.h"
@@ -10379,22 +10380,10 @@ void showItemInFolder(char* path) {
     // Most Linux desktop environments support xdg-open
     gchar* uri = g_filename_to_uri(parentDir, nullptr, nullptr);
     if (uri) {
-        // Use xdg-open which works across different desktop environments
-        gchar* command = g_strdup_printf("xdg-open \"%s\"", uri);
-        int result = system(command);
-        
-        if (result != 0) {
-            // Fallback: try gio open
-            g_free(command);
-            command = g_strdup_printf("gio open \"%s\"", uri);
-            result = system(command);
-            
-            if (result != 0) {
-                fprintf(stderr, "Failed to open file manager for: %s\n", path);
-            }
+        // xdg-open works across desktop environments; gio open if it fails.
+        if (!electrobun::spawn_fallbacks::xdgOpen(uri) && !electrobun::spawn_fallbacks::gioOpen(uri)) {
+            fprintf(stderr, "Failed to open file manager for: %s\n", path);
         }
-        
-        g_free(command);
         g_free(uri);
     }
     
@@ -10424,11 +10413,7 @@ ELECTROBUN_EXPORT bool openExternal(const char* urlString) {
         g_error_free(error);
 
         // Fallback to xdg-open
-        gchar* command = g_strdup_printf("xdg-open \"%s\"", urlString);
-        int sysResult = system(command);
-        g_free(command);
-
-        if (sysResult != 0) {
+        if (!electrobun::spawn_fallbacks::xdgOpen(url)) {
             fprintf(stderr, "ERROR: Failed to open external URL: %s\n", urlString);
             return false;
         }
@@ -10468,12 +10453,10 @@ ELECTROBUN_EXPORT bool openPath(const char* pathString) {
         g_error_free(error);
 
         // Fallback to xdg-open
-        gchar* command = g_strdup_printf("xdg-open \"%s\"", uri);
-        int sysResult = system(command);
-        g_free(command);
+        const bool opened = electrobun::spawn_fallbacks::xdgOpen(uri);
         g_free(uri);
 
-        if (sysResult != 0) {
+        if (!opened) {
             fprintf(stderr, "ERROR: Failed to open path: %s\n", pathString);
             return false;
         }
@@ -10505,37 +10488,8 @@ void showNotification(const char* title, const char* body, const char* subtitle,
         bodyStr = std::string(body);
     }
 
-    // Build the notify-send command
-    // Escape single quotes in strings for shell safety
-    auto escapeForShell = [](const std::string& str) -> std::string {
-        std::string result;
-        for (char c : str) {
-            if (c == '\'') {
-                result += "'\\''";
-            } else {
-                result += c;
-            }
-        }
-        return result;
-    };
-
-    std::string command = "notify-send";
-
-    // Add urgency hint (low for silent notifications)
-    if (silent) {
-        command += " --urgency=low";
-    }
-
-    // Add title
-    command += " '" + escapeForShell(titleStr) + "'";
-
-    // Add body if present
-    if (!bodyStr.empty()) {
-        command += " '" + escapeForShell(bodyStr) + "'";
-    }
-
     // Execute asynchronously to not block
-    std::thread([command, titleStr, bodyStr, silent]() {
+    std::thread([titleStr, bodyStr, silent]() {
         namespace portal = electrobun::xdg_portal;
         if (portal::sandboxed() && portal::interfaceVersion(portal::kNotificationInterface) > 0 &&
             portal::addNotification(portal::newToken(), titleStr, bodyStr, silent)) {
@@ -10545,10 +10499,7 @@ void showNotification(const char* title, const char* body, const char* subtitle,
         if (portal::notifyFreedesktop(appName ? appName : "Electrobun", titleStr, bodyStr, silent)) {
             return;
         }
-        int result = system(command.c_str());
-        if (result != 0) {
-            fprintf(stderr, "Warning: notify-send failed (is libnotify-bin installed?)\n");
-        }
+        electrobun::spawn_fallbacks::notifySend(titleStr, bodyStr, silent);
     }).detach();
 }
 
