@@ -8,7 +8,10 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'package/**'
+      - 'package/src/native/linux/**'
+      - 'package/src/native/shared/**'
+      - 'package/src/core/**'
+      - 'package/src/sdks/main/**'
       - 'kitchen/**'
       - '.github/workflows/wayland-tests.yml'
       - '.github/scripts/run-under-sway.sh'
