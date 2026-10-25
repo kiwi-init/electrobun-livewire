@@ -22,12 +22,7 @@ These rules win over `CLAUDE.md`, which is upstream's.
 
 - Open them against `kiwi-init/electrobun-livewire` `main`.
 - The body names the Kiwi task (`T23`), what was broken, and how you verified it: the platform and the commands you ran.
-- No CI runs on pull requests yet. Until it does, run these from `package/` before asking for review, and list the platforms you built on:
-
-  ```sh
-  hutch typecheck
-  hutch build:dev
-  ```
+- CI (`pr-checks.yml`) typechecks and builds every PR on macOS. It's advisory: nobody waits on it to review or merge. If it goes red after a merge, fix it in the next PR.
 
 - Someone other than the author reviews (`kiwi task review T23`). The lead merges, with a squash, so each fix lands as one commit on `main`.
 
