@@ -3905,22 +3905,21 @@ const internalBridgeHandler = new JSCallback(
 				if (msgJson.type === "message") {
 					// `id` is the view the message came from, as the native side
 					// knows it; the payload is whatever the page sent.
-					const handler = (
-						internalRpcHandlers.message as Record<
-							string,
-							(params: unknown, senderId: number) => void
-						>
-					)[msgJson.id];
-					handler?.(msgJson.payload, id);
+					const handlers = internalRpcHandlers.message as Record<
+						string,
+						(params: unknown, senderId: number) => void
+					>;
+					if (Object.hasOwn(handlers, msgJson.id)) {
+						handlers[msgJson.id]!(msgJson.payload, id);
+					}
 				} else if (msgJson.type === "request") {
-					const handler = (
-						internalRpcHandlers.request as Record<
-							string,
-							(params: unknown, senderId: number) => unknown
-						>
-					)[msgJson.method];
-
-					const payload = handler?.(msgJson.params, id);
+					const handlers = internalRpcHandlers.request as Record<
+						string,
+						(params: unknown, senderId: number) => unknown
+					>;
+					const payload = Object.hasOwn(handlers, msgJson.method)
+						? handlers[msgJson.method]!(msgJson.params, id)
+						: undefined;
 
 					const resultObj = {
 						type: "response",
@@ -3928,8 +3927,9 @@ const internalBridgeHandler = new JSCallback(
 						success: true,
 						payload,
 					};
+					// To the view that asked, not a hostWebviewId the page wrote.
 					core_.symbols.sendInternalMessageToWebview(
-						msgJson.hostWebviewId,
+						id,
 						toCString(JSON.stringify(resultObj)),
 					);
 				}
@@ -4101,6 +4101,19 @@ type WgpuTagInitParams = {
 	passthrough: boolean;
 };
 
+// Internal bridge messages carry whatever ids the page wrote. A page may act
+// only on itself, its own window, and the webview and wgpu tags it created:
+// these wrappers drop a call whose params.id is anyone else's view.
+function forOwnWebviewTag<P extends { id: number }, R>(handler: (params: P) => R) {
+	return (params: P, senderId: number): R | undefined =>
+		BrowserView.getById(params?.id)?.hostWebviewId === senderId ? handler(params) : undefined;
+}
+
+function forOwnWgpuTag<P extends { id: number }, R>(handler: (params: P) => R) {
+	return (params: P, senderId: number): R | undefined =>
+		WGPUView.getById(params?.id)?.hostWebviewId === senderId ? handler(params) : undefined;
+}
+
 export const internalRpcHandlers = {
 	request: {
 		// startFileDrag() from electrobun/view. The view is the one the message
@@ -4111,10 +4124,14 @@ export const internalRpcHandlers = {
 			return view.startFileDragFromPage(params?.paths);
 		},
 		// todo: this shouldn't be getting method, just params.
-		webviewTagInit: (params: WebviewTagInitParams) => {
+		// The tag belongs to the page that asked, in that page's window,
+		// whatever hostWebviewId and windowId the page put in params.
+		webviewTagInit: (params: WebviewTagInitParams, senderId: number) => {
+			const sender = BrowserView.getById(senderId);
+			if (!sender) return null;
+			const hostWebviewId = senderId;
+			const windowId = sender.windowId;
 			const {
-				hostWebviewId,
-				windowId,
 				renderer,
 				html,
 				preload,
@@ -4152,43 +4169,43 @@ export const internalRpcHandlers = {
 
 			return webviewForTag.id;
 		},
-		wgpuTagInit: (params: WgpuTagInitParams) => {
-			const {
-				windowId,
-				frame,
-				transparent,
-				passthrough,
-			} = params;
+		wgpuTagInit: (params: WgpuTagInitParams, senderId: number) => {
+			const sender = BrowserView.getById(senderId);
+			if (!sender) return null;
+			const { frame, transparent, passthrough } = params;
 
 			const viewForTag = new WGPUView({
-				windowId,
+				windowId: sender.windowId,
 				frame,
 				autoResize: false,
 				startTransparent: transparent,
 				startPassthrough: passthrough,
 			});
+			viewForTag.hostWebviewId = senderId;
 
 			return viewForTag.id;
 		},
-		webviewTagCanGoBack: (params: { id: number }) => {
+		webviewTagCanGoBack: forOwnWebviewTag((params: { id: number }) => {
 			return core_.symbols.webviewCanGoBack(params.id);
-		},
-		webviewTagCanGoForward: (params: { id: number }) => {
+		}),
+		webviewTagCanGoForward: forOwnWebviewTag((params: { id: number }) => {
 			return core_.symbols.webviewCanGoForward(params.id);
-		},
-		webviewTagSetSpellCheck: (params: { id: number; enabled: boolean }) => {
+		}),
+		webviewTagSetSpellCheck: forOwnWebviewTag((params: { id: number; enabled: boolean }) => {
 			return core_.symbols.webviewSetSpellCheck(params.id, params.enabled);
-		},
-		restoreWindowFocusAfterExternalDrop: (params: { windowId: number }) => {
-			if (!getWindowPtr(params.windowId)) return false;
-			core_.symbols.activateWindow(params.windowId);
+		}),
+		// Always the sender's own window.
+		restoreWindowFocusAfterExternalDrop: (_params: unknown, senderId: number) => {
+			const windowId = BrowserView.getById(senderId)?.windowId;
+			if (windowId === undefined || !getWindowPtr(windowId)) return false;
+			core_.symbols.activateWindow(windowId);
 			return true;
 		},
 	},
 	message: {
 		// Result of an agent-control evaluation (see sdks/main/agent).
 		agentEvalResult: settleAgentEval,
-		webviewTagResize: (params: {
+		webviewTagResize: forOwnWebviewTag((params: {
 			id: number;
 			frame: { x: number; y: number; width: number; height: number };
 			masks: string;
@@ -4202,8 +4219,8 @@ export const internalRpcHandlers = {
 				height,
 				toCString(params.masks ?? "[]"),
 			);
-		},
-		wgpuTagResize: (params: {
+		}),
+		wgpuTagResize: forOwnWgpuTag((params: {
 			id: number;
 			frame: { x: number; y: number; width: number; height: number };
 			masks: string;
@@ -4228,23 +4245,23 @@ export const internalRpcHandlers = {
 				height,
 				toCString(params.masks ?? "[]"),
 			);
-		},
-		uiTagMount: (params: { id: number; name: string }) => {
+		}),
+		uiTagMount: forOwnWgpuTag((params: { id: number; name: string }) => {
 			// An <electrobun-ui> tag finished creating its native view; let a
 			// registered UI root (see electrobun/main/ui registerUIRoot) mount.
 			electrobunEventEmitter.emit("ui-tag-mount", {
 				id: params.id,
 				name: params.name,
 			});
-		},
-		webviewTagUpdateSrc: (params: { id: number; url: string }) => {
+		}),
+		webviewTagUpdateSrc: forOwnWebviewTag((params: { id: number; url: string }) => {
 			const webview = BrowserView.ensureWrapped(params.id);
 			if (webview) {
 				webview.url = params.url;
 			}
 			core_.symbols.loadURLInWebView(params.id, toCString(params.url));
-		},
-		webviewTagUpdateHtml: (params: { id: number; html: string }) => {
+		}),
+		webviewTagUpdateHtml: forOwnWebviewTag((params: { id: number; html: string }) => {
 			const webview = BrowserView.ensureWrapped(params.id);
 			if (!webview) {
 				console.error(`webviewTagUpdateHtml: BrowserView not found for id ${params.id}`);
@@ -4253,8 +4270,8 @@ export const internalRpcHandlers = {
 
 			webview.loadHTML(params.html);
 			webview.html = params.html;
-		},
-		webviewTagUpdatePreload: (params: { id: number; preload: string }) => {
+		}),
+		webviewTagUpdatePreload: forOwnWebviewTag((params: { id: number; preload: string }) => {
 			const webview = BrowserView.ensureWrapped(params.id);
 			if (webview) {
 				webview.preload = params.preload;
@@ -4265,39 +4282,41 @@ export const internalRpcHandlers = {
 				toCString(params.preload),
 				true,
 			);
-		},
-		webviewTagGoBack: (params: { id: number }) => {
+		}),
+		webviewTagGoBack: forOwnWebviewTag((params: { id: number }) => {
 			core_.symbols.webviewGoBack(params.id);
-		},
-		webviewTagGoForward: (params: { id: number }) => {
+		}),
+		webviewTagGoForward: forOwnWebviewTag((params: { id: number }) => {
 			core_.symbols.webviewGoForward(params.id);
-		},
-		webviewTagReload: (params: { id: number }) => {
+		}),
+		webviewTagReload: forOwnWebviewTag((params: { id: number }) => {
 			core_.symbols.webviewReload(params.id);
-		},
-		webviewTagRemove: (params: { id: number }) => {
+		}),
+		webviewTagRemove: forOwnWebviewTag((params: { id: number }) => {
 			const webview = BrowserView.ensureWrapped(params.id);
 			if (!webview) {
 				console.error(`webviewTagRemove: BrowserView not found for id ${params.id}`);
 				return;
 			}
 			webview.remove();
-		},
-		startWindowMove: (params: { id: number }) => {
-			const windowPtr = getWindowPtr(params.id);
+		}),
+		// Always the sender's own window.
+		startWindowMove: (_params: unknown, senderId: number) => {
+			const windowId = BrowserView.getById(senderId)?.windowId;
+			const windowPtr = windowId === undefined ? null : getWindowPtr(windowId);
 			if (!windowPtr) return;
 			native_.symbols.startWindowMove(windowPtr);
 		},
 		stopWindowMove: (_params: unknown) => {
 			native_.symbols.stopWindowMove();
 		},
-		webviewTagSetTransparent: (params: {
+		webviewTagSetTransparent: forOwnWebviewTag((params: {
 			id: number;
 			transparent: boolean;
 		}) => {
 			core_.symbols.webviewSetTransparent(params.id, params.transparent);
-		},
-		wgpuTagSetTransparent: (params: {
+		}),
+		wgpuTagSetTransparent: forOwnWgpuTag((params: {
 			id: number;
 			transparent: boolean;
 		}) => {
@@ -4309,14 +4328,14 @@ export const internalRpcHandlers = {
 				return;
 			}
 			native_.symbols.wgpuViewSetTransparent(view.ptr, params.transparent);
-		},
-		webviewTagSetPassthrough: (params: {
+		}),
+		webviewTagSetPassthrough: forOwnWebviewTag((params: {
 			id: number;
 			enablePassthrough: boolean;
 		}) => {
 			core_.symbols.webviewSetPassthrough(params.id, params.enablePassthrough);
-		},
-		wgpuTagSetPassthrough: (params: { id: number; passthrough: boolean }) => {
+		}),
+		wgpuTagSetPassthrough: forOwnWgpuTag((params: { id: number; passthrough: boolean }) => {
 			const view = WGPUView.getById(params.id);
 			if (!view?.ptr) {
 				console.error(
@@ -4325,11 +4344,11 @@ export const internalRpcHandlers = {
 				return;
 			}
 			native_.symbols.wgpuViewSetPassthrough(view.ptr, params.passthrough);
-		},
-		webviewTagSetHidden: (params: { id: number; hidden: boolean }) => {
+		}),
+		webviewTagSetHidden: forOwnWebviewTag((params: { id: number; hidden: boolean }) => {
 			core_.symbols.webviewSetHidden(params.id, params.hidden);
-		},
-		wgpuTagSetHidden: (params: { id: number; hidden: boolean }) => {
+		}),
+		wgpuTagSetHidden: forOwnWgpuTag((params: { id: number; hidden: boolean }) => {
 			const view = WGPUView.getById(params.id);
 			if (!view?.ptr) {
 				console.error(
@@ -4338,8 +4357,8 @@ export const internalRpcHandlers = {
 				return;
 			}
 			native_.symbols.wgpuViewSetHidden(view.ptr, params.hidden);
-		},
-		wgpuTagRemove: (params: { id: number }) => {
+		}),
+		wgpuTagRemove: forOwnWgpuTag((params: { id: number }) => {
 			const view = WGPUView.getById(params.id);
 			if (!view?.ptr) {
 				console.error(
@@ -4348,8 +4367,8 @@ export const internalRpcHandlers = {
 				return;
 			}
 			view.remove();
-		},
-		wgpuTagRunTest: (params: { id: number }) => {
+		}),
+		wgpuTagRunTest: forOwnWgpuTag((params: { id: number }) => {
 			const view = WGPUView.getById(params.id);
 			if (!view?.ptr) {
 				console.error(
@@ -4362,16 +4381,16 @@ export const internalRpcHandlers = {
 				return;
 			}
 			native_.symbols.wgpuRunGPUTest(view.ptr);
-		},
-		webviewTagSetNavigationRules: (params: { id: number; rules: string[] }) => {
+		}),
+		webviewTagSetNavigationRules: forOwnWebviewTag((params: { id: number; rules: string[] }) => {
 			const rulesJson = JSON.stringify(params.rules);
 			const webview = BrowserView.ensureWrapped(params.id);
 			if (webview) {
 				webview.navigationRules = rulesJson;
 			}
 			core_.symbols.setWebviewNavigationRules(params.id, toCString(rulesJson));
-		},
-		webviewTagFindInPage: (params: {
+		}),
+		webviewTagFindInPage: forOwnWebviewTag((params: {
 			id: number;
 			searchText: string;
 			forward: boolean;
@@ -4383,25 +4402,25 @@ export const internalRpcHandlers = {
 				params.forward,
 				params.matchCase,
 			);
-		},
-		webviewTagStopFind: (params: { id: number }) => {
+		}),
+		webviewTagStopFind: forOwnWebviewTag((params: { id: number }) => {
 			core_.symbols.webviewStopFind(params.id);
-		},
-		webviewTagOpenDevTools: (params: { id: number }) => {
+		}),
+		webviewTagOpenDevTools: forOwnWebviewTag((params: { id: number }) => {
 			core_.symbols.webviewOpenDevTools(params.id);
-		},
-		webviewTagCloseDevTools: (params: { id: number }) => {
+		}),
+		webviewTagCloseDevTools: forOwnWebviewTag((params: { id: number }) => {
 			core_.symbols.webviewCloseDevTools(params.id);
-		},
-		webviewTagToggleDevTools: (params: { id: number }) => {
+		}),
+		webviewTagToggleDevTools: forOwnWebviewTag((params: { id: number }) => {
 			core_.symbols.webviewToggleDevTools(params.id);
-		},
-		webviewTagExecuteJavascript: (params: { id: number; js: string }) => {
+		}),
+		webviewTagExecuteJavascript: forOwnWebviewTag((params: { id: number; js: string }) => {
 			core_.symbols.evaluateJavaScriptWithNoCompletion(
 				params.id,
 				toCString(params.js),
 			);
-		},
+		}),
 		webviewEvent: (params: unknown) => {
 			console.log("-----------------+webviewEvent", params);
 		},
