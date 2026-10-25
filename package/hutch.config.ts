@@ -21,7 +21,6 @@ export default {
 		"dev:clean": "cd ../kitchen && rm -rf node_modules vendors/cef && cd ../package && hutch dev",
 		"dev:canary": "hutch run install && hutch build:release && cd ../kitchen && hutch run install && hutch electrobun build --env=canary",
 		"dev:stable": "hutch run install && hutch build:release && cd ../kitchen && hutch run install && hutch electrobun build --env=stable",
-		"build:docs:release": "cd ../docs && hutch run build",
 		typecheck:
 			"hutch src/preload/build.ts && node node_modules/typescript/bin/tsc --noEmit",
 		"check:release": ["hutch", "scripts/check-release.ts"],

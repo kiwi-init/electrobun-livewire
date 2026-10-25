@@ -1,7 +1,7 @@
 # Electrobun: Livewire — rules for agents and people
 
 Livewire is Kiwi Init's fork of [blackboardsh/electrobun](https://github.com/blackboardsh/electrobun).
-These rules win over `CONTRIBUTING.md` and `CLAUDE.md`, which are upstream's.
+These rules win over `CLAUDE.md`, which is upstream's.
 
 ## Remotes
 
