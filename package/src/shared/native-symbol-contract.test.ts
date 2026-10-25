@@ -121,6 +121,8 @@ const directWrapperWindowsSymbols = descriptorNamesAtIndent(
 	5,
 );
 const expectedDirectWrapperDarwinSymbols = [
+	"getScreenCaptureAccess",
+	"requestScreenCaptureAccess",
 	"setWGPUKeyHandler",
 	"setWGPUPointerHandler",
 	"uiFreeTextBitmap",
