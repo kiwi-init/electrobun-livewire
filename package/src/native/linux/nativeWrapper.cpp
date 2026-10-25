@@ -3749,15 +3749,15 @@ public:
         return FALSE;
     }
     
-    // window.open and target=_blank. "popup" returns a related web view, so
-    // window.opener works, with its own user content manager so the page gets
-    // none of Electrobun's preload or bridge.
+    // window.open and target=_blank. "popup" acts as "deny" here: WebKitGTK
+    // builds a popup from the opener's page configuration, user content
+    // manager included, so it would get Electrobun's preload and bridge.
     static GtkWidget* onCreateWebView(WebKitWebView* webview, WebKitNavigationAction* action, gpointer user_data) {
+        (void)webview;
         WebKitWebViewImpl* impl = static_cast<WebKitWebViewImpl*>(user_data);
         const char* uri = webkit_uri_request_get_uri(webkit_navigation_action_get_request(action));
         std::string url = uri ? uri : "";
         std::string policy = "deny";
-        GtkWidget* popup = nullptr;
 
         gchar* scheme = g_uri_parse_scheme(url.c_str());
         bool openable = scheme && (g_ascii_strcasecmp(scheme, "http") == 0 || g_ascii_strcasecmp(scheme, "https") == 0 ||
@@ -3771,32 +3771,6 @@ public:
             } else if (error) {
                 g_error_free(error);
             }
-        } else if (impl->newWindowPolicy == 2) {
-            WebKitUserContentManager* manager = webkit_user_content_manager_new();
-            popup = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW,
-                "related-view", webview,
-                "settings", webkit_web_view_get_settings(webview),
-                "user-content-manager", manager,
-                nullptr));
-            g_object_unref(manager);
-
-            GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-            gtk_window_set_default_size(GTK_WINDOW(window), 500, 600);
-            gtk_container_add(GTK_CONTAINER(window), popup);
-            g_signal_connect(popup, "ready-to-show", G_CALLBACK(+[](WebKitWebView* view, gpointer data) {
-                GtkWindow* window = GTK_WINDOW(data);
-                WebKitWindowProperties* properties = webkit_web_view_get_window_properties(view);
-                GdkRectangle geometry = {};
-                webkit_window_properties_get_geometry(properties, &geometry);
-                if (geometry.width > 0 && geometry.height > 0) {
-                    gtk_window_resize(window, MAX(geometry.width, 200), MAX(geometry.height, 150));
-                }
-                gtk_widget_show_all(GTK_WIDGET(window));
-            }), window);
-            g_signal_connect(popup, "close", G_CALLBACK(+[](WebKitWebView*, gpointer data) {
-                gtk_widget_destroy(GTK_WIDGET(data));
-            }), window);
-            policy = "popup";
         }
 
         if (impl->eventHandler && !impl->isRemoved) {
@@ -3811,7 +3785,7 @@ public:
             std::string eventData = "{\"url\":\"" + escapedUrl + "\",\"isCmdClick\":false,\"modifierFlags\":0,\"policy\":\"" + policy + "\"}";
             impl->eventHandler(impl->webviewId, strdup("new-window-open"), strdup(eventData.c_str()));
         }
-        return popup;
+        return nullptr;
     }
 
     static void onWebProcessTerminated(WebKitWebView* webview, WebKitWebProcessTerminationReason reason, gpointer user_data) {

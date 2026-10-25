@@ -44,7 +44,7 @@ export const newWindowTests = [
     category: "New Window",
     description: "With newWindow: popup, window.open returns a live window whose page can postMessage its opener, without Electrobun's bridge",
     timeout: 20000,
-    requires: { platform: ["darwin", "linux"], renderer: "native" },
+    requires: { platform: "darwin", renderer: "native" },
     async run({ createWindow, log }) {
       const { rpc, opened } = await openHarness(createWindow, "popup");
       const result = await rpc.request.evaluateJavascriptWithResponse({
@@ -69,6 +69,24 @@ export const newWindowTests = [
         script: `window.__popup.close(); return new Promise((r) => setTimeout(() => r(window.__popup.closed), 500))`,
       });
       expect(closed).toBe(true);
+    },
+  }),
+
+  defineTest({
+    name: "popup acts as deny on Linux",
+    category: "New Window",
+    description: "WebKitGTK popups would share the opener's bridge, so newWindow: popup returns null there and reports deny",
+    timeout: 20000,
+    requires: { platform: "linux", renderer: "native" },
+    async run({ createWindow, log }) {
+      const { rpc, opened } = await openHarness(createWindow, "popup");
+      const isNull = await rpc.request.evaluateJavascriptWithResponse({
+        script: `return window.open("", "_blank", "width=420,height=320") === null`,
+      });
+      await sleep(500);
+      log(`new-window-open: ${JSON.stringify(opened)}`);
+      expect(isNull).toBe(true);
+      expect(opened[0]?.policy).toBe("deny");
     },
   }),
 

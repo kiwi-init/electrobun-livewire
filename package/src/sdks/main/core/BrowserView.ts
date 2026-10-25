@@ -65,10 +65,10 @@ export type BrowserViewOptions<T = undefined> = {
 	windowId: number;
 	navigationRules: string | null;
 	// window.open and target=_blank: "deny" (default) only emits new-window-open;
-	// "external" opens http(s)/mailto in the default browser; "popup" opens a
-	// native window that keeps window.opener (OAuth popups) and gets no preload
-	// or bridge. On Linux, pair "popup" with navigationRules: WebKitGTK can't
-	// tell when a popup navigates this view through window.opener.
+	// "external" opens http(s)/mailto in the default browser; "popup" (macOS)
+	// opens a native window that keeps window.opener (OAuth popups) and gets no
+	// preload or bridge. On Linux "popup" acts as "deny" for now: WebKitGTK
+	// popups share the opener's content manager, so they'd get the bridge.
 	newWindow: NewWindowPolicy;
 	// Sandbox mode: when true, disables RPC and only allows event emission
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
