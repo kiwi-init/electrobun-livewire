@@ -375,11 +375,11 @@ const core = (() => {
 			},
 			setNextWebviewContentSecurityPolicy: {
 				args: [FFIType.cstring],
-				returns: FFIType.void,
+				returns: FFIType.bool,
 			},
 			setWebviewContentSecurityPolicy: {
 				args: [FFIType.u32, FFIType.cstring],
-				returns: FFIType.void,
+				returns: FFIType.bool,
 			},
 			getWebviewPointer: {
 				args: [FFIType.u32],

@@ -30,3 +30,24 @@ describe("contentSecurityPolicy", () => {
 		]);
 	});
 });
+
+describe("contentSecurityPolicy header safety", () => {
+	const unsafe = ["default-src 'self'\r\nSet-Cookie: x=1", "default-src 'self'\nX: y", "default-src 'self'\0"];
+
+	test("the constructors refuse CR, LF and NUL", () => {
+		for (const policy of unsafe) {
+			expect(() => new BrowserView({ url: "views://d/index.html", contentSecurityPolicy: policy })).toThrow(/CR, LF or NUL/);
+			expect(() => new BrowserWindow({ url: "views://e/index.html", contentSecurityPolicy: policy })).toThrow(/CR, LF or NUL/);
+		}
+	});
+
+	test("setContentSecurityPolicy refuses them and keeps the old policy", () => {
+		const view = new BrowserView({ url: "views://f/index.html", contentSecurityPolicy: policy });
+		const calls = fake.callsTo("webviewSetContentSecurityPolicy").length;
+		for (const bad of unsafe) {
+			expect(() => view.setContentSecurityPolicy(bad)).toThrow(/CR, LF or NUL/);
+		}
+		expect(view.contentSecurityPolicy).toBe(policy);
+		expect(fake.callsTo("webviewSetContentSecurityPolicy").length).toBe(calls);
+	});
+});
