@@ -49,6 +49,25 @@ export function settleAgentEval(payload: unknown): void {
 	);
 }
 
+// The page reported over the event bridge that it has no internal bridge to
+// return a result on: its origin isn't in the view's bridgeOrigins, or it's a
+// sandboxed page. Only failures are accepted this way, never values, since
+// any page can post to the event bridge.
+export function settleAgentEvalNoBridge(detail: string): void {
+	let token: unknown;
+	let url: unknown;
+	try {
+		({ token, url } = JSON.parse(detail));
+	} catch {
+		return;
+	}
+	settleAgentEval({
+		token,
+		ok: false,
+		error: `the page${typeof url === "string" ? ` (${url})` : ""} isn't on the view's bridgeOrigins, so agent control can't get results from it. Add its origin to bridgeOrigins, or navigate back to one that is.`,
+	});
+}
+
 export function pendingAgentEvalCount(): number {
 	return pending.size;
 }

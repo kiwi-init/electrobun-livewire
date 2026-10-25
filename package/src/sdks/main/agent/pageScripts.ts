@@ -68,8 +68,16 @@ export function wrapEval(source: string, token: string): string {
 	const errorText = ${ERROR_TEXT};
 	const post = (payload) => {
 		const bridge = window.__electrobunInternalBridge;
-		if (!bridge) return;
-		bridge.postMessage(JSON.stringify([JSON.stringify({ type: "message", id: "agentEvalResult", payload })]));
+		if (bridge) {
+			bridge.postMessage(JSON.stringify([JSON.stringify({ type: "message", id: "agentEvalResult", payload })]));
+			return;
+		}
+		// Pages outside bridgeOrigins only have the event bridge: say why there's no result.
+		window.__electrobunEventBridge?.postMessage(JSON.stringify({
+			id: "webviewEvent",
+			type: "message",
+			payload: { id: window.__electrobunWebviewId, eventName: "agent-eval-no-bridge", detail: JSON.stringify({ token, url: location.href }) },
+		}));
 	};
 	try {
 		const value = await (async () => {
