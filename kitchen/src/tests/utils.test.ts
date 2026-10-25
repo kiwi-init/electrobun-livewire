@@ -360,6 +360,7 @@ export const utilsTests = [
         return;
       }
       // What System Settings does: write the preference, then tell apps.
+      // AppKit only rereads the accent after AppleAquaColorVariantChanged.
       const setAccent = (value: number | null) => {
         spawnSync("defaults", value === null ? ["delete", "-g", "AppleAccentColor"] : ["write", "-g", "AppleAccentColor", "-int", String(value)]);
         for (const name of ["AppleColorPreferencesChangedNotification", "AppleAquaColorVariantChanged"]) {
@@ -369,7 +370,7 @@ export const utilsTests = [
             "-e",
             `ObjC.import('Foundation'); $.NSDistributedNotificationCenter.defaultCenter.postNotificationNameObjectUserInfoDeliverImmediately('${name}', $(), $(), true)`,
           ]);
-          log(`posted ${name}: exit ${posted.status} ${posted.stderr?.toString().trim() ?? ""}`);
+          if (posted.status !== 0) log(`posting ${name} failed: ${posted.stderr?.toString().trim()}`);
         }
       };
       const nextChange = (timeoutMs = 5000) =>
