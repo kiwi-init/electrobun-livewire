@@ -107,7 +107,9 @@ case "$compositor" in
     ;;
   labwc)
     # The headless output starts at 1280x720; match sway's 1920x1080.
-    output="$(wlr-randr --json | jq -r '.[0].name')"
+    # wlr-randr 0.3 (Ubuntu 24.04) has no --json: the first word of its
+    # first line is the output name.
+    output="$(wlr-randr | awk 'NR == 1 { print $1 }')"
     wlr-randr --output "$output" --custom-mode 1920x1080 --scale "$scale"
     wlr-randr
     ;;
