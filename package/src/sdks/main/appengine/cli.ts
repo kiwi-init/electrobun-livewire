@@ -5,10 +5,14 @@
 //       New Ed25519 key: DIR/<keyId>.private.pem (0600, keep it secret) and
 //       DIR/<keyId>.public.txt. Prints the keyId and public key for the engine.
 //
-//   bun cli.ts publish SRC --key PRIVATE.pem --out SITE [--base-url URL] [--expires-in 30d]
+//   bun cli.ts publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL]
+//                      [--base-url URL] [--expires-in 30d]
 //       Packs SRC (its files plus ui.json {uiVersion, requiresContract,
 //       dataSchema}) into SITE/bundles/<uiVersion>-<sha>.uipack and writes the
-//       signed SITE/manifest.json with the next seq. Upload SITE as is.
+//       signed SITE/manifest.json. Upload SITE as is. seq is the later of the
+//       previous seq + 1 and the publish time in ms, so a fresh checkout still
+//       publishes past what engines have. --previous reads the live manifest
+//       (default: SITE/manifest.json) for that and for the dataSchema guard.
 //
 //   bun cli.ts verify SITE --public-key KEY [--key-id ID]
 //       Checks the manifest's signature and the bundle it points to.
@@ -99,10 +103,33 @@ function writeAtomically(path: string, data: string | Uint8Array) {
 	renameSync(temporary, path);
 }
 
-export function publish(options: {
+// The last published manifest: from --previous (a path or an http(s) URL), else
+// SITE/manifest.json, else none.
+export async function readPreviousManifest(siteDir: string, previous?: string): Promise<UiManifest | null> {
+	let text: string | null = null;
+	let source = previous ?? join(siteDir, "manifest.json");
+	if (previous && /^https?:\/\//i.test(previous)) {
+		const response = await fetch(previous);
+		if (response.status === 404) return null;
+		if (!response.ok) throw new Error(`--previous ${previous}: HTTP ${response.status}`);
+		text = await response.text();
+	} else if (existsSync(source)) {
+		text = readFileSync(source, "utf8");
+	} else if (previous) {
+		throw new Error(`--previous ${previous} doesn't exist`);
+	}
+	if (text === null) return null;
+	const parsed = JSON.parse(text);
+	const shapeError = manifestShapeError(parsed);
+	if (shapeError) throw new Error(`previous manifest ${source}: ${shapeError}`);
+	return parsed as UiManifest;
+}
+
+export async function publish(options: {
 	srcDir: string;
 	privateKeyPem: string;
 	siteDir: string;
+	previous?: string;
 	baseUrl?: string;
 	expiresInMs?: number;
 	now?: number;
@@ -113,16 +140,10 @@ export function publish(options: {
 	const bundleName = uipackFileName(config.uiVersion, pack.sha256);
 
 	const manifestPath = join(options.siteDir, "manifest.json");
-	let previous: UiManifest | null = null;
-	if (existsSync(manifestPath)) {
-		const parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
-		const shapeError = manifestShapeError(parsed);
-		if (shapeError) throw new Error(`existing ${manifestPath}: ${shapeError}`);
-		previous = parsed as UiManifest;
-		// Installed engines never move below a data schema they've seen.
-		if (config.dataSchema < previous.dataSchema) {
-			throw new Error(`dataSchema ${config.dataSchema} is below the published ${previous.dataSchema}; engines would refuse it`);
-		}
+	const previous = await readPreviousManifest(options.siteDir, options.previous);
+	// Installed engines never move below a data schema they've seen.
+	if (previous && config.dataSchema < previous.dataSchema) {
+		throw new Error(`dataSchema ${config.dataSchema} is below the published ${previous.dataSchema}; engines would refuse it`);
 	}
 
 	const bundlesDir = join(options.siteDir, "bundles");
@@ -139,7 +160,9 @@ export function publish(options: {
 		{
 			format: MANIFEST_FORMAT,
 			keyId: keyIdFor(publicKey),
-			seq: (previous?.seq ?? 0) + 1,
+			// Engines refuse a seq they've already passed. The publish time keeps it
+			// rising even from a checkout with no record of the last publish.
+			seq: Math.max((previous?.seq ?? 0) + 1, now),
 			uiVersion: config.uiVersion,
 			bundleUrl,
 			sha256: pack.sha256,
@@ -177,7 +200,7 @@ function flag(args: string[], name: string): string | undefined {
 	return value;
 }
 
-function main(argv: string[]) {
+async function main(argv: string[]) {
 	const args = [...argv];
 	const command = args.shift();
 	switch (command) {
@@ -189,14 +212,16 @@ function main(argv: string[]) {
 		case "publish": {
 			const keyPath = flag(args, "--key");
 			const siteDir = flag(args, "--out");
+			const previous = flag(args, "--previous");
 			const baseUrl = flag(args, "--base-url");
 			const expiresIn = flag(args, "--expires-in");
 			const [srcDir] = args;
-			if (!srcDir || !keyPath || !siteDir) throw new Error("usage: publish SRC --key PRIVATE.pem --out SITE [--base-url URL] [--expires-in 30d]");
-			const result = publish({
+			if (!srcDir || !keyPath || !siteDir) throw new Error("usage: publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL] [--base-url URL] [--expires-in 30d]");
+			const result = await publish({
 				srcDir,
 				privateKeyPem: readFileSync(keyPath, "utf8"),
 				siteDir,
+				previous,
 				baseUrl,
 				expiresInMs: expiresIn ? parseDuration(expiresIn) : undefined,
 			});
@@ -213,16 +238,14 @@ function main(argv: string[]) {
 			return;
 		}
 		default:
-			console.error("usage: cli.ts keygen [--out DIR] | publish SRC --key PRIVATE.pem --out SITE [--base-url URL] [--expires-in 30d] | verify SITE --public-key KEY [--key-id ID]");
+			console.error("usage: cli.ts keygen [--out DIR] | publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL] [--base-url URL] [--expires-in 30d] | verify SITE --public-key KEY [--key-id ID]");
 			process.exitCode = 2;
 	}
 }
 
 if (import.meta.main) {
-	try {
-		main(process.argv.slice(2));
-	} catch (error) {
+	main(process.argv.slice(2)).catch((error) => {
 		console.error(error instanceof Error ? error.message : String(error));
 		process.exitCode = 1;
-	}
+	});
 }
