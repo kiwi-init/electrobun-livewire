@@ -743,8 +743,30 @@ NSUUID *UUIDFromString(NSString *string) {
   return [[NSUUID alloc] initWithUUIDBytes:uuid];
 }
 
+static WKWebsiteDataStore *
+newDataStoreForPartition(const char *partitionIdentifier);
+
+// One store object per partition for the app's lifetime, shared by its views
+// and by Session. A store with no live object behind it can lose cookies set
+// through Session before a view exists, and every nonPersistentDataStore call
+// is a new, empty session. Called on the main thread only.
 WKWebsiteDataStore *
 createDataStoreForPartition(const char *partitionIdentifier) {
+  static NSMutableDictionary<NSString *, WKWebsiteDataStore *> *stores;
+  if (!stores) {
+    stores = [NSMutableDictionary dictionary];
+  }
+  NSString *key = [NSString stringWithUTF8String:partitionIdentifier];
+  WKWebsiteDataStore *store = stores[key];
+  if (!store) {
+    store = newDataStoreForPartition(partitionIdentifier);
+    stores[key] = store;
+  }
+  return store;
+}
+
+static WKWebsiteDataStore *
+newDataStoreForPartition(const char *partitionIdentifier) {
   NSString *identifier = [NSString stringWithUTF8String:partitionIdentifier];
   if ([identifier hasPrefix:@"persist:"]) {
     // persistent
