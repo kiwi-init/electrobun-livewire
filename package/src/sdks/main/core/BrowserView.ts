@@ -13,7 +13,7 @@ import {
 } from "./Socket";
 import { randomBytes } from "crypto";
 import type { NewWindowPolicy } from "./newWindowPolicy";
-import { fileDragRefusal } from "./fileDrag";
+import { resolveFileDrag } from "./fileDrag";
 import { type Pointer } from "bun:ffi";
 
 const BrowserViewMap: {
@@ -396,9 +396,9 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 
 	// A page's startFileDrag() from electrobun/view, after the fileDragRoots check.
 	startFileDragFromPage(paths: unknown): { started: boolean; reason?: string } {
-		const refusal = fileDragRefusal(paths, this.fileDragRoots);
-		if (refusal) return { started: false, reason: refusal };
-		if (this.startFileDrag(paths as string | string[])) return { started: true };
+		const checked = resolveFileDrag(paths, this.fileDragRoots);
+		if ("refusal" in checked) return { started: false, reason: checked.refusal };
+		if (this.startFileDrag(checked.paths)) return { started: true };
 		return {
 			started: false,
 			reason: process.platform === "darwin"
