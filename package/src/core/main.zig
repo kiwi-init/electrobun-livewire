@@ -1419,8 +1419,81 @@ fn dispatchHostTransportMessage(webview_id: u32, encrypted_packet: []const u8) v
     };
     incrementHostTransportDebug("decrypt_ok");
     defer allocator.free(plaintext);
+    if (std.mem.eql(u8, plaintext, host_transport_hello)) {
+        if (context.socket_handle) |socket_handle| {
+            markWebviewTransportReady(webview_id, socket_handle);
+        }
+        return;
+    }
     enqueueHostTransportPlaintext(webview_id, context, plaintext);
 }
+
+// A new connection gets this long to send its handshake and a message that
+// decrypts with the webview's key (the page sends an encrypted hello on open).
+// After that it may idle indefinitely.
+const host_transport_auth_timeout_seconds = 10;
+
+// The page's encrypted hello: authenticates the connection, never dispatched.
+const host_transport_hello = "{\"type\":\"hello\"}";
+
+// Shuts down a connection that hasn't authenticated in time. Its blocked read
+// then returns and the connection thread exits. Shared by the connection
+// thread and the watchdog thread; the last one to let go frees it.
+const HostTransportAuthWatch = struct {
+    mutex: synchronization.Mutex = .init,
+    handle: std.posix.socket_t,
+    state: enum { pending, authenticated, done } = .pending,
+    refs: u8 = 2,
+
+    fn start(handle: std.posix.socket_t) ?*HostTransportAuthWatch {
+        const watch = allocator.create(HostTransportAuthWatch) catch return null;
+        watch.* = .{ .handle = handle };
+        const thread = std.Thread.spawn(.{}, HostTransportAuthWatch.run, .{watch}) catch {
+            allocator.destroy(watch);
+            return null;
+        };
+        thread.detach();
+        return watch;
+    }
+
+    fn run(self: *HostTransportAuthWatch) void {
+        coreIo().sleep(std.Io.Duration.fromSeconds(host_transport_auth_timeout_seconds), .awake) catch {};
+        self.mutex.lockUncancelable(coreIo());
+        if (self.state == .pending) {
+            self.state = .done;
+            incrementHostTransportDebug("unauthenticated_connections");
+            shutdownSocketHandle(self.handle);
+        }
+        self.mutex.unlock(coreIo());
+        self.release();
+    }
+
+    // False if the watchdog already shut the connection down.
+    fn authenticate(self: *HostTransportAuthWatch) bool {
+        self.mutex.lockUncancelable(coreIo());
+        defer self.mutex.unlock(coreIo());
+        if (self.state != .pending) return false;
+        self.state = .authenticated;
+        return true;
+    }
+
+    // The connection thread calls this before closing the socket, so the
+    // watchdog never touches a closed (and possibly reused) handle.
+    fn finish(self: *HostTransportAuthWatch) void {
+        self.mutex.lockUncancelable(coreIo());
+        if (self.state == .pending) self.state = .done;
+        self.mutex.unlock(coreIo());
+        self.release();
+    }
+
+    fn release(self: *HostTransportAuthWatch) void {
+        self.mutex.lockUncancelable(coreIo());
+        self.refs -= 1;
+        const last = self.refs == 0;
+        self.mutex.unlock(coreIo());
+        if (last) allocator.destroy(self);
+    }
+};
 
 // True when the packet decrypts with the webview's key.
 fn hostTransportPacketAuthenticates(webview_id: u32, packet: []const u8) bool {
@@ -1434,6 +1507,8 @@ fn handleHostTransportConnection(stream: std.Io.net.Stream) void {
     const io = coreIo();
     incrementHostTransportDebug("connections");
     defer stream.close(io);
+    const auth_watch = HostTransportAuthWatch.start(stream.socket.handle);
+    defer if (auth_watch) |watch| watch.finish();
 
     var read_buffer: [16 * 1024]u8 = undefined;
     var write_buffer: [1024]u8 = undefined;
@@ -1481,6 +1556,9 @@ fn handleHostTransportConnection(stream: std.Io.net.Stream) void {
                     if (!hostTransportPacketAuthenticates(webview_id, frame.payload)) {
                         incrementHostTransportDebug("unauthenticated_connections");
                         break;
+                    }
+                    if (auth_watch) |watch| {
+                        if (!watch.authenticate()) break;
                     }
                     if (!attachWebviewSocketHandle(webview_id, stream.socket.handle)) break;
                     attached = true;

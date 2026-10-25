@@ -49,11 +49,14 @@ export async function initEncryption(): Promise<void> {
 	const rawKey = new Uint8Array(window.__electrobunSecretKeyBytes);
 	delete (window as { __electrobunSecretKeyBytes?: number[] })
 		.__electrobunSecretKeyBytes;
-	const secretKey = await generateKeyFromBytes(rawKey);
+	// The functions exist from the start and wait for the key themselves, so an
+	// early sender (the socket hello on open) never finds them missing.
+	const keyReady = generateKeyFromBytes(rawKey);
 
 	const encryptString = async (
 		plaintext: string,
 	): Promise<{ encryptedData: string; iv: string; tag: string }> => {
+		const secretKey = await keyReady;
 		const encoder = new TextEncoder();
 		const encodedText = encoder.encode(plaintext);
 		const iv = window.crypto.getRandomValues(new Uint8Array(12));
@@ -79,6 +82,7 @@ export async function initEncryption(): Promise<void> {
 		ivB64: string,
 		tagB64: string,
 	): Promise<string> => {
+		const secretKey = await keyReady;
 		const encryptedData = base64ToUint8Array(encryptedDataB64);
 		const iv = base64ToUint8Array(ivB64);
 		const tag = base64ToUint8Array(tagB64);
@@ -100,4 +104,5 @@ export async function initEncryption(): Promise<void> {
 
 	window.__electrobun_encrypt = encryptString;
 	window.__electrobun_decrypt = decryptString;
+	await keyReady;
 }
