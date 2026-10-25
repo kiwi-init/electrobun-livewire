@@ -12847,7 +12847,11 @@ static void onGetCookiesFinished(GObject* source, GAsyncResult* result, gpointer
             json << "\"domain\":\"" << (soup_cookie_get_domain(cookie) ?: "") << "\",";
             json << "\"path\":\"" << (soup_cookie_get_path(cookie) ?: "") << "\",";
             json << "\"secure\":" << (soup_cookie_get_secure(cookie) ? "true" : "false") << ",";
-            json << "\"httpOnly\":" << (soup_cookie_get_http_only(cookie) ? "true" : "false");
+            json << "\"httpOnly\":" << (soup_cookie_get_http_only(cookie) ? "true" : "false") << ",";
+            SoupSameSitePolicy sameSite = soup_cookie_get_same_site_policy(cookie);
+            json << "\"sameSite\":\""
+                 << (sameSite == SOUP_SAME_SITE_POLICY_STRICT ? "strict" : sameSite == SOUP_SAME_SITE_POLICY_LAX ? "lax" : "no_restriction")
+                 << "\"";
 
             GDateTime* expires = soup_cookie_get_expires(cookie);
             if (expires) {
@@ -13012,6 +13016,7 @@ ELECTROBUN_EXPORT bool sessionSetCookie(const char* partitionIdentifier, const c
         std::string url = extractString("url");
         bool secure = extractBool("secure");
         bool httpOnly = extractBool("httpOnly");
+        std::string sameSite = extractString("sameSite");
         double expirationDate = extractDouble("expirationDate");
 
         if (name.empty()) {
@@ -13042,6 +13047,13 @@ ELECTROBUN_EXPORT bool sessionSetCookie(const char* partitionIdentifier, const c
 
         soup_cookie_set_secure(cookie, secure);
         soup_cookie_set_http_only(cookie, httpOnly);
+        if (g_ascii_strcasecmp(sameSite.c_str(), "strict") == 0) {
+            soup_cookie_set_same_site_policy(cookie, SOUP_SAME_SITE_POLICY_STRICT);
+        } else if (g_ascii_strcasecmp(sameSite.c_str(), "lax") == 0) {
+            soup_cookie_set_same_site_policy(cookie, SOUP_SAME_SITE_POLICY_LAX);
+        } else if (g_ascii_strcasecmp(sameSite.c_str(), "no_restriction") == 0) {
+            soup_cookie_set_same_site_policy(cookie, SOUP_SAME_SITE_POLICY_NONE);
+        }
 
         if (expirationDate > 0) {
             GDateTime* expires = g_date_time_new_from_unix_utc((gint64)expirationDate);

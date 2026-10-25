@@ -11168,9 +11168,12 @@ static NSDictionary *cookieToDictionary(NSHTTPCookie *cookie) {
   if (cookie.expiresDate) {
     dict[@"expirationDate"] = @([cookie.expiresDate timeIntervalSince1970]);
   }
-  if (cookie.sameSitePolicy) {
-    dict[@"sameSite"] = cookie.sameSitePolicy;
-  }
+  // WebKit hands back "none" for a cookie without a policy.
+  NSString *sameSite = cookie.sameSitePolicy.lowercaseString;
+  dict[@"sameSite"] = [sameSite isEqualToString:@"strict"] ||
+                              [sameSite isEqualToString:@"lax"]
+                          ? sameSite
+                          : @"no_restriction";
   return dict;
 }
 
@@ -11225,8 +11228,9 @@ extern "C" const char *sessionGetCookies(const char *partitionIdentifier,
                 } else {
                   matches = [host isEqualToString:cookieDomain];
                 }
-                if (matches && cookie.path && url.path) {
-                  matches = [url.path hasPrefix:cookie.path];
+                if (matches && cookie.path) {
+                  NSString *urlPath = url.path.length ? url.path : @"/";
+                  matches = [urlPath hasPrefix:cookie.path];
                 }
               } else if (filterDomain) {
                 NSString *cookieDomain = cookie.domain;
@@ -11268,7 +11272,7 @@ extern "C" const char *sessionGetCookies(const char *partitionIdentifier,
 
 // Set a cookie for a partition (WKWebView)
 // cookieJson:
-// {"url":"https://example.com","name":"token","value":"abc","domain":".example.com","path":"/","secure":true,"httpOnly":true,"expirationDate":1234567890,"sameSite":"Lax"}
+// {"url":"https://example.com","name":"token","value":"abc","domain":".example.com","path":"/","secure":true,"httpOnly":true,"expirationDate":1234567890,"sameSite":"lax"}
 extern "C" bool sessionSetCookie(const char *partitionIdentifier,
                                  const char *cookieJson) {
   // Copy strings for use in block
@@ -11321,9 +11325,20 @@ extern "C" bool sessionSetCookie(const char *partitionIdentifier,
         [NSDate dateWithTimeIntervalSince1970:timestamp];
   }
 
-  // SameSite
-  if (cookieDict[@"sameSite"]) {
-    properties[NSHTTPCookieSameSitePolicy] = cookieDict[@"sameSite"];
+  // Foundation has no public HttpOnly key, but honours "HttpOnly"; any value
+  // sets the flag, so the key is only added when asked for.
+  if ([cookieDict[@"httpOnly"] boolValue]) {
+    properties[@"HttpOnly"] = @"TRUE";
+  }
+
+  // "no_restriction" (or none given) leaves the cookie without a policy.
+  NSString *sameSite = [cookieDict[@"sameSite"] isKindOfClass:[NSString class]]
+                           ? [cookieDict[@"sameSite"] lowercaseString]
+                           : nil;
+  if ([sameSite isEqualToString:@"strict"]) {
+    properties[NSHTTPCookieSameSitePolicy] = NSHTTPCookieSameSiteStrict;
+  } else if ([sameSite isEqualToString:@"lax"]) {
+    properties[NSHTTPCookieSameSitePolicy] = NSHTTPCookieSameSiteLax;
   }
 
   NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:properties];
