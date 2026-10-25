@@ -10749,8 +10749,21 @@ static void onWebviewSnapshotReady(GObject* source, GAsyncResult* result, gpoint
 }
 
 ELECTROBUN_EXPORT bool getWebviewSnapshot(AbstractView* abstractView, uint32_t requestId, SnapshotCallback callback) {
-    auto* view = dynamic_cast<WebKitWebViewImpl*>(abstractView);
-    if (!view || !callback) {
+    if (!abstractView || !callback) {
+        return false;
+    }
+    std::shared_ptr<WebKitWebViewImpl> view;
+    {
+        std::lock_guard<std::mutex> lock(g_webviewMapMutex);
+        for (const auto& [id, candidate] : g_webviewMap) {
+            (void)id;
+            if (candidate.get() == abstractView) {
+                view = std::dynamic_pointer_cast<WebKitWebViewImpl>(candidate);
+                break;
+            }
+        }
+    }
+    if (!view) {
         return false;
     }
     dispatch_async_main_void([view, requestId, callback]() {
