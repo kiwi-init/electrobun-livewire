@@ -4469,7 +4469,7 @@ export fn setDockIconVisible(visible: bool) void {
 // tray icons. macOS and Windows always have a tray.
 export fn isTrayHostAvailable() bool {
     const IsTrayHostAvailableFn = *const fn () callconv(.c) bool;
-    const is_tray_host_available = lookupNativeSymbol(IsTrayHostAvailableFn, "isTrayHostAvailable") orelse return true;
+    const is_tray_host_available = lookupOptionalNativeSymbol(IsTrayHostAvailableFn, "isTrayHostAvailable") orelse return true;
     return is_tray_host_available();
 }
 
@@ -4477,7 +4477,7 @@ export fn isTrayHostAvailable() bool {
 // where the native layer has no tray host to watch.
 export fn setTrayHostHandler(handler: ?TrayHostHandler) void {
     const SetTrayHostHandlerFn = *const fn (?TrayHostHandler) callconv(.c) void;
-    const set_tray_host_handler = lookupNativeSymbol(SetTrayHostHandlerFn, "setTrayHostHandler") orelse return;
+    const set_tray_host_handler = lookupOptionalNativeSymbol(SetTrayHostHandlerFn, "setTrayHostHandler") orelse return;
     set_tray_host_handler(handler);
 }
 
