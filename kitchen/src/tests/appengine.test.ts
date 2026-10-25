@@ -27,7 +27,7 @@ const UIS = {
 };
 
 // A static UI host plus an AppEngine with its own state and install root.
-function setup(createWindow: (options: any) => Promise<any>, testName: string) {
+function setup(createWindow: (options: any) => Promise<any>, testName: string, options: { probationMs?: number } = {}) {
 	const bundles = new Map<string, Uint8Array>();
 	let manifest: UiManifest | null = null;
 	let seq = 0;
@@ -75,7 +75,7 @@ function setup(createWindow: (options: any) => Promise<any>, testName: string) {
 				window: win.window,
 				safeModeUrl: "views://test-harness/index.html",
 				readyTimeoutMs: 3000,
-				probationMs: 1000,
+				probationMs: options.probationMs ?? 1000,
 				stateFile: join(state, "engine.json"),
 				channel: {
 					manifestUrl: `http://127.0.0.1:${server.port}/manifest.json`,
@@ -202,6 +202,32 @@ export const appEngineTests = [
 				expect(failed.type === "failed" && failed.reason).toContain("crashed during probation");
 				expect(t.events.some(is("promoted", v2))).toBe(false);
 				await until(t.events, (e) => e.type === "ready" && e.manifest.sha256 === v1.sha256 && t.events.indexOf(e) > t.events.indexOf(failed));
+				expect(engine.showing?.sha256).toBe(v1.sha256);
+				log(t.events.map(describe).join(" → "));
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
+		name: "AppEngine doesn't fail a UI whose renderer wake recovery recycled",
+		category: "AppEngine",
+		description: "A wake recycle during probation reloads the same UI; it isn't marked failed and still gets promoted",
+		timeout: 40000,
+		requires: { platform: "darwin" },
+		async run({ createWindow, log }) {
+			const t = setup(createWindow, "wake", { probationMs: 6000 });
+			try {
+				const v1 = t.publish(UIS.good("v1"));
+				const engine = await t.start();
+				await until(t.events, is("ready", v1));
+				// Probing a closed port makes every view look frozen.
+				const viewId = engine.getView()!.id;
+				const recycled = await Utils.recoverWebviewsAfterWake({ settleMs: 0, timeoutMs: 1500, probePort: 1, ids: [viewId] });
+				expect(recycled).toEqual([viewId]);
+				await until(t.events, is("promoted", v1), 15000);
+				expect(t.events.some((e) => e.type === "failed")).toBe(false);
 				expect(engine.showing?.sha256).toBe(v1.sha256);
 				log(t.events.map(describe).join(" → "));
 			} finally {

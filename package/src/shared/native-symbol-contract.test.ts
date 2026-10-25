@@ -126,6 +126,8 @@ const expectedDirectWrapperDarwinSymbols = [
 	"uiFreeTextBitmap",
 	"uiMeasureText",
 	"uiRasterizeText",
+	"webviewProbeAnswered",
+	"webviewProbeNetwork",
 	"wgpuViewSetAlphaBlending",
 ].sort();
 const expectedDirectWrapperWindowsSymbols = [

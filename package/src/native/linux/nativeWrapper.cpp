@@ -13293,6 +13293,11 @@ ELECTROBUN_EXPORT void setAppReopenHandler(void (*callback)()) {
     // Not supported on Linux - stub to prevent dlopen failure
 }
 
+ELECTROBUN_EXPORT void setAppWakeHandler(void (*callback)()) {
+    (void)callback;
+    // Not supported on Linux yet - stub to prevent dlopen failure
+}
+
 ELECTROBUN_EXPORT void setDockIconVisible(bool visible) {
     (void)visible;
     // Not supported on Linux - stub to prevent dlopen failure

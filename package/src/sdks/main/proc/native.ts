@@ -420,6 +420,14 @@ const core = (() => {
 				args: [FFIType.u32],
 				returns: FFIType.bool,
 			},
+			hostTransportProbeSeen: {
+				args: [FFIType.cstring],
+				returns: FFIType.bool,
+			},
+			getHostTransportPort: {
+				args: [],
+				returns: FFIType.u32,
+			},
 			webviewGoBack: {
 				args: [FFIType.u32],
 				returns: FFIType.void,
@@ -896,6 +904,14 @@ export const native = (() => {
 						args: [FFIType.ptr],
 						returns: FFIType.void,
 					},
+					webviewProbeNetwork: {
+						args: [FFIType.ptr, FFIType.u32, FFIType.cstring],
+						returns: FFIType.bool,
+					},
+					webviewProbeAnswered: {
+						args: [FFIType.cstring],
+						returns: FFIType.bool,
+					},
 				}
 				: {}),
 			...(process.platform === "win32"
@@ -1152,6 +1168,10 @@ export const native = (() => {
 				args: [FFIType.function],
 				returns: FFIType.void,
 			},
+			setAppWakeHandler: {
+				args: [FFIType.function],
+				returns: FFIType.void,
+			},
 
 			// JSCallback utils for native code to use
 			setJSUtils: {
@@ -1326,6 +1346,8 @@ const native_ = native!;
 
 type DarwinNativeWrapperSymbols = {
 	wgpuViewSetAlphaBlending: (view: Pointer, enabled: boolean) => void;
+	webviewProbeNetwork: (view: Pointer, port: number, nonce: CString) => boolean;
+	webviewProbeAnswered: (nonce: CString) => boolean;
 	setWGPUPointerHandler: (handler: Pointer | null) => void;
 	setWGPUKeyHandler: (handler: Pointer | null) => void;
 	uiMeasureText: (
@@ -2143,6 +2165,22 @@ const _ffiImpl = {
 		},
 		webviewTerminateRenderer: (params: { id: number }) => {
 			return core_.symbols.webviewTerminateRenderer(params.id);
+		},
+		// Has the page open a WebSocket to the core's /probe endpoint (macOS
+		// system webviews only); see core/wakeRecovery.ts.
+		webviewProbeNetwork: (params: { id: number; nonce: string; port?: number }) => {
+			const probe = getDarwinNativeWrapperSymbols().webviewProbeNetwork;
+			const ptr = normalizeFFIPointer(core_.symbols.getWebviewPointer(params.id));
+			const port = params.port ?? core_.symbols.getHostTransportPort();
+			if (!probe || !ptr || !port) return false;
+			return probe(ptr, port, toCString(params.nonce) as unknown as CString);
+		},
+		hostTransportProbeSeen: (params: { nonce: string }) => {
+			return core_.symbols.hostTransportProbeSeen(toCString(params.nonce));
+		},
+		webviewProbeAnswered: (params: { nonce: string }) => {
+			const answered = getDarwinNativeWrapperSymbols().webviewProbeAnswered;
+			return answered ? answered(toCString(params.nonce) as unknown as CString) : false;
 		},
 		webviewGoBack: (params: { id: number }) => {
 			core_.symbols.webviewGoBack(params.id);
@@ -3156,6 +3194,20 @@ if (native) {
 	);
 	if (process.platform === "darwin") {
 		native_.symbols.setAppReopenHandler(appReopenCallback);
+	}
+
+	const appWakeCallback = new JSCallback(
+		() => {
+			const event = electrobunEventEmitter.events.app.wake({});
+			electrobunEventEmitter.emitEvent(event);
+			if (event.response?.recover === false) return;
+			const { recoverWebviewsAfterWake } = require("../core/wakeRecovery");
+			void recoverWebviewsAfterWake();
+		},
+		{ args: [], returns: "void", threadsafe: true },
+	);
+	if (process.platform === "darwin") {
+		native_.symbols.setAppWakeHandler(appWakeCallback);
 	}
 
 	const quitRequestedCallback = new JSCallback(

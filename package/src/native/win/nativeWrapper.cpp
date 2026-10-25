@@ -14649,6 +14649,11 @@ extern "C" ELECTROBUN_EXPORT void setAppReopenHandler(void (*callback)()) {
     // Not supported on Windows - stub to prevent dlopen failure
 }
 
+extern "C" ELECTROBUN_EXPORT void setAppWakeHandler(void (*callback)()) {
+    (void)callback;
+    // Not supported on Windows yet - stub to prevent dlopen failure
+}
+
 // Dock icon visibility - macOS only, stubs for Windows
 extern "C" ELECTROBUN_EXPORT void setDockIconVisible(bool visible) {
     (void)visible;

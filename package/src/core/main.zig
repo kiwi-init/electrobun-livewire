@@ -1060,6 +1060,51 @@ fn parseRequestHeaderValue(headers: []const u8, header_name: []const u8) ?[]cons
     return null;
 }
 
+// Network probes: after a wake, Bun has each webview open a WebSocket to
+// /probe?nonce=<hex>. The connection only proves the page can still reach the
+// network, so it gets no handshake; the core just remembers the nonce.
+const ProbeNonce = [32]u8;
+var probe_nonces: [64]ProbeNonce = undefined;
+var probe_nonce_count: usize = 0;
+var probe_nonce_next: usize = 0;
+var probe_mutex: synchronization.Mutex = .init;
+
+fn parseProbeNonceFromTarget(target: []const u8) ?ProbeNonce {
+    const prefix = "/probe?nonce=";
+    if (!std.mem.startsWith(u8, target, prefix)) return null;
+    const value = target[prefix.len..];
+    if (value.len != @sizeOf(ProbeNonce)) return null;
+    for (value) |char| {
+        if (!std.ascii.isHex(char)) return null;
+    }
+    var nonce: ProbeNonce = undefined;
+    @memcpy(&nonce, value);
+    return nonce;
+}
+
+fn recordProbeNonce(nonce: ProbeNonce) void {
+    probe_mutex.lockUncancelable(coreIo());
+    defer probe_mutex.unlock(coreIo());
+    probe_nonces[probe_nonce_next] = nonce;
+    probe_nonce_next = (probe_nonce_next + 1) % probe_nonces.len;
+    probe_nonce_count = @min(probe_nonce_count + 1, probe_nonces.len);
+}
+
+export fn hostTransportProbeSeen(nonce: [*:0]const u8) bool {
+    const text = std.mem.span(nonce);
+    if (text.len != @sizeOf(ProbeNonce)) return false;
+    probe_mutex.lockUncancelable(coreIo());
+    defer probe_mutex.unlock(coreIo());
+    for (probe_nonces[0..probe_nonce_count]) |seen| {
+        if (std.mem.eql(u8, &seen, text)) return true;
+    }
+    return false;
+}
+
+export fn getHostTransportPort() u32 {
+    return webview_runtime_state.rpc_port;
+}
+
 fn parseWebviewIdFromTarget(target: []const u8) ?u32 {
     const query_index = std.mem.indexOfScalar(u8, target, '?') orelse return null;
     const path = target[0..query_index];
@@ -1551,6 +1596,12 @@ fn handleHostTransportConnection(stream: std.Io.net.Stream) void {
     const out = &stream_writer.interface;
     var server = std.http.Server.init(in, out);
     const request = server.receiveHead() catch return;
+
+    if (parseProbeNonceFromTarget(request.head.target)) |nonce| {
+        recordProbeNonce(nonce);
+        writeSimpleHttpResponse(out, "204 No Content", "") catch {};
+        return;
+    }
 
     const websocket_key = parseRequestHeaderValue(request.head_buffer, "Sec-WebSocket-Key") orelse {
         writeSimpleHttpResponse(out, "400 Bad Request", "Missing Sec-WebSocket-Key") catch {};
