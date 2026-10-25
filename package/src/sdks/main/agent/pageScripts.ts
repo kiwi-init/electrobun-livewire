@@ -67,8 +67,10 @@ export function wrapEval(source: string, token: string): string {
 	const serialize = ${SERIALIZE};
 	const errorText = ${ERROR_TEXT};
 	const post = (payload) => {
+		// Only the signed wrapper (pages on the view's bridgeOrigins) reaches the
+		// host; CEF also puts a raw, unsigned bridge on other pages, which the core drops.
 		const bridge = window.__electrobunInternalBridge;
-		if (bridge) {
+		if (bridge && bridge.__electrobunSigned) {
 			bridge.postMessage(JSON.stringify([JSON.stringify({ type: "message", id: "agentEvalResult", payload })]));
 			return;
 		}
