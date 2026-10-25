@@ -12757,62 +12757,22 @@ ELECTROBUN_EXPORT uint64_t getMouseButtons() {
  */
 
 // Store for partition-specific data managers (for cookie access)
-static std::map<std::string, WebKitWebsiteDataManager*> g_partitionDataManagers;
+// Session calls must go through the partition's own context, the one its
+// views use: a second data manager on the same directories is a second
+// network session, so cookies set through it never reach the views. The first
+// Session call on a partition takes a reference, so an ephemeral partition
+// keeps its cookies for views created after them.
+static std::set<std::string> g_sessionPartitions;
 
-// Get or create a data manager for a partition
 static WebKitWebsiteDataManager* getDataManagerForPartition(const char* partitionIdentifier) {
     std::string partition = partitionIdentifier ? partitionIdentifier : "";
-
-    auto it = g_partitionDataManagers.find(partition);
-    if (it != g_partitionDataManagers.end()) {
-        return it->second;
-    }
-
-    WebKitWebsiteDataManager* dataManager = nullptr;
-
     if (partition.empty()) {
-        // Default: use default context's data manager
-        WebKitWebContext* context = webkit_web_context_get_default();
-        dataManager = webkit_web_context_get_website_data_manager(context);
-    } else {
-        bool isPersistent = partition.substr(0, 8) == "persist:";
-
-        if (isPersistent) {
-            std::string partitionName = partition.substr(8);
-
-            // Build paths with identifier/channel structure (consistent with CLI and updater)
-            char* home = getenv("HOME");
-            std::string homeStr = home ? std::string(home) : "/tmp";
-            std::string dataPath = buildPartitionPath(homeStr + "/.local/share", g_electrobunIdentifier, g_electrobunChannel, "WebKit", partitionName);
-            std::string cachePath = buildPartitionPath(homeStr + "/.cache", g_electrobunIdentifier, g_electrobunChannel, "WebKit", partitionName);
-
-            g_mkdir_with_parents(dataPath.c_str(), 0755);
-            g_mkdir_with_parents(cachePath.c_str(), 0755);
-
-            dataManager = webkit_website_data_manager_new(
-                "base-data-directory", dataPath.c_str(),
-                "base-cache-directory", cachePath.c_str(),
-                NULL
-            );
-
-            // Enable persistent cookie storage (SQLite-backed)
-            WebKitCookieManager* cookieManager = webkit_website_data_manager_get_cookie_manager(dataManager);
-            if (cookieManager) {
-                std::string cookiePath = dataPath + "/cookies.sqlite";
-                webkit_cookie_manager_set_persistent_storage(
-                    cookieManager,
-                    cookiePath.c_str(),
-                    WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE
-                );
-            }
-        } else {
-            dataManager = webkit_website_data_manager_new_ephemeral();
-        }
-
-        g_partitionDataManagers[partition] = dataManager;
+        return webkit_web_context_get_website_data_manager(webkit_web_context_get_default());
     }
-
-    return dataManager;
+    if (g_sessionPartitions.insert(partition).second) {
+        return webkit_web_context_get_website_data_manager(getContextForPartition(partition.c_str()));
+    }
+    return webkit_web_context_get_website_data_manager(g_partitionContexts.at(partition));
 }
 
 
@@ -12824,12 +12784,7 @@ struct CookieCallbackData {
 };
 
 // Callback for getting cookies
-static void onGetCookiesFinished(GObject* source, GAsyncResult* result, gpointer user_data) {
-    CookieCallbackData* data = static_cast<CookieCallbackData*>(user_data);
-    GError* error = nullptr;
-    GList* cookies = webkit_cookie_manager_get_cookies_finish(
-        WEBKIT_COOKIE_MANAGER(source), result, &error);
-
+static void finishCookieList(CookieCallbackData* data, GList* cookies, GError* error) {
     std::ostringstream json;
     json << "[";
 
@@ -12878,6 +12833,20 @@ static void onGetCookiesFinished(GObject* source, GAsyncResult* result, gpointer
     }
 }
 
+static void onGetCookiesFinished(GObject* source, GAsyncResult* result, gpointer user_data) {
+    GError* error = nullptr;
+    GList* cookies = webkit_cookie_manager_get_cookies_finish(WEBKIT_COOKIE_MANAGER(source), result, &error);
+    finishCookieList(static_cast<CookieCallbackData*>(user_data), cookies, error);
+}
+
+#if WEBKIT_CHECK_VERSION(2, 42, 0)
+static void onGetAllCookiesFinished(GObject* source, GAsyncResult* result, gpointer user_data) {
+    GError* error = nullptr;
+    GList* cookies = webkit_cookie_manager_get_all_cookies_finish(WEBKIT_COOKIE_MANAGER(source), result, &error);
+    finishCookieList(static_cast<CookieCallbackData*>(user_data), cookies, error);
+}
+#endif
+
 // Get cookies for a partition (WebKit2GTK)
 ELECTROBUN_EXPORT const char* sessionGetCookies(const char* partitionIdentifier, const char* filterJson) {
     // Copy arguments before dispatching to main thread
@@ -12916,8 +12885,15 @@ ELECTROBUN_EXPORT const char* sessionGetCookies(const char* partitionIdentifier,
         callbackData.done = &done;
         callbackData.loop = g_main_loop_new(NULL, FALSE);
 
-        const char* uri = filterUrl.empty() ? "https://localhost" : filterUrl.c_str();
-        webkit_cookie_manager_get_cookies(cookieManager, uri, nullptr, onGetCookiesFinished, &callbackData);
+        if (filterUrl.empty()) {
+#if WEBKIT_CHECK_VERSION(2, 42, 0)
+            webkit_cookie_manager_get_all_cookies(cookieManager, nullptr, onGetAllCookiesFinished, &callbackData);
+#else
+            webkit_cookie_manager_get_cookies(cookieManager, "https://localhost", nullptr, onGetCookiesFinished, &callbackData);
+#endif
+        } else {
+            webkit_cookie_manager_get_cookies(cookieManager, filterUrl.c_str(), nullptr, onGetCookiesFinished, &callbackData);
+        }
 
         // Run main loop until done or timeout
         GSource* timeout = g_timeout_source_new(5000);
