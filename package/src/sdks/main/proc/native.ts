@@ -77,7 +77,9 @@ import {
 } from "bun:ffi";
 import { parseWebviewEventBridgeMessage } from "./eventBridge";
 import { settleAgentEval, settleAgentEvalNoBridge } from "../agent/evalResults";
-import { ffiCStringToString } from "./ffiCString";
+import { ffiCStringToString, toCString } from "./ffiCString";
+
+export { toCString };
 import { rasterizeNativeText } from "./nativeTextBitmap";
 
 function getElectrobunLibraryPathCandidates(fileName: string) {
@@ -1401,16 +1403,16 @@ const native_ = native!;
 
 type DarwinNativeWrapperSymbols = {
 	wgpuViewSetAlphaBlending: (view: Pointer, enabled: boolean) => void;
-	webviewProbeNetwork: (view: Pointer, port: number, nonce: CString) => boolean;
-	webviewProbeAnswered: (nonce: CString) => boolean;
+	webviewProbeNetwork: (view: Pointer, port: number, nonce: Uint8Array) => boolean;
+	webviewProbeAnswered: (nonce: Uint8Array) => boolean;
 	getScreenCaptureAccess: () => boolean;
-	webviewStartFileDrag: (view: Pointer, pathsJson: CString) => boolean;
+	webviewStartFileDrag: (view: Pointer, pathsJson: Uint8Array) => boolean;
 	requestScreenCaptureAccess: () => boolean;
 	setWGPUPointerHandler: (handler: Pointer | null) => void;
 	setWGPUKeyHandler: (handler: Pointer | null) => void;
 	uiMeasureText: (
-		text: CString,
-		fontName: CString,
+		text: Uint8Array,
+		fontName: Uint8Array,
 		size: number,
 		width: Pointer,
 		height: Pointer,
@@ -2257,14 +2259,14 @@ const _ffiImpl = {
 			const ptr = normalizeFFIPointer(core_.symbols.getWebviewPointer(params.id));
 			const port = params.port ?? core_.symbols.getHostTransportPort();
 			if (!probe || !ptr || !port) return false;
-			return probe(ptr, port, toCString(params.nonce) as unknown as CString);
+			return probe(ptr, port, toCString(params.nonce));
 		},
 		hostTransportProbeSeen: (params: { nonce: string }) => {
 			return core_.symbols.hostTransportProbeSeen(toCString(params.nonce));
 		},
 		webviewProbeAnswered: (params: { nonce: string }) => {
 			const answered = getDarwinNativeWrapperSymbols().webviewProbeAnswered;
-			return answered ? answered(toCString(params.nonce) as unknown as CString) : false;
+			return answered ? answered(toCString(params.nonce)) : false;
 		},
 		webviewGoBack: (params: { id: number }) => {
 			core_.symbols.webviewGoBack(params.id);
@@ -3249,6 +3251,11 @@ const windowKeyCallback = new JSCallback(
 	},
 );
 
+// A cstring a callback returns is read by native code after the callback
+// returns, so its bytes stay referenced until the next call.
+let mimeTypeReturned = toCString("");
+let htmlReturned = toCString("");
+
 const getMimeType = new JSCallback(
 	(filePath) => {
 		const _filePath = ffiCStringToString(filePath);
@@ -3258,7 +3265,8 @@ const getMimeType = new JSCallback(
 		// otherwise it can break. eg: for html with text/javascript;charset=utf-8 browsers
 		// will tend to render the code/text instead of interpreting the html.
 
-		return toCString(mimeType.split(";")[0]!);
+		mimeTypeReturned = toCString(mimeType.split(";")[0]!);
+		return ptr(mimeTypeReturned);
 	},
 	{
 		args: [FFIType.cstring],
@@ -3271,7 +3279,8 @@ const getHTMLForWebviewSync = new JSCallback(
 	(webviewId) => {
 		const webview = BrowserView.ensureWrapped(webviewId);
 
-		return toCString(webview?.html || "");
+		htmlReturned = toCString(webview?.html || "");
+		return ptr(htmlReturned);
 	},
 	{
 		args: [FFIType.u32],
@@ -4088,22 +4097,6 @@ const contextMenuHandler = new JSCallback(
 	},
 );
 
-// Note: When passed over FFI JS will GC the buffer/pointer. Make sure to use strdup() or something
-// on the c side to duplicate the string so objc/c++ gc can own it
-export function toCString(
-	jsString: string,
-	addNullTerminator: boolean = true,
-): CString {
-	let appendWith = "";
-
-	if (addNullTerminator && !jsString.endsWith("\0")) {
-		appendWith = "\0";
-	}
-	const buff = Buffer.from(jsString + appendWith, "utf8");
-
-	// @ts-ignore - This is valid in Bun
-	return ptr(buff);
-}
 
 type WebviewTagInitParams = {
 	url: string | null;
