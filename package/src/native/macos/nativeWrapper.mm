@@ -746,23 +746,68 @@ NSUUID *UUIDFromString(NSString *string) {
 static WKWebsiteDataStore *
 newDataStoreForPartition(const char *partitionIdentifier);
 
-// One store object per partition for the app's lifetime, shared by its views
-// and by Session. A store with no live object behind it can lose cookies set
-// through Session before a view exists, and every nonPersistentDataStore call
-// is a new, empty session. Called on the main thread only.
+// One store object per partition, shared by its views and by Session. A store
+// with no live object behind it can lose cookies set through Session before a
+// view exists, and every nonPersistentDataStore call is a new, empty session.
+// Persistent ("persist:") stores live for the app. Ephemeral ones are
+// refcounted, as on Linux: each view holds a reference, and Session holds one
+// from its first call on the partition, so its cookies wait for the views. A
+// partition Session never touched ends with its last view, e.g. an AppEngine
+// UI generation after a hot swap. Main thread only.
+static NSMutableDictionary<NSString *, WKWebsiteDataStore *> *g_partitionStores;
+static NSMutableDictionary<NSString *, NSNumber *> *g_ephemeralStoreRefs;
+static NSMutableSet<NSString *> *g_sessionPartitions;
+
+static BOOL isRefcountedPartition(NSString *partition) {
+  return partition.length > 0 && ![partition hasPrefix:@"persist:"];
+}
+
+// The partition's store, with a reference taken on it if it's ephemeral.
+// Balance with releaseDataStoreForPartition.
 WKWebsiteDataStore *
-createDataStoreForPartition(const char *partitionIdentifier) {
-  static NSMutableDictionary<NSString *, WKWebsiteDataStore *> *stores;
-  if (!stores) {
-    stores = [NSMutableDictionary dictionary];
+acquireDataStoreForPartition(const char *partitionIdentifier) {
+  if (!g_partitionStores) {
+    g_partitionStores = [NSMutableDictionary dictionary];
+    g_ephemeralStoreRefs = [NSMutableDictionary dictionary];
   }
-  NSString *key = [NSString stringWithUTF8String:partitionIdentifier];
-  WKWebsiteDataStore *store = stores[key];
+  NSString *key = [NSString stringWithUTF8String:partitionIdentifier ?: ""];
+  WKWebsiteDataStore *store = g_partitionStores[key];
   if (!store) {
-    store = newDataStoreForPartition(partitionIdentifier);
-    stores[key] = store;
+    store = newDataStoreForPartition(key.UTF8String);
+    g_partitionStores[key] = store;
+  }
+  if (isRefcountedPartition(key)) {
+    g_ephemeralStoreRefs[key] = @(g_ephemeralStoreRefs[key].unsignedIntegerValue + 1);
   }
   return store;
+}
+
+void releaseDataStoreForPartition(NSString *partition) {
+  if (!partition || !isRefcountedPartition(partition)) {
+    return;
+  }
+  NSUInteger refs = g_ephemeralStoreRefs[partition].unsignedIntegerValue;
+  if (refs > 1) {
+    g_ephemeralStoreRefs[partition] = @(refs - 1);
+    return;
+  }
+  [g_ephemeralStoreRefs removeObjectForKey:partition];
+  [g_partitionStores removeObjectForKey:partition];
+}
+
+// The store Session calls use. The first call on a partition takes the one
+// reference Session keeps for the app's life.
+static WKWebsiteDataStore *
+sessionDataStoreForPartition(const char *partitionIdentifier) {
+  if (!g_sessionPartitions) {
+    g_sessionPartitions = [NSMutableSet set];
+  }
+  NSString *key = [NSString stringWithUTF8String:partitionIdentifier ?: ""];
+  if (![g_sessionPartitions containsObject:key]) {
+    [g_sessionPartitions addObject:key];
+    return acquireDataStoreForPartition(partitionIdentifier);
+  }
+  return g_partitionStores[key];
 }
 
 static WKWebsiteDataStore *
@@ -1126,6 +1171,9 @@ static NSMutableDictionary<NSNumber *, AbstractView *> *globalAbstractViews =
 // ----------------------- Webview Implementations -----------------------
 @interface WKWebViewImpl : AbstractView
 @property(nonatomic, strong) WKWebView *webView;
+// The partition whose data store this view holds a reference on, until it's
+// removed. Main thread only.
+@property(nonatomic, copy) NSString *dataStorePartition;
 
 - (void)loadURLOnMainThread:(NSString *)urlString;
 
@@ -3306,7 +3354,9 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
           [[WKWebViewConfiguration alloc] init];
 
       configuration.websiteDataStore =
-          createDataStoreForPartition(partitionIdentifier);
+          acquireDataStoreForPartition(partitionIdentifier);
+      self.dataStorePartition =
+          [NSString stringWithUTF8String:partitionIdentifier ?: ""];
 
       [configuration.preferences setValue:@YES
                                    forKey:@"developerExtrasEnabled"];
@@ -3696,6 +3746,9 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
     [webViewToClean
         loadRequest:[NSURLRequest
                         requestWithURL:[NSURL URLWithString:@"about:blank"]]];
+
+    releaseDataStoreForPartition(self.dataStorePartition);
+    self.dataStorePartition = nil;
   });
 
   // Release our strong reference immediately so the main queue block
@@ -3891,6 +3944,13 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
     [self.webView removeObserver:self forKeyPath:@"fullscreenState"];
   } @catch (NSException *exception) {
     // Observer already removed in -remove
+  }
+  // A view that was never removed still gives its reference back.
+  NSString *partition = _dataStorePartition;
+  if (partition) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      releaseDataStoreForPartition(partition);
+    });
   }
 }
 
@@ -11874,7 +11934,7 @@ extern "C" const char *sessionGetCookies(const char *partitionIdentifier,
           NSString *filterDomain = filter[@"domain"];
 
           WKWebsiteDataStore *dataStore =
-              createDataStoreForPartition([partitionStr UTF8String]);
+              sessionDataStoreForPartition([partitionStr UTF8String]);
           WKHTTPCookieStore *cookieStore = dataStore.httpCookieStore;
 
           [cookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
@@ -12018,7 +12078,7 @@ extern "C" bool sessionSetCookie(const char *partitionIdentifier,
       5 * NSEC_PER_SEC, ^(dispatch_semaphore_t completionSemaphore) {
         @autoreleasepool {
           WKWebsiteDataStore *dataStore =
-              createDataStoreForPartition([partitionStr UTF8String]);
+              sessionDataStoreForPartition([partitionStr UTF8String]);
           WKHTTPCookieStore *cookieStore = dataStore.httpCookieStore;
 
           [cookieStore setCookie:cookie
@@ -12054,7 +12114,7 @@ extern "C" bool sessionRemoveCookie(const char *partitionIdentifier,
       5 * NSEC_PER_SEC, ^(dispatch_semaphore_t completionSemaphore) {
         @autoreleasepool {
           WKWebsiteDataStore *dataStore =
-              createDataStoreForPartition([partitionStr UTF8String]);
+              sessionDataStoreForPartition([partitionStr UTF8String]);
           WKHTTPCookieStore *cookieStore = dataStore.httpCookieStore;
 
           [cookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
@@ -12100,7 +12160,7 @@ extern "C" void sessionClearCookies(const char *partitionIdentifier) {
       5 * NSEC_PER_SEC, ^(dispatch_semaphore_t completionSemaphore) {
         @autoreleasepool {
           WKWebsiteDataStore *dataStore =
-              createDataStoreForPartition([partitionStr UTF8String]);
+              sessionDataStoreForPartition([partitionStr UTF8String]);
 
           NSSet *dataTypes = [NSSet setWithObject:WKWebsiteDataTypeCookies];
           NSDate *dateFrom = [NSDate dateWithTimeIntervalSince1970:0];
@@ -12129,7 +12189,7 @@ extern "C" void sessionClearStorageData(const char *partitionIdentifier,
       10 * NSEC_PER_SEC, ^(dispatch_semaphore_t completionSemaphore) {
         @autoreleasepool {
           WKWebsiteDataStore *dataStore =
-              createDataStoreForPartition([partitionStr UTF8String]);
+              sessionDataStoreForPartition([partitionStr UTF8String]);
 
           NSMutableSet *dataTypes = [NSMutableSet set];
 
