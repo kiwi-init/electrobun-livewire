@@ -189,6 +189,8 @@ const WebviewState = struct {
     bridge_token: BridgeToken,
     socket_handle: ?std.posix.socket_t,
     transport_ready: bool,
+    // Whether the view's scheme handler serves views:// (allowedProtocols).
+    allow_views: bool = true,
 };
 
 const BridgeToken = [32]u8;
@@ -395,6 +397,9 @@ var window_registry = std.AutoHashMap(u32, WindowState).init(allocator);
 var window_registry_mutex: synchronization.Mutex = .init;
 var webview_registry = std.AutoHashMap(u32, WebviewState).init(allocator);
 var webview_registry_mutex: synchronization.Mutex = .init;
+// setNextWebviewAllowedProtocols' views flag, taken by the next createWebview
+// like the native side's (guarded by webview_registry_mutex).
+var next_webview_allow_views: bool = true;
 var wgpu_view_registry = std.AutoHashMap(u32, WgpuViewState).init(allocator);
 var wgpu_view_registry_mutex: synchronization.Mutex = .init;
 var pending_host_messages: std.ArrayList(PendingHostMessage) = .empty;
@@ -2166,10 +2171,19 @@ fn collectWgpuViewIdsForWindow(window_id: u32, list: *std.ArrayList(u32)) void {
     }
 }
 
+// Inline HTML is served as views://internal/index.html so the page is a secure
+// context (the preload's RPC encryption needs crypto.subtle); loaded straight
+// from the string it would be an opaque about:blank page. The system webviews
+// serve that URL only where views:// is allowed, and Windows' still loads the
+// string.
+fn servesInlineHtmlFromViews(state: WebviewState) bool {
+    return state.renderer == .cef or (state.allow_views and builtin.os.tag != .windows);
+}
+
 fn loadManagedHTMLForWebview(webview_id: u32, html: [*:0]const u8) void {
     const state = lookupWebviewState(webview_id) orelse return;
 
-    if (state.renderer == .cef) {
+    if (servesInlineHtmlFromViews(state)) {
         const SetWebviewHTMLContentFn = *const fn (u32, [*:0]const u8) callconv(.c) void;
         const set_webview_html_content = lookupNativeSymbol(SetWebviewHTMLContentFn, "setWebviewHTMLContent") orelse return;
         set_webview_html_content(webview_id, html);
@@ -3545,11 +3559,14 @@ export fn createWebview(
         .bridge_token = bridge_token,
         .socket_handle = null,
         .transport_ready = false,
+        .allow_views = next_webview_allow_views,
     }) catch |err| {
+        next_webview_allow_views = true;
         webview_registry_mutex.unlock(coreIo());
         setLastError("Failed to store webview state: {s}", .{@errorName(err)});
         return 0;
     };
+    next_webview_allow_views = true;
     webview_registry_mutex.unlock(coreIo());
 
     webview_registry_mutex.lockUncancelable(coreIo());
@@ -3708,6 +3725,9 @@ export fn setNextWebviewBridgeOrigins(origins_json: [*:0]const u8) void {
 
 export fn setNextWebviewAllowedProtocols(allow_views: bool, allow_app_data: bool) void {
     clearLastError();
+    webview_registry_mutex.lockUncancelable(coreIo());
+    next_webview_allow_views = allow_views;
+    webview_registry_mutex.unlock(coreIo());
     const SetNextWebviewAllowedProtocolsFn = *const fn (bool, bool) callconv(.c) void;
     const set_allowed_protocols = lookupNativeSymbol(
         SetNextWebviewAllowedProtocolsFn,
@@ -4937,6 +4957,19 @@ test "internal bridge packets act only on the sender's own tags and window" {
     // Its own page can remove it.
     processInternalBridgeBatch(9101, "[\"{\\\"type\\\":\\\"message\\\",\\\"id\\\":\\\"webviewTagRemove\\\",\\\"payload\\\":{\\\"id\\\":9103}}\"]");
     try std.testing.expect(!webview_registry.contains(9103));
+}
+
+test "inline html uses views://internal only where views:// is allowed" {
+    var state = testWebviewState(1, null);
+    try std.testing.expect(servesInlineHtmlFromViews(state) == (builtin.os.tag != .windows));
+    state.allow_views = false;
+    try std.testing.expect(!servesInlineHtmlFromViews(state));
+    state.renderer = .cef;
+    try std.testing.expect(servesInlineHtmlFromViews(state));
+
+    setNextWebviewAllowedProtocols(false, false);
+    try std.testing.expect(!next_webview_allow_views);
+    next_webview_allow_views = true;
 }
 
 test "host webview JSON events encode detail as data" {
