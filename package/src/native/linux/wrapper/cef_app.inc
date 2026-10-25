@@ -1961,7 +1961,7 @@ bool initializeCEF() {
     
     // CRITICAL: Call gtk_disable_setlocale before any CEF operations
     // CEF internally calls GTK initialization, so we must do this first
-    gtk_disable_setlocale();
+    toolkit::disableSetlocale();
     
     // Get command line arguments
     int argc = 0;

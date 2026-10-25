@@ -386,7 +386,7 @@ void runCEFEventLoop() {
     if (!initializeCEF()) {
         fprintf(stderr, "CEF: initialization failed; running GTK loop for clean shutdown\n");
         initializeGTK();
-        gtk_main();
+        toolkit::runMainLoop();
         g_shutdownComplete.store(true);
         return;
     }
@@ -409,7 +409,7 @@ void runGTKEventLoop() {
     initializeGTK();
     printf("=== ELECTROBUN NATIVE WRAPPER VERSION 1.0.2 === GTK EVENT LOOP STARTED ===\n");
 
-    gtk_main();
+    toolkit::runMainLoop();
     g_shutdownComplete.store(true);
 }
 
