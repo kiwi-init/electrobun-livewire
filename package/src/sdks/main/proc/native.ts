@@ -193,7 +193,6 @@ const core = (() => {
 					FFIType.bool,
 					FFIType.bool,
 					FFIType.bool,
-					FFIType.bool,
 				],
 				returns: FFIType.u32,
 			},
@@ -366,9 +365,10 @@ const core = (() => {
 					FFIType.cstring,
 					FFIType.cstring,
 					FFIType.cstring,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
+					FFIType.bool, // sandbox
+					FFIType.bool, // startTransparent
+					FFIType.bool, // startPassthrough
+					FFIType.bool, // spellCheck
 				],
 				returns: FFIType.u32,
 			},
