@@ -817,6 +817,52 @@ export const windowTests = [
   }),
 
   defineTest({
+    name: "Window recreated from getFrame keeps its place and size",
+    category: "BrowserWindow",
+    description: "getFrame(), setFrame() and setSize() use the constructor's meaning: top-left corner plus content size",
+    timeout: 20000,
+    requires: { platform: ["darwin", "linux"] },
+    async run({ createWindow, log }) {
+      const near = (a: { x: number; y: number; width: number; height: number }, b: typeof a, label: string) => {
+        for (const key of ["x", "y", "width", "height"] as const) {
+          expect(Math.abs(a[key] - b[key]), `${label} ${key}: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`).toBeLessThan(3);
+        }
+      };
+      const first = await createWindow({
+        url: "views://test-harness/index.html",
+        title: "Frame Round Trip",
+        x: 160,
+        y: 140,
+        width: 500,
+        height: 380,
+        renderer: "native",
+      });
+      await sleep(800);
+      const frame = first.window.getFrame();
+      log(`created 500x380 at (160, 140), getFrame: ${JSON.stringify(frame)}`);
+      near(frame, { x: 160, y: 140, width: 500, height: 380 }, "getFrame after create");
+
+      const second = await createWindow({
+        url: "views://test-harness/index.html",
+        title: "Frame Round Trip (recreated)",
+        ...frame,
+        renderer: "native",
+      });
+      await sleep(800);
+      near(second.window.getFrame(), frame, "recreated window");
+
+      second.window.setFrame(frame.x + 40, frame.y + 30, 560, 420);
+      await sleep(500);
+      near(second.window.getFrame(), { x: frame.x + 40, y: frame.y + 30, width: 560, height: 420 }, "setFrame");
+
+      second.window.setSize(520, 400);
+      await sleep(500);
+      near(second.window.getFrame(), { x: frame.x + 40, y: frame.y + 30, width: 520, height: 400 }, "setSize");
+      log(`after setFrame + setSize: ${JSON.stringify(second.window.getFrame())}`);
+    },
+  }),
+
+  defineTest({
     name: "Window omitted position centers on primary display",
     category: "BrowserWindow",
     description: "Omitting either frame coordinate centers the window on the primary work area",
@@ -840,11 +886,15 @@ export const windowTests = [
         });
 
         try {
+          // The whole window is centered, but getFrame() reports the content
+          // size, so the top sits up to a title bar higher than content-only
+          // centering would put it.
           const frame = win.getFrame();
           const expectedX = workArea.x + (workArea.width - frame.width) / 2;
-          const expectedY = workArea.y + (workArea.height - frame.height) / 2;
+          const contentCenteredY = workArea.y + (workArea.height - frame.height) / 2;
           expect(Math.abs(frame.x - expectedX), `${testCase.label} x`).toBeLessThan(3);
-          expect(Math.abs(frame.y - expectedY), `${testCase.label} y`).toBeLessThan(3);
+          expect(frame.y, `${testCase.label} y`).toBeLessThan(contentCenteredY + 3);
+          expect(frame.y, `${testCase.label} y`).toBeGreaterThan(contentCenteredY - 30);
           log(`${testCase.label} omitted: centered at (${frame.x}, ${frame.y})`);
         } finally {
           win.close();

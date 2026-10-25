@@ -418,6 +418,11 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 		return ffi.request.setWindowSize({ winId: this.id, width, height });
 	}
 
+	/**
+	 * A frame is the window's top-left corner and its content size (without
+	 * the title bar), the same as the constructor's frame and the resize
+	 * event, so `new BrowserWindow({ frame: win.getFrame() })` reproduces it.
+	 */
 	setFrame(x: number, y: number, width: number, height: number) {
 		this.frame = { x, y, width, height };
 		return ffi.request.setWindowFrame({ winId: this.id, x, y, width, height });

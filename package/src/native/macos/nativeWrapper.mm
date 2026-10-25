@@ -9524,18 +9524,30 @@ extern "C" bool isWindowAlwaysOnTop(NSWindow *window) {
   });
 }
 
+// A window frame in the API is the window's top-left corner, in top-left
+// coordinates relative to the primary screen, plus its content size: the same
+// meaning as createWindow's frame and the resize event, so a window recreated
+// from getWindowFrame keeps its place and size.
+static CGFloat primaryScreenHeight() {
+  NSScreen *primary = [NSScreen screens].firstObject ?: [NSScreen mainScreen];
+  return primary.frame.size.height;
+}
+
+static NSRect windowFrameForTopLeftAndContentSize(NSWindow *window, double x,
+                                                  double y, double width,
+                                                  double height) {
+  NSRect frame =
+      [window frameRectForContentRect:NSMakeRect(0, 0, width, height)];
+  frame.origin =
+      NSMakePoint(x, primaryScreenHeight() - y - frame.size.height);
+  return frame;
+}
+
 extern "C" void setWindowPosition(NSWindow *window, double x, double y) {
   runOnMainThreadAsyncVoid(^{
     if (!window)
       return;
-    // macOS uses bottom-left origin, so we need to convert from top-left
-    NSScreen *screen = [window screen] ?: [NSScreen mainScreen];
-    CGFloat screenHeight = screen.frame.size.height;
-    CGFloat windowHeight = window.frame.size.height;
-    // Convert from top-left origin (what users expect) to bottom-left origin
-    // (what macOS uses)
-    CGFloat adjustedY = screenHeight - y - windowHeight;
-    [window setFrameOrigin:NSMakePoint(x, adjustedY)];
+    [window setFrameTopLeftPoint:NSMakePoint(x, primaryScreenHeight() - y)];
   });
 }
 
@@ -9610,13 +9622,11 @@ extern "C" void setWindowSize(NSWindow *window, double width, double height) {
   runOnMainThreadAsyncVoid(^{
     if (!window)
       return;
-    NSRect frame = window.frame;
-    // Keep the top-left corner fixed when resizing
-    CGFloat oldHeight = frame.size.height;
-    frame.size.width = width;
-    frame.size.height = height;
-    // Adjust y to keep top-left corner fixed (macOS uses bottom-left origin)
-    frame.origin.y += (oldHeight - height);
+    NSRect current = window.frame;
+    NSRect frame =
+        [window frameRectForContentRect:NSMakeRect(0, 0, width, height)];
+    frame.origin = NSMakePoint(current.origin.x, NSMaxY(current) -
+                                                     frame.size.height);
     [window setFrame:frame display:YES animate:NO];
   });
 }
@@ -9626,31 +9636,29 @@ extern "C" void setWindowFrame(NSWindow *window, double x, double y,
   runOnMainThreadAsyncVoid(^{
     if (!window)
       return;
-    // macOS uses bottom-left origin, convert from top-left
-    NSScreen *screen = [window screen] ?: [NSScreen mainScreen];
-    CGFloat screenHeight = screen.frame.size.height;
-    CGFloat adjustedY = screenHeight - y - height;
-    NSRect frame = NSMakeRect(x, adjustedY, width, height);
-    [window setFrame:frame display:YES animate:NO];
+    [window setFrame:windowFrameForTopLeftAndContentSize(window, x, y, width,
+                                                         height)
+             display:YES
+             animate:NO];
   });
 }
 
 extern "C" void getWindowFrame(NSWindow *window, double *outX, double *outY,
                                double *outWidth, double *outHeight) {
   __block NSRect frame = NSZeroRect;
+  __block NSRect content = NSZeroRect;
   __block CGFloat screenHeight = 0;
   runOnMainThreadSyncVoid(^{
     if (!window)
       return;
     frame = window.frame;
-    NSScreen *screen = [window screen] ?: [NSScreen mainScreen];
-    screenHeight = screen.frame.size.height;
+    content = [window contentRectForFrameRect:frame];
+    screenHeight = primaryScreenHeight();
   });
-  // Convert from bottom-left origin to top-left origin
   *outX = frame.origin.x;
-  *outY = screenHeight - frame.origin.y - frame.size.height;
-  *outWidth = frame.size.width;
-  *outHeight = frame.size.height;
+  *outY = screenHeight - NSMaxY(frame);
+  *outWidth = content.size.width;
+  *outHeight = content.size.height;
 }
 
 extern "C" void resizeWebview(AbstractView *abstractView, double x, double y,
