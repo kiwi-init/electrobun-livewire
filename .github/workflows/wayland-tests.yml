@@ -18,6 +18,7 @@ on:
       - '.github/scripts/check-kitchen-results.sh'
       - '.github/wayland-known-failures.txt'
       - 'package/scripts/test-linux-xdg-portal.sh'
+      - 'package/scripts/test-linux-sni-tray.sh'
   workflow_dispatch:
 
 permissions:
@@ -48,6 +49,9 @@ jobs:
       - name: xdg-desktop-portal client against a mock portal
         working-directory: package
         run: scripts/test-linux-xdg-portal.sh
+      - name: StatusNotifierItem tray against a mock watcher
+        working-directory: package
+        run: scripts/test-linux-sni-tray.sh
       - name: Build the devkit
         working-directory: package
         run: |
