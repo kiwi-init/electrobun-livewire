@@ -490,7 +490,8 @@ static std::filesystem::path appDataRoot() {
     std::string base;
     if (xdg && *xdg) base = xdg;
     else if (const char* home = g_get_home_dir()) base = std::string(home) + "/.local/share";
-    return buildAppDataPath(base, g_electrobunIdentifier, g_electrobunChannel);
+    // Only userData/appdata is served: the rest of userData stays private.
+    return buildAppDataPath(base, g_electrobunIdentifier, g_electrobunChannel, "appdata");
 }
 
 static bool readContainedFile(const std::filesystem::path& rootPath,

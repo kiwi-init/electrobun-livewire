@@ -4064,10 +4064,12 @@ runAppDataProtocolTest :: proc(state: ^AppState, enabled: bool) -> string {
 	}
 	defer electrobun.pathsDeinit(&paths, state.allocator)
 
-	if mkdir_err := os.make_directory_all(paths.userData); mkdir_err != nil && mkdir_err != .Exist {
+	appdata_root, _ := filepath.join({paths.userData, "appdata"}, state.allocator)
+	defer delete(appdata_root, state.allocator)
+	if mkdir_err := os.make_directory_all(appdata_root); mkdir_err != nil && mkdir_err != .Exist {
 		return "CreateAppDataProtocolFixtureFailed"
 	}
-	fixture_path, _ := filepath.join({paths.userData, fixture_name}, state.allocator)
+	fixture_path, _ := filepath.join({appdata_root, fixture_name}, state.allocator)
 	defer delete(fixture_path, state.allocator)
 	if write_err := os.write_entire_file(fixture_path, fixture_contents); write_err != nil {
 		return "CreateAppDataProtocolFixtureFailed"

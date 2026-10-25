@@ -8,12 +8,17 @@ const fixtureName = "kitchen-appdata-protocol.txt";
 const fixtureContents = "electrobun-appdata-protocol-ok";
 const escapeFixtureName = "kitchen-appdata-escape-target.txt";
 const symlinkFixtureName = "kitchen-appdata-escape-link.txt";
+const privateFixtureName = "kitchen-appdata-private.txt";
 
+// appdata:// serves only Utils.paths.appdataProtocolRoot (userData/appdata).
+// The escape targets live in userData itself, which must stay private.
 async function writeFixture() {
-  await mkdir(Utils.paths.userData, { recursive: true });
-  await writeFile(join(Utils.paths.userData, fixtureName), fixtureContents, "utf8");
-  const escapeTarget = join(dirname(Utils.paths.userData), escapeFixtureName);
-  const symlinkPath = join(Utils.paths.userData, symlinkFixtureName);
+  const root = Utils.paths.appdataProtocolRoot;
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, fixtureName), fixtureContents, "utf8");
+  await writeFile(join(Utils.paths.userData, privateFixtureName), "must-not-be-readable", "utf8");
+  const escapeTarget = join(dirname(root), escapeFixtureName);
+  const symlinkPath = join(root, symlinkFixtureName);
   await writeFile(escapeTarget, "must-not-be-readable", "utf8");
   await rm(symlinkPath, { force: true });
   try {
@@ -74,6 +79,7 @@ function protocolTest(name: string, enabled: boolean) {
         expect(result?.text).toBe(fixtureContents);
 
         const escapeUrls = [
+          `appdata://${privateFixtureName}`,
           `appdata://%2e%2e/${escapeFixtureName}`,
           ...(hasSymlinkFixture ? [`appdata://${symlinkFixtureName}`] : []),
         ];
@@ -83,7 +89,8 @@ function protocolTest(name: string, enabled: boolean) {
             .catch(error => ({ ok: false, text: String(error) }))));`,
         });
         expect(escapeResults?.[0]?.ok).toBe(false);
-        if (hasSymlinkFixture) expect(escapeResults?.[1]?.ok).toBe(false);
+        expect(escapeResults?.[1]?.ok).toBe(false);
+        if (hasSymlinkFixture) expect(escapeResults?.[2]?.ok).toBe(false);
       } else {
         expect(result?.ok).toBe(false);
         expect(result?.text === fixtureContents).toBe(false);

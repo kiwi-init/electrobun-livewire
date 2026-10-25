@@ -697,6 +697,11 @@ export const paths = {
 		const { identifier } = getVersionInfo();
 		return join(getAppDataDir(), identifier, getInstalledRootName());
 	},
+	/** The folder `appdata://` serves (`userData/appdata`); the rest of userData stays private. */
+	get appdataProtocolRoot(): string {
+		const { identifier } = getVersionInfo();
+		return join(getAppDataDir(), identifier, getInstalledRootName(), "appdata");
+	},
 	get userCache(): string {
 		const { identifier } = getVersionInfo();
 		return join(getCacheDir(), identifier, getInstalledRootName());

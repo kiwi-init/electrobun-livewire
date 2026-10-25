@@ -3083,12 +3083,10 @@ fn run_appdata_protocol_test(enabled: bool) -> Result<(), String> {
     const FIXTURE_CONTENTS: &str = "electrobun-appdata-protocol-ok";
     let state = app_state();
     let paths = resolved_paths()?;
-    std::fs::create_dir_all(&paths.user_data)
-        .map_err(|err| format!("failed to create user data directory: {err}"))?;
-    std::fs::write(
-        std::path::Path::new(&paths.user_data).join(FIXTURE_NAME),
-        FIXTURE_CONTENTS,
-    )
+    let appdata_root = std::path::Path::new(&paths.user_data).join("appdata");
+    std::fs::create_dir_all(&appdata_root)
+        .map_err(|err| format!("failed to create appdata root: {err}"))?;
+    std::fs::write(appdata_root.join(FIXTURE_NAME), FIXTURE_CONTENTS)
     .map_err(|err| format!("failed to write appdata fixture: {err}"))?;
 
     reset_callback_state();

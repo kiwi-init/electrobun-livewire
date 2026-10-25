@@ -3498,8 +3498,10 @@ fn runAppDataProtocolTest(state: *AppState, enabled: bool) !void {
     const fixture_contents = "electrobun-appdata-protocol-ok";
     var paths = try electrobun.Paths.resolve(state.allocator, state.app_info);
     defer paths.deinit(state.allocator);
-    try std.Io.Dir.cwd().createDirPath(electrobun.defaultIo(), paths.userData);
-    const fixture_path = try std.fs.path.join(state.allocator, &.{ paths.userData, fixture_name });
+    const appdata_root = try std.fs.path.join(state.allocator, &.{ paths.userData, "appdata" });
+    defer state.allocator.free(appdata_root);
+    try std.Io.Dir.cwd().createDirPath(electrobun.defaultIo(), appdata_root);
+    const fixture_path = try std.fs.path.join(state.allocator, &.{ appdata_root, fixture_name });
     defer state.allocator.free(fixture_path);
     {
         const file = try std.Io.Dir.createFileAbsolute(electrobun.defaultIo(), fixture_path, .{});
