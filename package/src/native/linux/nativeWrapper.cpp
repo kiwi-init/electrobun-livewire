@@ -6411,6 +6411,10 @@ static void finishSchemeResponse(WebKitURISchemeRequest* request,
     WebKitURISchemeResponse* response = webkit_uri_scheme_response_new(stream, size);
     webkit_uri_scheme_response_set_content_type(response, mimeType);
     SoupMessageHeaders* headers = soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+    // Older WebKitGTK takes the MIME type and length from these headers once
+    // any are set, so they have to be here too, not only on the response.
+    soup_message_headers_set_content_type(headers, mimeType, nullptr);
+    soup_message_headers_set_content_length(headers, static_cast<goffset>(size));
     soup_message_headers_append(headers, "Access-Control-Allow-Origin", "*");
     soup_message_headers_append(headers, "X-Content-Type-Options", "nosniff");
     std::string contentSecurityPolicy = electrobun::viewContentSecurityPolicy(webviewId);
