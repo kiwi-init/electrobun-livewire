@@ -2696,10 +2696,25 @@ async function buildPreload() {
 		throw new Error("Failed to build sandboxed preload script");
 	}
 
+	// AppEngine's window.engine facade, injected as the custom preload of the
+	// views AppEngine boots UIs in.
+	const appEngineResult = await Bun.build({
+		entrypoints: [join(process.cwd(), "src", "browser", "appengine", "page.ts")],
+		target: "browser",
+		format: "esm",
+		minify: false,
+	});
+
+	if (!appEngineResult.success) {
+		console.error("AppEngine page build failed:", appEngineResult.logs);
+		throw new Error("Failed to build the AppEngine page script");
+	}
+
 	// Wrap in IIFE to prevent top-level variables from leaking into webview global scope
 	// (Bun removed iife format support in 1.3.10, so we build as esm and wrap manually)
 	const fullPreloadJs = `(function(){${await fullResult.outputs[0].text()}})();`;
 	const sandboxedPreloadJs = `(function(){${await sandboxedResult.outputs[0].text()}})();`;
+	const appEnginePageJs = `(function(){${await appEngineResult.outputs[0].text()}})();`;
 	const distDir = join(process.cwd(), "dist");
 
 	const outputContent = `// Auto-generated file. Do not edit directly.
@@ -2710,11 +2725,14 @@ export const preloadScript = ${JSON.stringify(fullPreloadJs)};
 
 // Minimal preload for sandboxed/untrusted webviews (lifecycle events only, no RPC)
 export const preloadScriptSandboxed = ${JSON.stringify(sandboxedPreloadJs)};
+
+// AppEngine's window.engine facade (custom preload of AppEngine's views)
+export const appEnginePageScript = ${JSON.stringify(appEnginePageJs)};
 `;
 
 	writeFileSync(outputPath, outputContent);
 	mkdirSync(distDir, { recursive: true });
 	writeFileSync(join(distDir, "preload-full.js"), fullPreloadJs);
 	writeFileSync(join(distDir, "preload-sandboxed.js"), sandboxedPreloadJs);
-	console.log("Preload scripts compiled successfully (full + sandboxed)");
+	console.log("Preload scripts compiled successfully (full + sandboxed + appengine)");
 }

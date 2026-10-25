@@ -93,7 +93,7 @@ beforeAll(() => {
 	mkdirSync(dirname(generatedPreload), { recursive: true });
 	writeFileSync(
 		generatedPreload,
-		'export const preloadScript = "";\nexport const preloadScriptSandboxed = "";\n',
+		'export const preloadScript = "";\nexport const preloadScriptSandboxed = "";\nexport const appEnginePageScript = "";\n',
 	);
 });
 
