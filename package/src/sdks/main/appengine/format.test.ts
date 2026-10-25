@@ -127,11 +127,19 @@ describe("uipack", () => {
 
 	test("path rules", () => {
 		for (const ok of ["index.html", "a/b/c.js", "x-y_z.v2.css"]) expect(uipackPathError(ok)).toBeNull();
-		for (const bad of ["", "../x", "a/./b", "a//b", "/abs", "sp ace.js", "ü.js", "a\\b", "x".repeat(200)]) {
+		for (const bad of ["", "../x", "a/./b", "a//b", "/abs", "sp ace.js", "ü.js", "a\\b", "x".repeat(200), "dir./a.js", "a.", "CON", "nul.txt", "x/Com1.js", "lpt9"]) {
 			expect(uipackPathError(bad)).not.toBeNull();
 		}
 		expect(() => buildUipack("1.4.0", new Map([["../x", new Uint8Array()]]))).toThrow(/\.\.\/x/);
 		expect(() => buildUipack("bad version", files)).toThrow(/uiVersion/);
+		for (const ok of ["console.js", "nullable.js", "a.b/c"]) expect(uipackPathError(ok)).toBeNull();
+	});
+
+	test("refuses paths that differ only in case", () => {
+		const twins = new Map([["App.js", new Uint8Array([1])], ["app.js", new Uint8Array([2])]]);
+		expect(() => buildUipack("1.4.0", twins)).toThrow(/differ only in case/);
+		const evil = new TextEncoder().encode(JSON.stringify({ format: "uipack/1", uiVersion: "1.4.0", files: { "A.js": "", "a.js": "" } }));
+		expect(readUipack(evil, { sha256: sha256Hex(evil), uiVersion: "1.4.0" })).toMatchObject({ ok: false, reason: expect.stringContaining("differ only in case") });
 	});
 
 	test("file names", () => {

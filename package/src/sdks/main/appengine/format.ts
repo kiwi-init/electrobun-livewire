@@ -79,6 +79,8 @@ const UI_VERSION = /^[A-Za-z0-9._-]{1,64}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const PATH_CHARS = /^[A-Za-z0-9._\-/]+$/;
+// Names Windows reserves in any directory, with or without an extension.
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 const isNonNegativeInteger = (value: unknown): value is number =>
 	typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -159,6 +161,21 @@ export function uipackPathError(path: string): string | null {
 	if (!PATH_CHARS.test(path)) return "may only use A–Z a–z 0–9 . _ - /";
 	for (const segment of path.split("/")) {
 		if (segment === "" || segment === "." || segment === "..") return "has an empty, . or .. segment";
+		// Windows strips a trailing dot, so "a." and "a" would be the same file.
+		if (segment.endsWith(".")) return "has a segment ending in .";
+		if (WINDOWS_RESERVED.test(segment)) return `uses "${segment}", a name Windows reserves`;
+	}
+	return null;
+}
+
+// Paths that differ only in case land on the same file on macOS and Windows.
+function caseCollision(paths: Iterable<string>): string | null {
+	const seen = new Map<string, string>();
+	for (const path of paths) {
+		const folded = path.toLowerCase();
+		const other = seen.get(folded);
+		if (other !== undefined) return `"${other}" and "${path}" differ only in case`;
+		seen.set(folded, path);
 	}
 	return null;
 }
@@ -169,6 +186,8 @@ export function buildUipack(
 	files: Map<string, Uint8Array>,
 ): { bytes: Uint8Array; sha256: string; fileCount: number } {
 	if (!UI_VERSION.test(uiVersion)) throw new Error(`bad uiVersion "${uiVersion}"`);
+	const collision = caseCollision(files.keys());
+	if (collision) throw new Error(`files ${collision}`);
 	const encoded: Record<string, string> = {};
 	for (const path of [...files.keys()].sort()) {
 		const error = uipackPathError(path);
@@ -197,6 +216,8 @@ export function readUipack(
 	if (!pack.files || typeof pack.files !== "object" || Array.isArray(pack.files)) {
 		return { ok: false, reason: "bundle has no files" };
 	}
+	const collision = caseCollision(Object.keys(pack.files));
+	if (collision) return { ok: false, reason: `bundle files ${collision}` };
 	const files = new Map<string, Uint8Array>();
 	for (const [path, data] of Object.entries(pack.files)) {
 		const error = uipackPathError(path);
