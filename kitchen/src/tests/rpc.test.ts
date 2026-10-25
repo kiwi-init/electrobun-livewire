@@ -401,6 +401,32 @@ function headlessPreloadTest(name: string, body: string | string[], compatMode: 
 
 export const rpcTests = [
 	defineTest({
+		name: "RPC works in a window created with html:",
+		category: "BrowserView",
+		description: "An inline html: page is a secure context, so the preload's encryption starts and RPC round-trips (it used to load as an opaque about:blank page without crypto.subtle)",
+		timeout: 20000,
+		requires: { renderer: "native" },
+		async run({ createWindow, log }) {
+			const rpc = createTestHarnessRPC(5000);
+			await createWindow({
+				// The harness bundle brings the page side of RPC (Electroview).
+				html: '<!doctype html><title>inline</title><script src="views://test-harness/index.js"></script><p>inline html</p>',
+				rpc,
+				renderer: "native",
+				title: "Inline html RPC",
+			});
+			await sleep(1500);
+			const page = await rpc.request.evaluateJavascriptWithResponse({
+				script: "return { secure: isSecureContext, subtle: !!(crypto && crypto.subtle), title: document.title, href: location.href }",
+			});
+			log(JSON.stringify(page));
+			expect(page.secure).toBe(true);
+			expect(page.subtle).toBe(true);
+			expect(page.title).toBe("inline");
+		},
+	}),
+
+	defineTest({
 		name: "Webview tag BrowserView created event",
 		category: "BrowserView",
 		description:

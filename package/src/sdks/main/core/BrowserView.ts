@@ -328,12 +328,15 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	loadHTML(html: string) {
 		this.html = html;
 
-		if (this.renderer === "cef") {
-			// For CEF, store HTML content in native map and use scheme handler
+		// Served as views://internal/index.html, so the page is a secure context
+		// and the preload's RPC encryption (crypto.subtle) works. Loaded straight
+		// from the string it would be an opaque about:blank page without it. The
+		// system webviews serve that URL only where views:// is allowed, and
+		// Windows' still loads the string.
+		if (this.renderer === "cef" || (this.allowedProtocols.views && process.platform !== "win32")) {
 			ffi.request.setWebviewHTMLContent({ id: this.id, html });
 			this.loadURL("views://internal/index.html");
 		} else {
-			// For WKWebView, load HTML content directly
 			ffi.request.loadHTMLInWebView({ id: this.id, html });
 		}
 	}
