@@ -14654,6 +14654,38 @@ extern "C" ELECTROBUN_EXPORT void setAppWakeHandler(void (*callback)()) {
     // Not supported on Windows yet - stub to prevent dlopen failure
 }
 
+extern "C" ELECTROBUN_EXPORT void setNotificationResponseHandler(void (*handler)(char*)) {
+    (void)handler;
+    // Not supported on Windows yet - stub to prevent dlopen failure
+}
+
+extern "C" ELECTROBUN_EXPORT void freeNativeString(char *value) {
+    free(value);
+}
+
+// Bun only calls this on macOS; other platforms use showNotification.
+extern "C" ELECTROBUN_EXPORT void showNotificationWithOptions(const char *optionsJson) {
+    (void)optionsJson;
+}
+
+extern "C" ELECTROBUN_EXPORT void setDockBadge(const char *label) {
+    (void)label;
+    // Not supported on Windows yet - stub to prevent dlopen failure
+}
+
+extern "C" ELECTROBUN_EXPORT char *getDockBadge() {
+    return nullptr;
+}
+
+extern "C" ELECTROBUN_EXPORT void setDockProgress(double progress) {
+    (void)progress;
+    // Not supported on Windows yet - stub to prevent dlopen failure
+}
+
+extern "C" ELECTROBUN_EXPORT double getDockProgress() {
+    return -1;
+}
+
 // Dock icon visibility - macOS only, stubs for Windows
 extern "C" ELECTROBUN_EXPORT void setDockIconVisible(bool visible) {
     (void)visible;

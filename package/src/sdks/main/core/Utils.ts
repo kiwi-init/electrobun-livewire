@@ -3,6 +3,7 @@ import { electrobunEventEmitter } from "../events/eventEmitter";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { OS, type SupportedOS } from "../../../shared/platform";
 import { decodeDialogPaths } from "../../../shared/dialog-paths";
 import { isBuildEnvironment } from "../../../shared/naming";
@@ -63,6 +64,51 @@ export const isDockIconVisible = (): boolean => {
 	return ffi.request.isDockIconVisible();
 };
 
+/**
+ * Show a badge on the app's dock icon (macOS), e.g. an unread count.
+ * A count of 0, an empty string or null removes it. No-op elsewhere.
+ *
+ * @example
+ * setDockBadge(3);       // "3"
+ * setDockBadge("new");   // "new"
+ * setDockBadge(null);    // no badge
+ */
+export const setDockBadge = (badge: string | number | null): void => {
+	const label =
+		typeof badge === "number" ? (badge > 0 ? String(Math.floor(badge)) : null) : badge || null;
+	ffi.request.setDockBadge({ label });
+};
+
+/** The dock badge's label, or null when there is none. */
+export const getDockBadge = (): string | null => {
+	return ffi.request.getDockBadge() ?? null;
+};
+
+/**
+ * Show a progress bar over the app's dock icon (macOS), from 0 to 1.
+ * null removes it. No-op elsewhere.
+ */
+export const setDockProgress = (progress: number | null): void => {
+	const value = progress === null || Number.isNaN(progress) ? null : Math.min(1, Math.max(0, progress));
+	ffi.request.setDockProgress({ progress: value });
+};
+
+/** The dock progress shown, or null when there's no bar. */
+export const getDockProgress = (): number | null => {
+	return ffi.request.getDockProgress() ?? null;
+};
+
+export type NotificationAction = {
+	/** Reported as `action` in the notification-response event */
+	id: string;
+	/** The button's label */
+	title: string;
+	/** Shown in red */
+	destructive?: boolean;
+	/** Bring the app to the front when it's chosen */
+	foreground?: boolean;
+};
+
 export type NotificationOptions = {
 	/**
 	 * The title of the notification (required)
@@ -80,6 +126,23 @@ export type NotificationOptions = {
 	 * If true, the notification will not play a sound
 	 */
 	silent?: boolean;
+	/**
+	 * Identifies the notification in notification-response events. Showing a
+	 * notification with the id of an earlier one replaces it. Defaults to a
+	 * random UUID.
+	 */
+	id?: string;
+	/**
+	 * Action buttons (macOS). Choosing one emits notification-response with
+	 * its id as `action`.
+	 */
+	actions?: NotificationAction[];
+	/**
+	 * A text reply field (macOS). Sending emits notification-response with
+	 * `action` set to the reply's id (default "reply") and `reply` set to the
+	 * text.
+	 */
+	reply?: { id?: string; title?: string; placeholder?: string; buttonTitle?: string };
 };
 
 /**
@@ -115,10 +178,30 @@ export type NotificationOptions = {
  *   body: "All files have been synchronized",
  *   silent: true
  * });
+ *
+ * // Actions and a reply field (macOS), handled through the app event
+ * const id = showNotification({
+ *   title: "Ana",
+ *   body: "Lunch?",
+ *   actions: [{ id: "mute", title: "Mute" }],
+ *   reply: { placeholder: "Reply to Ana" },
+ * });
+ * Electrobun.events.on("notification-response", (event) => {
+ *   if (event.data.id !== id) return;
+ *   if (event.data.action === "reply") send(event.data.reply);
+ * });
+ *
+ * @returns The notification's id
  */
-export const showNotification = (options: NotificationOptions): void => {
-	const { title, body, subtitle, silent } = options;
-	ffi.request.showNotification({ title, body, subtitle, silent });
+export const showNotification = (options: NotificationOptions): string => {
+	const { title, body, subtitle, silent, actions, reply } = options;
+	const id = options.id ?? randomUUID();
+	if (process.platform === "darwin") {
+		ffi.request.showNotificationWithOptions({ id, title, body, subtitle, silent, actions, reply });
+	} else {
+		ffi.request.showNotification({ title, body, subtitle, silent });
+	}
+	return id;
 };
 
 let isQuitting = false;

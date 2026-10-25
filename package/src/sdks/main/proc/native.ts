@@ -1181,6 +1181,36 @@ export const native = (() => {
 				returns: FFIType.void,
 			},
 
+			// Notification actions and the dock (macOS; stubs elsewhere)
+			setNotificationResponseHandler: {
+				args: [FFIType.function],
+				returns: FFIType.void,
+			},
+			showNotificationWithOptions: {
+				args: [FFIType.cstring],
+				returns: FFIType.void,
+			},
+			freeNativeString: {
+				args: [FFIType.ptr],
+				returns: FFIType.void,
+			},
+			setDockBadge: {
+				args: [FFIType.cstring],
+				returns: FFIType.void,
+			},
+			getDockBadge: {
+				args: [],
+				returns: FFIType.ptr,
+			},
+			setDockProgress: {
+				args: [FFIType.f64],
+				returns: FFIType.void,
+			},
+			getDockProgress: {
+				args: [],
+				returns: FFIType.f64,
+			},
+
 			// JSCallback utils for native code to use
 			setJSUtils: {
 				args: [
@@ -2529,6 +2559,38 @@ const _ffiImpl = {
 				silent,
 			);
 		},
+		// macOS: actions, a reply field and a caller-chosen id, so responses can
+		// be matched to the notification.
+		showNotificationWithOptions: (params: {
+			id: string;
+			title: string;
+			body?: string;
+			subtitle?: string;
+			silent?: boolean;
+			actions?: { id: string; title: string; destructive?: boolean; foreground?: boolean }[];
+			reply?: { id?: string; title?: string; placeholder?: string; buttonTitle?: string };
+		}): void => {
+			native_.symbols.showNotificationWithOptions(toCString(JSON.stringify(params)));
+		},
+		setDockBadge: (params: { label: string | null }): void => {
+			native_.symbols.setDockBadge(toCString(params.label ?? ""));
+		},
+		getDockBadge: (): string | null => {
+			const label = native_.symbols.getDockBadge();
+			if (!label) return null;
+			try {
+				return new CString(label).toString();
+			} finally {
+				native_.symbols.freeNativeString(label);
+			}
+		},
+		setDockProgress: (params: { progress: number | null }): void => {
+			native_.symbols.setDockProgress(params.progress ?? -1);
+		},
+		getDockProgress: (): number | null => {
+			const progress = native_.symbols.getDockProgress();
+			return progress < 0 ? null : progress;
+		},
 		setDockIconVisible: (params: { visible: boolean }): void => {
 			core_.symbols.setDockIconVisible(params.visible);
 		},
@@ -3218,6 +3280,31 @@ if (native) {
 	);
 	if (process.platform === "darwin") {
 		native_.symbols.setAppWakeHandler(appWakeCallback);
+	}
+
+	const notificationResponseCallback = new JSCallback(
+		(responsePtr: Pointer | null) => {
+			if (!responsePtr) return;
+			let response: { id?: unknown; action?: unknown; reply?: unknown };
+			try {
+				response = JSON.parse(new CString(responsePtr).toString());
+			} catch {
+				return;
+			} finally {
+				native_.symbols.freeNativeString(responsePtr);
+			}
+			if (typeof response.id !== "string" || typeof response.action !== "string") return;
+			const event = electrobunEventEmitter.events.app.notificationResponse({
+				id: response.id,
+				action: response.action,
+				...(typeof response.reply === "string" ? { reply: response.reply } : {}),
+			});
+			electrobunEventEmitter.emitEvent(event);
+		},
+		{ args: [FFIType.ptr], returns: "void", threadsafe: true },
+	);
+	if (process.platform === "darwin") {
+		native_.symbols.setNotificationResponseHandler(notificationResponseCallback);
 	}
 
 	const quitRequestedCallback = new JSCallback(
