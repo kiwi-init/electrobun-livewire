@@ -11059,6 +11059,12 @@ ELECTROBUN_EXPORT BOOL webviewCanGoBack(AbstractView *abstractView) {
     }, []() -> BOOL { return FALSE; });
 }
 
+// WebView2 has no per-view renderer kill here yet.
+ELECTROBUN_EXPORT BOOL webviewTerminateRenderer(AbstractView *abstractView) {
+    (void)abstractView;
+    return FALSE;
+}
+
 ELECTROBUN_EXPORT BOOL webviewCanGoForward(AbstractView *abstractView) {
     if (!abstractView) {
         ::log("ERROR: Invalid AbstractView or webview in webviewCanGoForward");

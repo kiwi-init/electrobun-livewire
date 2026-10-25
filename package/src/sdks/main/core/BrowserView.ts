@@ -308,6 +308,17 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		return ffi.request.webviewSetSpellCheck({ id: this.id, enabled });
 	}
 
+	/**
+	 * Kills the process rendering this view, e.g. a page stuck in a loop. The
+	 * view stays blank until the next loadURL/loadHTML, which starts a fresh
+	 * process. Call it before remove() for a hung view: removing alone leaves a
+	 * hung process running. Views that share the process (pages opened from
+	 * this one) go blank too. Returns false where unsupported (CEF, Windows).
+	 */
+	terminateRenderer(): boolean {
+		return ffi.request.webviewTerminateRenderer({ id: this.id });
+	}
+
 	findInPage(
 		searchText: string,
 		options?: { forward?: boolean; matchCase?: boolean },

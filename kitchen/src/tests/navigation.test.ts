@@ -531,4 +531,46 @@ export const navigationTests = [
       log("findInPage operations completed");
     },
   }),
+
+  defineTest({
+    name: "terminateRenderer recovers a hung view",
+    category: "Navigation",
+    description: "Test that terminateRenderer kills a page stuck in a loop so the same view can load again",
+    timeout: 30000,
+    requires: { platform: "darwin" },
+    async run({ createWindow, log }) {
+      const rpc = createTestHarnessRPC(2000);
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        renderer: "native",
+        title: "Terminate Renderer Test",
+      });
+      await sleep(1500);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+
+      log("Hanging the page");
+      win.webview.executeJavascript("setTimeout(() => { for (;;) {} }, 0)");
+      await sleep(500);
+      const whileHung = await rpc.request.multiply({ a: 6, b: 7 }).then(
+        () => "answered",
+        () => "timed out",
+      );
+      expect(whileHung).toBe("timed out");
+
+      log("Terminating the renderer and reloading the same URL");
+      expect(win.webview.terminateRenderer()).toBe(true);
+      win.webview.loadURL("views://test-harness/index.html");
+
+      // A same-origin load can't get past a hung renderer, so an answer here
+      // means the process was really replaced.
+      const deadline = Date.now() + 10000;
+      let result: number | undefined;
+      while (result === undefined && Date.now() < deadline) {
+        await sleep(500);
+        result = await rpc.request.multiply({ a: 6, b: 7 }).catch(() => undefined);
+      }
+      expect(result).toBe(42);
+    },
+  }),
 ];
