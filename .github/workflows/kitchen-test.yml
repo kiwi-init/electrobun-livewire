@@ -102,9 +102,19 @@ jobs:
           name: wayland-screenshots
           path: ${{ runner.temp }}/screenshots
           if-no-files-found: ignore
-      - name: Dark appearance (macOS)
-        if: runner.os == 'macOS' && inputs.appearance == 'dark'
-        run: defaults write -g AppleInterfaceStyle Dark
+      - name: Appearance (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPEARANCE: ${{ inputs.appearance }}
+        run: |
+          if [ "$APPEARANCE" = dark ]; then
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' \
+              || defaults write -g AppleInterfaceStyle Dark
+          fi
+          echo "AppleInterfaceStyle: $(defaults read -g AppleInterfaceStyle 2>/dev/null || echo Light)"
+          echo "dark mode (System Events): $(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode' 2>&1)"
+          echo "reduceTransparency: $(defaults read com.apple.universalaccess reduceTransparency 2>&1)"
+          system_profiler SPDisplaysDataType | grep -E "Chipset|Metal|Resolution" || true
       - name: Run the test (macOS)
         if: runner.os == 'macOS'
         working-directory: kitchen

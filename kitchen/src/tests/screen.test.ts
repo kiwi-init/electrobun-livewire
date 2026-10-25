@@ -250,13 +250,12 @@ export const screenTests = [
         if (r! - g! > 15) throw new Error(`no vibrancy: the window behind shows through: rgba(${opaque.background.join(",")})`);
 
         const sidebar = await sample("vibrancy sidebar", { vibrancy: { material: "sidebar", state: "active" } });
-        expectTinted("vibrancy sidebar", sidebar.background);
-        expect(contrast(sidebar.ink, sidebar.background) >= 4.5).toBe(true);
-
         const transparent = await sample("vibrancy under-window, transparent: true", {
           transparent: true,
           vibrancy: { material: "under-window", state: "active" },
         });
+        expectTinted("vibrancy sidebar", sidebar.background);
+        expect(contrast(sidebar.ink, sidebar.background) >= 4.5).toBe(true);
         expectTinted("vibrancy under-window, transparent", transparent.background);
         expect(contrast(transparent.ink, transparent.background) >= 4.5).toBe(true);
 
