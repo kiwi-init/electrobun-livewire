@@ -74,6 +74,7 @@ import {
 	type Pointer,
 } from "bun:ffi";
 import { parseWebviewEventBridgeMessage } from "./eventBridge";
+import { settleAgentEval } from "../agent/evalResults";
 import { ffiCStringToString } from "./ffiCString";
 import { rasterizeNativeText } from "./nativeTextBitmap";
 
@@ -3888,6 +3889,8 @@ export const internalRpcHandlers = {
 		},
 	},
 	message: {
+		// Result of an agent-control evaluation (see sdks/main/agent).
+		agentEvalResult: settleAgentEval,
 		webviewTagResize: (params: {
 			id: number;
 			frame: { x: number; y: number; width: number; height: number };
