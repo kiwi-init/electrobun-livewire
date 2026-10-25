@@ -42,6 +42,7 @@ import {
 	type UiConfig,
 	type UiManifest,
 } from "./format";
+import { contractRangeError } from "./contract";
 
 export function keygen(outDir: string) {
 	const key = generateSigningKey();
@@ -63,6 +64,9 @@ function readUiConfig(srcDir: string): UiConfig {
 	if (typeof config.requiresContract !== "string" || !config.requiresContract) {
 		throw new Error("ui.json: requiresContract must be a semver range, e.g. \"^1.0.0\"");
 	}
+	// Engines refuse a range they can't parse, so catch typos before publishing.
+	const rangeError = contractRangeError(config.requiresContract);
+	if (rangeError) throw new Error(`ui.json: requiresContract ${rangeError}`);
 	if (!Number.isSafeInteger(config.dataSchema) || (config.dataSchema as number) < 0) {
 		throw new Error("ui.json: dataSchema must be a non-negative integer");
 	}

@@ -1,5 +1,5 @@
-// AppEngine boot lifecycle: boot, probation, rollback, hang recovery and safe
-// mode, against signed UIs published to a local host.
+// AppEngine boot lifecycle (boot, probation, rollback, hang recovery, safe
+// mode) and contract, against signed UIs published to a local host.
 
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -41,6 +41,7 @@ function setup(
 	} = {},
 ) {
 	const bundles = new Map<string, Uint8Array>();
+	const fetched = new Set<string>();
 	let manifest: UiManifest | null = null;
 	let seq = 0;
 	const server = Bun.serve({
@@ -50,10 +51,11 @@ function setup(
 			const name = new URL(request.url).pathname.slice(1);
 			if (name === "manifest.json") return manifest ? Response.json(manifest) : new Response("none", { status: 404 });
 			const bundle = bundles.get(name);
+			if (bundle) fetched.add(name);
 			return bundle ? new Response(new Blob([bundle as Uint8Array<ArrayBuffer>])) : new Response("not found", { status: 404 });
 		},
 	});
-	const publish = (html: string, dataSchema = 1) => {
+	const publish = (html: string, dataSchema = 1, requiresContract = "^1.0.0") => {
 		seq++;
 		const uiVersion = `${testName.replace(/[^a-z0-9]/gi, "")}-${seq}`;
 		const { bytes, sha256 } = buildUipack(uiVersion, new Map([["index.html", new TextEncoder().encode(html)]]));
@@ -67,7 +69,7 @@ function setup(
 				uiVersion,
 				bundleUrl,
 				sha256,
-				requiresContract: "^1.0.0",
+				requiresContract,
 				dataSchema,
 				publishedAt: Date.now(),
 			},
@@ -93,6 +95,7 @@ function setup(
 			engine?.stop();
 			return this.start();
 		},
+		fetched: (published: UiManifest) => fetched.has(published.bundleUrl),
 		async start() {
 			const win = await createWindow({ title: `AppEngine: ${testName}` });
 			engine = new AppEngine({
@@ -102,6 +105,7 @@ function setup(
 				probationMs: options.probationMs ?? 1000,
 				stateFile: join(state, "engine.json"),
 				storage: options.storage,
+				contractVersion: "1.0.0",
 				capabilities: options.capabilities,
 				channel: {
 					manifestUrl: `http://127.0.0.1:${server.port}/manifest.json`,
@@ -140,6 +144,70 @@ const is = (type: AppEngineEvent["type"], manifest?: UiManifest) => (event: AppE
 	event.type === type && (!manifest || ("manifest" in event && event.manifest.sha256 === manifest.sha256));
 
 export const appEngineTests = [
+	defineTest({
+		name: "AppEngine refuses a UI that needs a newer contract before downloading it",
+		category: "AppEngine",
+		description: "A manifest whose requiresContract the engine's contractVersion doesn't satisfy is refused and its bundle never fetched",
+		timeout: 30000,
+		async run({ createWindow, log }) {
+			const t = setup(createWindow, "contract");
+			try {
+				const v1 = t.publish(UIS.good("v1"));
+				const engine = await t.start();
+				await until(t.events, is("promoted", v1));
+				const v2 = t.publish(UIS.good("v2"), 1, "^2.0.0");
+				const result = await t.check();
+				expect(result.result).toBe("refused");
+				expect(result.result === "refused" && result.reason).toContain('requires contract "^2.0.0", but this engine implements 1.0.0');
+				expect(t.fetched(v2)).toBe(false);
+				expect(engine.showing?.sha256).toBe(v1.sha256);
+				log(`${describe(t.events.at(-1)!)}; refused: ${result.result === "refused" ? result.reason : ""}`);
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
+		name: "AppEngine gives the UI its contract on window.engine",
+		category: "AppEngine",
+		description: "window.engine.contract and has(cap) list the engine's capabilities, and invoke() refuses names outside them",
+		timeout: 30000,
+		async run({ createWindow, log }) {
+			let report: (value: unknown) => void = () => {};
+			const reported = new Promise<any>((resolve) => (report = resolve));
+			const t = setup(createWindow, "facade", { capabilities: { "test.report": (args) => void report(args) } });
+			try {
+				t.publish(`<!doctype html><script>
+					const e = window.engine;
+					e.invoke("constructor").then(() => "ok", (error) => error.code).then((inherited) =>
+						e.invoke("test.report", {
+							version: e.contract.version,
+							capabilities: e.contract.capabilities,
+							has: e.has("test.report"),
+							hasInherited: e.has("constructor"),
+							global: typeof window.__livewireEngineContract,
+							frozen: Object.isFrozen(e.contract),
+							inherited,
+						}),
+					).then(() => e.ready());
+				</script>`);
+				await t.start();
+				const page = await reported;
+				expect(page.version).toBe("1.0.0");
+				expect(page.capabilities).toEqual(["engine.info", "session.takeHandoff", "test.report"]);
+				expect(page.has).toBe(true);
+				expect(page.hasInherited).toBe(false);
+				expect(page.global).toBe("undefined");
+				expect(page.frozen).toBe(true);
+				expect(page.inherited).toBe("E_NO_CAPABILITY");
+				log(JSON.stringify(page));
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
 	defineTest({
 		name: "AppEngine boots a published UI and promotes it after probation",
 		category: "AppEngine",

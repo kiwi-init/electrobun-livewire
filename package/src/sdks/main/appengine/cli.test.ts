@@ -18,11 +18,11 @@ import { readUipack, type UiManifest } from "./format";
 const root = mkdtempSync(join(tmpdir(), "livewire-ui-cli-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-function uiSource(name: string, uiVersion: string, dataSchema = 1) {
+function uiSource(name: string, uiVersion: string, dataSchema = 1, requiresContract = "^1.0.0") {
 	const dir = join(root, name);
 	mkdirSync(join(dir, "assets"), { recursive: true });
 	mkdirSync(join(dir, ".git"), { recursive: true });
-	writeFileSync(join(dir, "ui.json"), JSON.stringify({ uiVersion, requiresContract: "^1.0.0", dataSchema }));
+	writeFileSync(join(dir, "ui.json"), JSON.stringify({ uiVersion, requiresContract, dataSchema }));
 	writeFileSync(join(dir, "index.html"), `<h1>${uiVersion}</h1>`);
 	writeFileSync(join(dir, "assets", "app.js"), "console.log('hi')");
 	writeFileSync(join(dir, ".env"), "SECRET=1");
@@ -61,6 +61,10 @@ describe("livewire ui CLI", () => {
 
 	test("refuses to lower the data schema", async () => {
 		await expect(publish({ srcDir: uiSource("v0", "1.2.0", 0), privateKeyPem, siteDir: site })).rejects.toThrow(/dataSchema 0 is below the published 1/);
+	});
+
+	test("refuses a requiresContract that isn't a semver range", async () => {
+		await expect(publish({ srcDir: uiSource("typo", "1.2.0", 1, "^1.O.0"), privateKeyPem, siteDir: site })).rejects.toThrow(/isn't a semver range/);
 	});
 
 	test("a fresh checkout still publishes past the live seq", async () => {
