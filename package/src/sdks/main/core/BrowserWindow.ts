@@ -74,7 +74,40 @@ export type WindowOptionsType<T = undefined> = {
 	// display if needed). `frame` is then only used the first time. Off by
 	// default. See windowState.ts.
 	windowState?: WindowStateOptions | null;
+	// macOS: show a system material (NSVisualEffectView) behind the window's
+	// webview, as in Finder's sidebar. The page needs a transparent
+	// background to show it; with the CEF renderer the window also needs
+	// `transparent: true`. Ignored on other platforms.
+	vibrancy?: WindowVibrancy | null;
 };
+
+export type VibrancyMaterial =
+	| "titlebar"
+	| "selection"
+	| "menu"
+	| "popover"
+	| "sidebar"
+	| "header-view"
+	| "sheet"
+	| "window-background"
+	| "hud"
+	| "fullscreen-ui"
+	| "tooltip"
+	| "content-background"
+	| "under-window"
+	| "under-page";
+
+export type WindowVibrancy =
+	| VibrancyMaterial
+	| {
+			material: VibrancyMaterial;
+			// What the material blurs: what's behind the window (the default),
+			// or the window's own content below it.
+			blending?: "behind-window" | "within-window";
+			// "follow-window" (the default) goes flat while the window is
+			// inactive, like system apps.
+			state?: "follow-window" | "active" | "inactive";
+	  };
 
 const defaultOptions: WindowOptionsType = {
 	title: "Electrobun",
@@ -216,6 +249,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 		this.sandbox = options.sandbox ?? false;
 
 		this.init(options, centered);
+		if (options.vibrancy) this.setVibrancy(options.vibrancy);
 
 		if (stateLocation) {
 			this.stateSaver = new WindowStateSaver(stateLocation.file, stateLocation.id, {
@@ -451,6 +485,16 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 
 	isFullScreen(): boolean {
 		return ffi.request.isWindowFullScreen({ winId: this.id });
+	}
+
+	/**
+	 * Sets or removes (`null`) the window's vibrancy material. Returns false
+	 * when it isn't supported: an unknown material, or not macOS.
+	 */
+	setVibrancy(vibrancy: WindowVibrancy | null): boolean {
+		const { material, blending = "behind-window", state = "follow-window" } =
+			typeof vibrancy === "string" ? { material: vibrancy } : vibrancy ?? { material: "none" };
+		return ffi.request.setWindowVibrancy({ winId: this.id, material, blending, state }) ?? false;
 	}
 
 	setAlwaysOnTop(alwaysOnTop: boolean) {

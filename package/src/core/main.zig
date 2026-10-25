@@ -3197,6 +3197,14 @@ export fn setWindowAlwaysOnTop(window_id: u32, always_on_top: bool) void {
     set_window_always_on_top(window, always_on_top);
 }
 
+// macOS only: other wrappers don't define it, and get false.
+export fn setWindowVibrancy(window_id: u32, material: [*:0]const u8, blending: u32, state: u32) bool {
+    const SetWindowVibrancyFn = *const fn (WindowPtr, [*:0]const u8, u32, u32) callconv(.c) bool;
+    const window = requireWindowPtr(window_id) orelse return false;
+    const set_window_vibrancy = lookupOptionalNativeSymbol(SetWindowVibrancyFn, "setWindowVibrancy") orelse return false;
+    return set_window_vibrancy(window, material, blending, state);
+}
+
 export fn isWindowAlwaysOnTop(window_id: u32) bool {
     const IsWindowAlwaysOnTopFn = *const fn (WindowPtr) callconv(.c) bool;
     const window = lookupWindowPtr(window_id) orelse return false;

@@ -15,6 +15,13 @@ on:
           - ubuntu-24.04
           - ubuntu-24.04-arm
           - macos-14
+      appearance:
+        description: System appearance (macOS)
+        type: choice
+        default: light
+        options:
+          - light
+          - dark
       display:
         description: Linux display server (ignored on macOS)
         type: choice
@@ -95,6 +102,9 @@ jobs:
           name: wayland-screenshots
           path: ${{ runner.temp }}/screenshots
           if-no-files-found: ignore
+      - name: Dark appearance (macOS)
+        if: runner.os == 'macOS' && inputs.appearance == 'dark'
+        run: defaults write -g AppleInterfaceStyle Dark
       - name: Run the test (macOS)
         if: runner.os == 'macOS'
         working-directory: kitchen

@@ -1,7 +1,7 @@
 // Screen API Tests
 
 import { defineTest, expect } from "../test-framework/types";
-import { Screen } from "electrobun/main";
+import { BrowserWindow, Screen } from "electrobun/main";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -19,6 +19,33 @@ function pixelAt(pixels: Uint8Array, width: number, x: number, y: number) {
 function expectColor(actual: number[], expected: number[], what: string) {
   const off = expected.some((channel, i) => Math.abs(channel - actual[i]!) > 12);
   if (off) throw new Error(`${what}: expected about rgb(${expected.join(",")}), got rgba(${actual.join(",")})`);
+}
+
+
+// A page with no background of its own, so the window behind it shows, and a
+// block in the system text color, to check text stays readable on the material.
+const VIBRANCY_PAGE = `<!doctype html><html><head><meta name="color-scheme" content="light dark">
+<style>html,body{margin:0;background:transparent;width:100vw;height:100vh}
+#ink{position:absolute;left:10px;top:10px;width:60px;height:60px;background:CanvasText}</style></head>
+<body><div id="ink"></div></body></html>`;
+const RED_PAGE = `<!doctype html><html><body style="margin:0;background:rgb(255,0,0);width:100vw;height:100vh"></body></html>`;
+
+// WCAG relative luminance and contrast ratio.
+function luminance([r, g, b]: number[]) {
+  const linear = (c: number) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(r!) + 0.7152 * linear(g!) + 0.0722 * linear(b!);
+}
+function contrast(a: number[], b: number[]) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi! + 0.05) / (lo! + 0.05);
+}
+
+function appearance() {
+  const result = Bun.spawnSync(["defaults", "read", "-g", "AppleInterfaceStyle"]);
+  return result.stdout.toString().trim() === "Dark" ? "dark" : "light";
 }
 
 export const screenTests = [
@@ -179,6 +206,69 @@ export const screenTests = [
 
       const dockSpace = primary.bounds.height - primary.workArea.height;
       log(`Space taken by dock/menubar: ${dockSpace}px vertical`);
+    },
+  }),
+
+  defineTest({
+    name: "Window vibrancy shows a material behind a transparent page",
+    category: "BrowserWindow",
+    description: "A red window sits behind a window with a transparent page: opaque, the red is hidden; with vibrancy, it shows through blurred and tinted, and the text color keeps its contrast",
+    requires: { platform: "darwin" },
+    timeout: 40000,
+    async run({ log }) {
+      const frame = { x: 320, y: 320, width: 300, height: 200 };
+      log(`System appearance: ${appearance()}`);
+      const backdrop = new BrowserWindow({ html: RED_PAGE, frame, titleBarStyle: "hidden", renderer: "native", url: null });
+      await sleep(800);
+
+      // Opens a window over the red one, captures it, and returns the
+      // background and ink pixels.
+      const sample = async (label: string, options: Record<string, unknown>) => {
+        const win = new BrowserWindow({ html: VIBRANCY_PAGE, frame, titleBarStyle: "hidden", url: null, renderer: "native", ...options });
+        win.setAlwaysOnTop(true);
+        await sleep(1500);
+        const at = win.getFrame();
+        const pixels = Screen.captureRegion({ x: at.x, y: at.y, width: frame.width, height: frame.height });
+        win.close();
+        await sleep(300);
+        if (!pixels) throw new Error("captureRegion returned null: is Screen Recording granted?");
+        const background = pixelAt(pixels, frame.width, 220, 140);
+        const ink = pixelAt(pixels, frame.width, 40, 40);
+        log(`${label}: background rgba(${background.join(",")}), ink rgba(${ink.join(",")}), contrast ${contrast(ink, background).toFixed(1)}:1`);
+        return { background, ink };
+      };
+      // The red behind shows through, but blurred and mixed with the
+      // material: red leads, and it isn't the pure red of the window behind.
+      const expectTinted = (label: string, [r, g, b]: number[]) => {
+        if (!(r! - g! > 15 && r! - b! > 15)) throw new Error(`${label}: the window behind doesn't show through: rgb(${r},${g},${b})`);
+        if (!(g! > 25 || b! > 25)) throw new Error(`${label}: looks like plain see-through, not a material: rgb(${r},${g},${b})`);
+      };
+
+      try {
+        const opaque = await sample("no vibrancy", {});
+        const [r, g] = opaque.background;
+        if (r! - g! > 15) throw new Error(`no vibrancy: the window behind shows through: rgba(${opaque.background.join(",")})`);
+
+        const sidebar = await sample("vibrancy sidebar", { vibrancy: { material: "sidebar", state: "active" } });
+        expectTinted("vibrancy sidebar", sidebar.background);
+        expect(contrast(sidebar.ink, sidebar.background) >= 4.5).toBe(true);
+
+        const transparent = await sample("vibrancy under-window, transparent: true", {
+          transparent: true,
+          vibrancy: { material: "under-window", state: "active" },
+        });
+        expectTinted("vibrancy under-window, transparent", transparent.background);
+        expect(contrast(transparent.ink, transparent.background) >= 4.5).toBe(true);
+
+        log("setVibrancy: unknown material is refused, null removes it");
+        const win = new BrowserWindow({ html: VIBRANCY_PAGE, frame, titleBarStyle: "hidden", url: null, renderer: "native" });
+        expect(win.setVibrancy("hud")).toBe(true);
+        expect(win.setVibrancy("bogus" as never)).toBe(false);
+        expect(win.setVibrancy(null)).toBe(true);
+        win.close();
+      } finally {
+        backdrop.close();
+      }
     },
   }),
 ];
