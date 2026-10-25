@@ -17,6 +17,7 @@ on:
       - '.github/scripts/run-under-sway.sh'
       - '.github/scripts/check-kitchen-results.sh'
       - '.github/wayland-known-failures.txt'
+      - 'package/scripts/test-linux-xdg-portal.sh'
   workflow_dispatch:
 
 permissions:
