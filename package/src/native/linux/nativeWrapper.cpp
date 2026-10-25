@@ -3048,6 +3048,8 @@ public:
     bool partitionContextReleased = false;
     bool isTransparent = false;
     bool isHidden = false;
+    // 0 deny, 1 external, 2 popup
+    int newWindowPolicy = 0;
     
     // Navigation state tracking
     bool lastNavigationWasBlocked = false;
@@ -3235,6 +3237,7 @@ public:
             g_signal_connect(webview, "load-changed", G_CALLBACK(onLoadChanged), this);
             g_signal_connect(webview, "load-failed", G_CALLBACK(onLoadFailed), this);
             g_signal_connect(webview, "web-process-terminated", G_CALLBACK(onWebProcessTerminated), this);
+            g_signal_connect(webview, "create", G_CALLBACK(onCreateWebView), this);
 #if WEBKIT_CHECK_VERSION(2, 34, 0)
             g_signal_connect(webview, "notify::is-web-process-responsive", G_CALLBACK(onWebProcessResponsiveChanged), this);
 #endif
@@ -3746,6 +3749,45 @@ public:
         return FALSE;
     }
     
+    // window.open and target=_blank. "popup" acts as "deny" here: WebKitGTK
+    // builds a popup from the opener's page configuration, user content
+    // manager included, so it would get Electrobun's preload and bridge.
+    static GtkWidget* onCreateWebView(WebKitWebView* webview, WebKitNavigationAction* action, gpointer user_data) {
+        (void)webview;
+        WebKitWebViewImpl* impl = static_cast<WebKitWebViewImpl*>(user_data);
+        const char* uri = webkit_uri_request_get_uri(webkit_navigation_action_get_request(action));
+        std::string url = uri ? uri : "";
+        std::string policy = "deny";
+
+        gchar* scheme = g_uri_parse_scheme(url.c_str());
+        bool openable = scheme && (g_ascii_strcasecmp(scheme, "http") == 0 || g_ascii_strcasecmp(scheme, "https") == 0 ||
+                                   g_ascii_strcasecmp(scheme, "mailto") == 0);
+        g_free(scheme);
+
+        if (impl->newWindowPolicy == 1 && openable) {
+            GError* error = nullptr;
+            if (g_app_info_launch_default_for_uri(url.c_str(), nullptr, &error)) {
+                policy = "external";
+            } else if (error) {
+                g_error_free(error);
+            }
+        }
+
+        if (impl->eventHandler && !impl->isRemoved) {
+            std::string escapedUrl;
+            for (char c : url) {
+                switch (c) {
+                    case '"': escapedUrl += "\\\""; break;
+                    case '\\': escapedUrl += "\\\\"; break;
+                    default: escapedUrl += c; break;
+                }
+            }
+            std::string eventData = "{\"url\":\"" + escapedUrl + "\",\"isCmdClick\":false,\"modifierFlags\":0,\"policy\":\"" + policy + "\"}";
+            impl->eventHandler(impl->webviewId, strdup("new-window-open"), strdup(eventData.c_str()));
+        }
+        return nullptr;
+    }
+
     static void onWebProcessTerminated(WebKitWebView* webview, WebKitWebProcessTerminationReason reason, gpointer user_data) {
         (void)webview;
         WebKitWebViewImpl* impl = static_cast<WebKitWebViewImpl*>(user_data);
@@ -9799,6 +9841,15 @@ void webviewSetHidden(AbstractView* abstractView, bool hidden) {
     if (abstractView) {
         dispatch_sync_main_void([&]() {
             abstractView->setHidden(hidden);
+        });
+    }
+}
+
+ELECTROBUN_EXPORT void webviewSetNewWindowPolicy(AbstractView* abstractView, int32_t policy) {
+    auto* view = dynamic_cast<WebKitWebViewImpl*>(abstractView);
+    if (view) {
+        dispatch_sync_main_void([view, policy]() {
+            view->newWindowPolicy = policy;
         });
     }
 }

@@ -1,7 +1,7 @@
 import ElectrobunEvent from "./event";
 
 type DetailData = { detail: string };
-type RenderProcessGoneReason = "crashed" | "killed" | "oom";
+type RenderProcessGoneReason = "crashed" | "killed" | "oom" | "cpu";
 type RenderProcessGoneData = { detail: { reason: RenderProcessGoneReason } };
 type NewWindowOpenData = {
 	detail:
@@ -12,6 +12,7 @@ type NewWindowOpenData = {
 				modifierFlags?: number;
 				targetDisposition?: number;
 				userGesture?: boolean;
+				policy?: "deny" | "external" | "popup";
 		  };
 };
 

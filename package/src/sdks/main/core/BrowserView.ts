@@ -12,6 +12,7 @@ import {
 	removeSocketForWebview,
 } from "./Socket";
 import { randomBytes } from "crypto";
+import type { NewWindowPolicy } from "./newWindowPolicy";
 import { type Pointer } from "bun:ffi";
 
 const BrowserViewMap: {
@@ -63,6 +64,12 @@ export type BrowserViewOptions<T = undefined> = {
 	autoResize: boolean;
 	windowId: number;
 	navigationRules: string | null;
+	// window.open and target=_blank: "deny" (default) only emits new-window-open;
+	// "external" opens http(s)/mailto in the default browser; "popup" (macOS)
+	// opens a native window that keeps window.opener (OAuth popups) and gets no
+	// preload or bridge. On Linux "popup" acts as "deny" for now: WebKitGTK
+	// popups share the opener's content manager, so they'd get the bridge.
+	newWindow: NewWindowPolicy;
 	// Sandbox mode: when true, disables RPC and only allows event emission
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
 	// accessing internal APIs, creating OOPIFs, or communicating with Bun
@@ -135,6 +142,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	private hostMessagePeakQueuedBytes = 0;
 	private hostMessagePeakQueuedCount = 0;
 	navigationRules: string | null = null;
+	newWindow: NewWindowPolicy = "deny";
 	// Sandbox mode disables RPC and only allows event emission (for untrusted content)
 	sandbox: boolean = false;
 	startTransparent: boolean = false;
@@ -173,6 +181,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		this.windowId = options.windowId ?? 0;
 		this.autoResize = options.autoResize === false ? false : true;
 		this.navigationRules = options.navigationRules || null;
+		this.newWindow = options.newWindow ?? "deny";
 		this.renderer = options.renderer ?? defaultOptions.renderer ?? "native";
 		this.sandbox = options.sandbox ?? false;
 		this.startTransparent = options.startTransparent ?? false;
@@ -213,6 +222,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 			},
 			autoResize: this.autoResize,
 			navigationRules: this.navigationRules,
+			newWindow: this.newWindow,
 			sandbox: this.sandbox,
 			startTransparent: this.startTransparent,
 			startPassthrough: this.startPassthrough,
@@ -303,6 +313,11 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	 * Toggles macOS system spell checking for native WKWebView content.
 	 * Returns false when the current renderer/platform does not support it.
 	 */
+	setNewWindowPolicy(policy: NewWindowPolicy) {
+		this.newWindow = policy;
+		ffi.request.webviewSetNewWindowPolicy({ id: this.id, policy });
+	}
+
 	setSpellCheck(enabled: boolean): boolean {
 		this.spellCheck = enabled;
 		return ffi.request.webviewSetSpellCheck({ id: this.id, enabled });

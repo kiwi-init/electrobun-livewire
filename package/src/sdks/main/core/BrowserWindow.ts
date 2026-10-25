@@ -1,6 +1,7 @@
 import { ffi } from "../proc/native";
 import electrobunEventEmitter from "../events/eventEmitter";
 import { BrowserView } from "./BrowserView";
+import type { NewWindowPolicy } from "./newWindowPolicy";
 import { type Pointer } from "bun:ffi";
 import { BuildConfig } from "./BuildConfig";
 import { type RPCWithTransport } from "../../../shared/rpc.js";
@@ -49,6 +50,8 @@ export type WindowOptionsType<T = undefined> = {
 	spellCheck: boolean;
 	hidden?: boolean;
 	navigationRules: string | null;
+	// See BrowserViewOptions.newWindow.
+	newWindow: NewWindowPolicy;
 	// Sandbox mode: when true, disables RPC and only allows event emission
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
 	// accessing internal APIs, creating OOPIFs, or communicating with Bun
@@ -73,6 +76,7 @@ const defaultOptions: WindowOptionsType = {
 	spellCheck: false,
 	hidden: false,
 	navigationRules: null,
+	newWindow: "deny",
 	sandbox: false,
 };
 
@@ -123,6 +127,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	hidden: boolean = false;
 	trafficLightOffset: { x: number; y: number } = { x: 0, y: 0 };
 	navigationRules: string | null = null;
+	newWindow: NewWindowPolicy = "deny";
 	// Sandbox mode disables RPC and only allows event emission (for untrusted content)
 	sandbox: boolean = false;
 	frame: {
@@ -172,6 +177,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 			y: options.trafficLightOffset?.y ?? 0,
 		};
 		this.navigationRules = options.navigationRules || null;
+		this.newWindow = options.newWindow ?? "deny";
 		this.sandbox = options.sandbox ?? false;
 
 		this.init(options, centered);
@@ -271,6 +277,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 			// does this mean browserView needs to track the windowId or handle it ephemerally?
 			windowId: this.id,
 			navigationRules: this.navigationRules,
+			newWindow: this.newWindow,
 			sandbox: this.sandbox,
 			startPassthrough: this.passthrough,
 			spellCheck: this.spellCheck,
