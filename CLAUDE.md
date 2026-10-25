@@ -1,5 +1,7 @@
 # Claude Development Guidelines for Electrobun
 
+**Livewire:** read `AGENTS.md` first. Its rules win over this file.
+
 ## Building and Running Electrobun
 
 ### IMPORTANT: Build Commands
@@ -7,7 +9,7 @@
 **NEVER** run Electrobun from `node_modules`. Electrobun 2 uses Hutch as its
 build CLI, with npm only for this repository's development dependencies:
 
-1. **From the package folder** (`/home/yoav/code/electrobun/package/`):
+1. **From the package folder** (`package/` in this repository):
    - `npm ci` - Installs the repository's pinned development dependencies
    - `hutch dev` - Builds and runs the Kitchen app in dev mode
    - `hutch dev:template <template-name>` - Builds and runs one repository template against the local devkit
