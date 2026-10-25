@@ -3,13 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const packageRoot = join(import.meta.dirname, "..");
-const repoRoot = join(packageRoot, "..", "..");
 // Windows Git checkouts default to CRLF; normalize source reads so `\n`
 // patterns in this contract test remain host-agnostic.
 const normalize = (source: string) => source.replace(/\r\n/g, "\n");
 const read = (path: string) => normalize(readFileSync(join(packageRoot, path), "utf8"));
-const readTemplate = (path: string) =>
-	normalize(readFileSync(join(repoRoot, "templates", path), "utf8"));
 
 describe("exit on last window closed contract", () => {
 	it("asks the quit-requested handler to quit when the last window closes", () => {
@@ -154,23 +151,4 @@ describe("exit on last window closed contract", () => {
 		);
 	});
 
-	it("stops the render loop of every native wgpu template on window close", () => {
-		const templates = [
-			"zig-wgpu/src/zig/main.zig",
-			"odin-alchemy-wgpu/src/odin/main.odin",
-			"odin-fluid-wgpu/src/odin/main.odin",
-			"odin-jelly-bunny-wgpu/src/odin/main.odin",
-			"odin-particles-wgpu/src/odin/main.odin",
-			"odin-tree-wgpu/src/odin/main.odin",
-			"go-maze-wgpu/src/go/main.go",
-			"rust-flock-wgpu/src/main.rs",
-		];
-
-		for (const template of templates) {
-			const source = readTemplate(template);
-			expect(source).toMatch(
-				/close\s*[:=]\s*(Some\()?\s*main_?window_?closed/i,
-			);
-		}
-	});
 });

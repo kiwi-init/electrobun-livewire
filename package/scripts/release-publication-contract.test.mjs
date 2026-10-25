@@ -50,7 +50,7 @@ function validatePublicationContract(source) {
 		"workflow permissions must default to read-only contents",
 	);
 	const checkoutSteps = stepsUsingPattern(source, /^actions\/checkout@/);
-	assert.equal(checkoutSteps.length, 6, "every release job checkout is audited");
+	assert.equal(checkoutSteps.length, 5, "every release job checkout is audited");
 	for (const checkout of checkoutSteps) {
 		assert.match(checkout, /^      - uses: actions\/checkout@\S+$/m);
 		assert.match(
@@ -76,32 +76,10 @@ function validatePublicationContract(source) {
 	const release = job(source, "release");
 	const npmPublish = job(source, "npm-publish");
 	const npmAcceptance = job(source, "npm-acceptance");
-	const mutablePublication = job(source, "publish-templates");
-	const templateAcceptance = job(source, "template-acceptance");
+	const mutablePublication = job(source, "publish-kitchen");
 	assert.match(build, /- os: macos-26-intel\n            platform: darwin\n            arch: x64\n            platform_name: darwin\n            artifact_platform: macos/);
 	assert.match(build, /name: Verify native macOS runner architecture/);
 	assert.match(release, /--expect macos-arm64,macos-x64,linux-arm64,linux-x64,windows-x64,windows-arm64/);
-	assert.match(templateAcceptance, /^    needs: \[publish-templates\]$/m);
-	assert.match(templateAcceptance, /^    timeout-minutes: 25$/m);
-	assert.match(
-		templateAcceptance,
-		/- os: macos-15-intel\n            platform: macos-x64/,
-		"published app launches need the Intel runner with a working desktop session",
-	);
-	for (const platform of ["macos-arm64", "macos-x64", "linux-x64", "linux-arm64", "windows-x64", "windows-arm64"]) {
-		assert.ok(templateAcceptance.includes(`platform: ${platform}`));
-	}
-	assert.match(templateAcceptance, /xvfb-run -a node scripts\/accept-published-template\.mjs/);
-	assert.match(templateAcceptance, /--version "\$\{\{ steps\.release-type\.outputs\.version \}\}"/);
-	for (const name of ["Accept published templates on Linux", "Accept published templates on desktop"]) {
-		assert.ok(
-			namedStep(templateAcceptance, name).includes(
-				`--hutch-source "\${{ steps.release-type.outputs.prerelease == 'false' && 'production-installer' || 'npm' }}"`,
-			),
-			"stable templates must be accepted with the default production installer on every platform",
-		);
-	}
-	assert.match(templateAcceptance, /name: Retain template acceptance reports\n        if: always\(\)/);
 	const reconcile = namedStep(
 		release,
 		"Reuse or prepare a draft Electrobun release",
@@ -139,14 +117,6 @@ function validatePublicationContract(source) {
 	const mutableNpmGate = namedStep(
 		mutablePublication,
 		"Recheck npm channel before mutable publication",
-	);
-	const templateValidation = namedStep(
-		mutablePublication,
-		"Validate template publisher",
-	);
-	const templatePublication = namedStep(
-		mutablePublication,
-		"Publish latest template channel to R2",
 	);
 	const kitchenBuild = namedStep(build, "Build Kitchen");
 	const appleCertificate = namedStep(build, "Install Apple Certificate");
@@ -402,7 +372,7 @@ function validatePublicationContract(source) {
 		/--platform "\$\{\{ matrix\.platform \}\}"/,
 	);
 	assert.doesNotMatch(npmAcceptance, /updater|update-flow|test-updater/i);
-	assert.doesNotMatch(npmAcceptance, /R2_|upload-kitchen-artifacts|publish-templates/);
+	assert.doesNotMatch(npmAcceptance, /R2_|upload-kitchen-artifacts|publish-kitchen/);
 
 	assert.match(mutablePublication, /^    needs: \[npm-acceptance\]$/m);
 	assert.match(
@@ -417,39 +387,23 @@ function validatePublicationContract(source) {
 		/--tag "\$\{\{ steps\.release-type\.outputs\.dist-tag \}\}"/,
 	);
 	assert.match(mutableNpmGate, /grep -Fxq 'exists=true'/);
-	assert.match(
-		templateValidation,
-		/node --test scripts\/publish-templates\.test\.mjs/,
-	);
 	assert.match(kitchenPublication, /upload-kitchen-artifacts\.ts kitchen-artifacts/);
 	assert.ok(
 		mutablePublication.indexOf(
 			"- name: Recheck npm channel before mutable publication",
-		) < mutablePublication.indexOf("- name: Validate template publisher"),
-		"a job-only rerun must recheck the live npm channel before publisher validation",
+		) < mutablePublication.indexOf("- name: Publish Kitchen artifacts to R2"),
+		"a job-only rerun must recheck the live npm channel before the first mutable R2 write",
 	);
-	assert.ok(
-		mutablePublication.indexOf("- name: Validate template publisher") <
-			mutablePublication.indexOf("- name: Publish Kitchen artifacts to R2"),
-		"template publisher validation must pass before the first mutable R2 write",
-	);
-	assert.ok(
-		mutablePublication.indexOf("- name: Publish Kitchen artifacts to R2") <
-			mutablePublication.indexOf("- name: Publish latest template channel to R2"),
-		"Kitchen must publish only after the npm gate and before templates",
-	);
-	assert.match(templatePublication, /node scripts\/publish-templates\.mjs/);
 }
 
 test("serializes releases, verifies drafts, and gates mutable channels", () => {
 	validatePublicationContract(workflow);
 });
 
-test("contract keeps Intel build and CLI acceptance on 26 and app acceptance on 15", () => {
+test("contract keeps Intel build and CLI acceptance on macOS 26", () => {
 	for (const [name, before, after] of [
 		["build", "macos-26-intel", "macos-15-intel"],
 		["npm-acceptance", "macos-26-intel", "macos-15-intel"],
-		["template-acceptance", "macos-15-intel", "macos-26-intel"],
 	]) {
 		const original = job(workflow, name);
 		const changed = original.replace(before, after);
@@ -457,16 +411,6 @@ test("contract keeps Intel build and CLI acceptance on 26 and app acceptance on 
 		assert.throws(() => validatePublicationContract(workflow.replace(original, changed)), {
 			code: "ERR_ASSERTION",
 		});
-	}
-});
-
-test("contract rejects skipping the production Hutch installer on stable releases", () => {
-	for (const name of ["Accept published templates on Linux", "Accept published templates on desktop"]) {
-		const step = namedStep(workflow, name);
-		assert.throws(() => validatePublicationContract(workflow.replace(
-			step,
-			step.replace("'production-installer'", "'npm'"),
-		)), { code: "ERR_ASSERTION" });
 	}
 });
 
@@ -554,7 +498,6 @@ test("contract rejects mutable Kitchen publication before the npm gate", () => {
 function validateReleaseTestGates(source) {
 	const release = job(source, "release");
 	const vm = job(source, "test-vm");
-	const smoke = job(source, "desktop-smoke");
 	const dependencies = (body) => {
 		const match = body.match(/^    needs: \[([^\]]+)\]$/m);
 		assert.ok(match, "release test gates must declare their dependencies");
@@ -562,25 +505,19 @@ function validateReleaseTestGates(source) {
 	};
 	assert.ok(dependencies(release).includes("build"));
 	assert.ok(dependencies(release).includes("test-vm"), "publication must wait for VM tests");
-	assert.ok(dependencies(smoke).includes("npm-publish"), "desktop smoke must wait for npm");
-	assert.ok(dependencies(smoke).includes("publish-templates"), "desktop smoke must wait for templates");
 	assert.match(vm, /uses: \.\/\.github\/workflows\/test-vm\.yml/);
-	assert.match(smoke, /uses: \.\/\.github\/workflows\/desktop-smoke\.yml/);
 	const buildRef = job(source, "build").match(/^          ref: (.+)$/m)?.[1];
 	assert.ok(buildRef, "release build must select an exact source ref");
 	assert.equal(vm.match(/^      ref: (.+)$/m)?.[1], buildRef, "VM tests must build the same release ref");
-	assert.match(smoke, /version: \$\{\{ github\.event\.inputs\.tag \|\| github\.ref_name \}\}/);
 }
 
-test("release VM gate and post-publication desktop smoke use the release being published", () => {
+test("release VM gate uses the release being published", () => {
 	validateReleaseTestGates(workflow);
 });
 
-test("test gate contract rejects early publication or premature desktop smoke", () => {
+test("test gate contract rejects early publication", () => {
 	for (const [before, after] of [
 		["needs: [build, test-vm]", "needs: [build]"],
-		["needs: [npm-publish, publish-templates]", "needs: [npm-publish]"],
-		["needs: [npm-publish, publish-templates]", "needs: [publish-templates]"],
 	]) {
 		assert.throws(() => validateReleaseTestGates(workflow.replace(before, after)), { code: "ERR_ASSERTION" });
 	}
@@ -614,8 +551,6 @@ function validateIntelGuiMatrices(source, intelSelector) {
 
 for (const [filename, intelSelector] of [
 	["test-vm.yml", "inputs.macos_intel_only"],
-	["source-desktop-smoke.yml", "inputs.runners == 'macos-intel'"],
-	["desktop-smoke.yml", "inputs.macos_intel_only"],
 ]) {
 	const source = readFileSync(new URL(`../../.github/workflows/${filename}`, import.meta.url), "utf8")
 		.replace(/\r\n/g, "\n");

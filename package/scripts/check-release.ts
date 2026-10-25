@@ -7,7 +7,6 @@ import {
 import { createTestRunDiagnostics } from "./test-run-diagnostics.mjs";
 
 export const releaseCheckTasks = [
-	["Clean template artifacts", "clean:templates"],
 	["Typecheck", "typecheck"],
 	["Development command tests", "dev:test"],
 	["Core host transport tests", "test:core-host-transport"],
@@ -16,9 +15,6 @@ export const releaseCheckTasks = [
 	["Native symbol contract tests", "test:native-symbol-contract"],
 	["Native devkit manifest tests", "test:devkit-manifest"],
 	["Version bump tests", "test:version-bump"],
-	["Template tests", "test:templates"],
-	["Odin template tests", "test:odin-templates"],
-	["Template publisher tests", "test:template-publisher"],
 	["Signing tests", "test:signing"],
 	["Deployment target tests", "test:deployment-target"],
 	["Linux ABI tests", "test:linux-abi"],
@@ -65,18 +61,6 @@ export function createDevTestCommands({
 			cwd: packageDir,
 		},
 		{
-			label: "Development template plan tests",
-			command: hutchBinary,
-			args: ["scripts/dev-template.test.ts"],
-			cwd: packageDir,
-		},
-		{
-			label: "Template artifact cleanup tests",
-			command: "node",
-			args: ["--test", "scripts/clean-template-artifacts.test.mjs"],
-			cwd: packageDir,
-		},
-		{
 			label: "Runtime test wrapper tests",
 			command: "node",
 			args: [
@@ -93,42 +77,6 @@ export function createDevTestCommands({
 			label: "Release check runner tests",
 			command: hutchBinary,
 			args: ["scripts/check-release.test.ts"],
-			cwd: packageDir,
-		},
-	];
-}
-
-export function createTemplateTestCommands({
-	packageDir,
-}: CreateCheckCommandsOptions): DevCommand[] {
-	return [
-		{
-			label: "Bun template tests",
-			command: "node",
-			args: [
-				"scripts/run-bun-test.js",
-				"../templates/template-manifests.test.ts",
-				"../templates/all-template-orchestrator.test.ts",
-				"src/shared/ui-color-picker.test.ts",
-			],
-			cwd: packageDir,
-		},
-		{
-			label: "Vite devkit resolution tests",
-			command: "node",
-			args: ["--test", "../templates/vite-devkit-resolution.test.mjs"],
-			cwd: packageDir,
-		},
-		{
-			label: "Published template acceptance harness tests",
-			command: "node",
-			args: ["--test", "../scripts/accept-published-template.test.mjs"],
-			cwd: packageDir,
-		},
-		{
-			label: "Bunny optional WebGL effect tests",
-			command: "node",
-			args: ["--test", "../scripts/bunny-spark.test.mjs"],
 			cwd: packageDir,
 		},
 	];
@@ -173,11 +121,11 @@ export function checkExitCode(failures: readonly CheckFailure[]): 0 | 1 {
 	return failures.length === 0 ? 0 : 1;
 }
 
-type CheckSuite = "release" | "dev" | "templates";
+type CheckSuite = "release" | "dev";
 
 function parseSuite(value: string | undefined): CheckSuite {
 	if (value === undefined || value === "release") return "release";
-	if (value === "dev" || value === "templates") return value;
+	if (value === "dev") return value;
 	throw new Error(`Unknown check suite: ${value}`);
 }
 
@@ -189,9 +137,7 @@ async function main(): Promise<void> {
 	const commands =
 		suite === "dev"
 			? createDevTestCommands(options)
-			: suite === "templates"
-				? createTemplateTestCommands(options)
-				: createReleaseCheckCommands(options);
+			: createReleaseCheckCommands(options);
 	const diagnostics = createTestRunDiagnostics(`check-${suite}`, commands);
 	console.log(`[check:release] Logs and runtime details: ${diagnostics.summaryPath}`);
 	let failures: CheckFailure[];

@@ -1,7 +1,7 @@
 # Electrobun: Livewire — rules for agents and people
 
 Livewire is Kiwi Init's fork of [blackboardsh/electrobun](https://github.com/blackboardsh/electrobun).
-These rules win over `CONTRIBUTING.md` and `CLAUDE.md`, which are upstream's.
+These rules win over `CLAUDE.md`, which is upstream's.
 
 ## Remotes
 
@@ -20,7 +20,7 @@ These rules win over `CONTRIBUTING.md` and `CLAUDE.md`, which are upstream's.
 
 ## Pull requests
 
-- Open them against `kiwi-init/electrobun-livewire` `main`. Never open one upstream unless the owner said so for that change.
+- Open them against `kiwi-init/electrobun-livewire` `main`.
 - The body names the Kiwi task (`T23`), what was broken, and how you verified it: the platform and the commands you ran.
 - No CI runs on pull requests yet. Until it does, run these from `package/` before asking for review, and list the platforms you built on:
 
@@ -31,20 +31,12 @@ These rules win over `CONTRIBUTING.md` and `CLAUDE.md`, which are upstream's.
 
 - Someone other than the author reviews (`kiwi task review T23`). The lead merges, with a squash, so each fix lands as one commit on `main`.
 
-## Upstream sync
+## Upstream
 
-- Sync to upstream release tags (`vX.Y.Z`, `vX.Y.Z-beta.N`), never to upstream `main`.
-- Sync through a PR from `lw/sync-<tag>`, never by pushing to `main`.
+Livewire is a hard fork. We don't track or sync upstream, and we never open pull requests there.
+
+- Take an upstream change only on purpose: cherry-pick it in its own PR and say where it came from.
 - Never push upstream's tags to `origin` (`git push --tags`, `--follow-tags`, `--mirror`). `release.yml` runs on any `v*` tag push and would cut a release from this fork.
-- Our patch list is everything on `main` since the last synced tag: `git log --first-parent <tag>..main`.
-
-## Keep the diff with upstream small
-
-Every line we change in an upstream file can conflict at the next sync.
-
-- Put Livewire features (AppEngine first) in new modules behind small hooks in core.
-- Don't reformat, rename or move upstream code you aren't fixing.
-- Leave upstream's docs, changelog and `CONTRIBUTING.md` alone. Livewire docs go in new files.
 
 ## Releases
 

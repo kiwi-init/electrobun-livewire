@@ -3,7 +3,6 @@ import {
 	checkExitCode,
 	createDevTestCommands,
 	createReleaseCheckCommands,
-	createTemplateTestCommands,
 	releaseCheckTasks,
 	runCheckCommands,
 } from "./check-release.ts";
@@ -39,15 +38,8 @@ assert(
 	),
 	"dev:test should use the failure-collecting runner",
 );
-assert(
-	/"test:templates":\s*\["hutch", "scripts\/check-release\.ts", "templates"\]/.test(
-		hutchConfig,
-	),
-	"test:templates should use the failure-collecting runner",
-);
 
 const expectedReleaseTasks = [
-	"clean:templates",
 	"typecheck",
 	"dev:test",
 	"test:core-host-transport",
@@ -56,9 +48,6 @@ const expectedReleaseTasks = [
 	"test:native-symbol-contract",
 	"test:devkit-manifest",
 	"test:version-bump",
-	"test:templates",
-	"test:odin-templates",
-	"test:template-publisher",
 	"test:signing",
 	"test:deployment-target",
 	"test:linux-abi",
@@ -85,13 +74,11 @@ assertArray(
 );
 
 const devCommands = createDevTestCommands(options);
-assert(devCommands.length === 5, "dev:test should expose five independent checks");
+assert(devCommands.length === 3, "dev:test should expose three independent checks");
 assertArray(
 	devCommands.map((command) => command.args.at(-1) ?? ""),
 	[
 		"scripts/dev.test.ts",
-		"scripts/dev-template.test.ts",
-		"scripts/clean-template-artifacts.test.mjs",
 		"scripts/test-run-diagnostics.test.mjs",
 		"scripts/check-release.test.ts",
 	],
@@ -104,17 +91,6 @@ assert(
 assert(
 	devCommands.some((command) => command.args.includes("scripts/hutch-launcher.test.mjs")),
 	"dev:test should exercise Hutch launcher and architecture handoff",
-);
-
-const templateCommands = createTemplateTestCommands(options);
-assert(
-	templateCommands.length === 4,
-	"test:templates should expose four independent checks",
-);
-assert(
-	templateCommands.some((command) => command.command === "node" &&
-		command.args.includes("../scripts/bunny-spark.test.mjs")),
-	"test:templates should exercise the actual Bunny renderer with failed and healthy WebGL",
 );
 
 const attempted: string[] = [];

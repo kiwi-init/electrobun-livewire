@@ -123,30 +123,6 @@ export function updateNpmResolverPin(source, hutchVersion) {
 	)}`;
 }
 
-export function updateMigrationGuideHutchPin(source, hutchVersion) {
-	assertExactVersion(hutchVersion, "canonical Hutch pin");
-	const candidates = [...source.matchAll(/^\/\/ @hutch\b.*$/gm)];
-	if (candidates.length !== 1) {
-		fail(
-			`docs/src/content/docs/electrobun/guides/migrating-to-v2.mdx must contain exactly one documented // @hutch pragma; found ${candidates.length}`,
-		);
-	}
-
-	const candidate = candidates[0];
-	const pins = parseHutchPragma(
-		candidate[0],
-		"docs/src/content/docs/electrobun/guides/migrating-to-v2.mdx documented pragma",
-	);
-	// Release validation may use prerelease toolchains while the public install
-	// example continues to recommend the last stable Hutch release. Validate the
-	// documented pragma above even when this sync leaves its contents unchanged.
-	if (parseStrictSemVer(hutchVersion).prerelease !== null) return source;
-	const replacement = `// @hutch cli=${hutchVersion} cottontail=${pins.cottontail}`;
-	return `${source.slice(0, candidate.index)}${replacement}${source.slice(
-		candidate.index + candidate[0].length,
-	)}`;
-}
-
 function atomicWriteFile(path, source) {
 	const mode = statSync(path).mode & 0o777;
 	const temporaryPath = join(
@@ -179,16 +155,6 @@ export function syncReleaseToolchainPins(repositoryRoot = defaultRepositoryRoot,
 		"bin",
 		"resolve-hutch.cjs",
 	);
-	const migrationGuidePath = join(
-		root,
-		"docs",
-		"src",
-		"content",
-		"docs",
-		"electrobun",
-		"guides",
-		"migrating-to-v2.mdx",
-	);
 	const pins = {
 		...parseHutchPragma(readFileSync(configPath, "utf8"), "package/hutch.config.ts"),
 		// This pin is maintained separately from the build pragma. Synchronizing
@@ -217,11 +183,6 @@ export function syncReleaseToolchainPins(repositoryRoot = defaultRepositoryRoot,
 			path: resolverPath,
 			source: readFileSync(resolverPath, "utf8"),
 			update: (source) => updateNpmResolverPin(source, pins.hutch),
-		},
-		{
-			path: migrationGuidePath,
-			source: readFileSync(migrationGuidePath, "utf8"),
-			update: (source) => updateMigrationGuideHutchPin(source, pins.hutch),
 		},
 	].map((entry) => ({ ...entry, updated: entry.update(entry.source) }));
 

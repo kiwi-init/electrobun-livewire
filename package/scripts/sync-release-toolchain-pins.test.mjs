@@ -15,7 +15,6 @@ import test from "node:test";
 
 import {
 	syncReleaseToolchainPins as syncPins,
-	updateMigrationGuideHutchPin,
 	updateNpmResolverPin,
 	updateReleaseWorkflowPins,
 } from "./sync-release-toolchain-pins.mjs";
@@ -39,10 +38,6 @@ function resolver(version = oldPins.hutch) {
 	return `"use strict";\n\nconst PAIRED_HUTCH_VERSION = "${version}";\nconsole.log(PAIRED_HUTCH_VERSION);\n`;
 }
 
-function migrationGuide(hutchVersion = oldPins.hutch) {
-	return `# Migrating to v2\n\nFor an exact install:\n\n\`\`\`ts\n// @hutch cli=${hutchVersion} cottontail=0.5.0\nexport default {};\n\`\`\`\n`;
-}
-
 function createRepositoryFixture(t, options = {}) {
 	const root = mkdtempSync(join(tmpdir(), "electrobun-pin-sync-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -50,21 +45,11 @@ function createRepositoryFixture(t, options = {}) {
 	const sharedDir = join(packageDir, "src", "shared");
 	const workflowDir = join(root, ".github", "workflows");
 	const resolverDir = join(root, "npm", "electrobun", "bin");
-	const migrationGuideDir = join(
-		root,
-		"docs",
-		"src",
-		"content",
-		"docs",
-		"electrobun",
-		"guides",
-	);
 	for (const directory of [
 		packageDir,
 		sharedDir,
 		workflowDir,
 		resolverDir,
-		migrationGuideDir,
 	]) {
 		mkdirSync(directory, { recursive: true });
 	}
@@ -73,7 +58,6 @@ function createRepositoryFixture(t, options = {}) {
 		appVersion: join(sharedDir, "cottontail-version.ts"),
 		workflow: join(workflowDir, "release.yml"),
 		resolver: join(resolverDir, "resolve-hutch.cjs"),
-		migrationGuide: join(migrationGuideDir, "migrating-to-v2.mdx"),
 	};
 	writeFileSync(
 		paths.config,
@@ -86,13 +70,8 @@ function createRepositoryFixture(t, options = {}) {
 		options.appVersion ?? `export const COTTONTAIL_VERSION = "${newPins.appCottontail}";\n`,
 	);
 	writeFileSync(paths.resolver, options.resolver ?? resolver());
-	writeFileSync(
-		paths.migrationGuide,
-		options.migrationGuide ?? migrationGuide(),
-	);
 	chmodSync(paths.workflow, 0o640);
 	chmodSync(paths.resolver, 0o600);
-	chmodSync(paths.migrationGuide, 0o644);
 	return { root, paths };
 }
 
@@ -100,8 +79,6 @@ test("pin synchronization is atomic per file and reaches a fixed point", (t) => 
 	const fixture = createRepositoryFixture(t);
 	const workflowMode = statSync(fixture.paths.workflow).mode & 0o777;
 	const resolverMode = statSync(fixture.paths.resolver).mode & 0o777;
-	const migrationGuideMode =
-		statSync(fixture.paths.migrationGuide).mode & 0o777;
 
 	const first = syncReleaseToolchainPins(fixture.root);
 	assert.deepEqual(first, {
@@ -109,7 +86,6 @@ test("pin synchronization is atomic per file and reaches a fixed point", (t) => 
 		changed: [
 			".github/workflows/release.yml",
 			"npm/electrobun/bin/resolve-hutch.cjs",
-			"docs/src/content/docs/electrobun/guides/migrating-to-v2.mdx",
 		],
 	});
 	assert.equal(
@@ -120,16 +96,8 @@ test("pin synchronization is atomic per file and reaches a fixed point", (t) => 
 		readFileSync(fixture.paths.resolver, "utf8"),
 		resolver(newPins.hutch),
 	);
-	assert.equal(
-		readFileSync(fixture.paths.migrationGuide, "utf8"),
-		migrationGuide(newPins.hutch),
-	);
 	assert.equal(statSync(fixture.paths.workflow).mode & 0o777, workflowMode);
 	assert.equal(statSync(fixture.paths.resolver).mode & 0o777, resolverMode);
-	assert.equal(
-		statSync(fixture.paths.migrationGuide).mode & 0o777,
-		migrationGuideMode,
-	);
 	assert.equal(
 		readdirSync(join(fixture.root, ".github", "workflows")).some((name) =>
 			name.endsWith(".tmp"),
@@ -153,12 +121,11 @@ test("build pin synchronization preserves the independent app runtime pin", (t) 
 	assert.deepEqual(syncReleaseToolchainPins(fixture.root), { pins: newPins, changed: [] });
 });
 
-test("prerelease pins preserve the documented stable install until a stable pin is selected", (t) => {
+test("prerelease and stable pins both synchronize the workflow and resolver", (t) => {
 	const prereleasePins = { ...newPins, hutch: "0.28.2-canary.0" };
 	const fixture = createRepositoryFixture(t, {
 		config: `// @hutch cli=${prereleasePins.hutch} cottontail=${prereleasePins.cottontail}\n`,
 	});
-	const documentedInstall = readFileSync(fixture.paths.migrationGuide, "utf8");
 	assert.deepEqual(syncReleaseToolchainPins(fixture.root, prereleasePins), {
 		pins: prereleasePins,
 		changed: [
@@ -168,7 +135,6 @@ test("prerelease pins preserve the documented stable install until a stable pin 
 	});
 	assert.equal(readFileSync(fixture.paths.workflow, "utf8"), workflow(prereleasePins));
 	assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver(prereleasePins.hutch));
-	assert.equal(readFileSync(fixture.paths.migrationGuide, "utf8"), documentedInstall);
 	assert.deepEqual(syncReleaseToolchainPins(fixture.root, prereleasePins), {
 		pins: prereleasePins,
 		changed: [],
@@ -182,12 +148,10 @@ test("prerelease pins preserve the documented stable install until a stable pin 
 		changed: [
 			".github/workflows/release.yml",
 			"npm/electrobun/bin/resolve-hutch.cjs",
-			"docs/src/content/docs/electrobun/guides/migrating-to-v2.mdx",
 		],
 	});
 	assert.equal(readFileSync(fixture.paths.workflow, "utf8"), workflow(stablePins));
 	assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver(stablePins.hutch));
-	assert.equal(readFileSync(fixture.paths.migrationGuide, "utf8"), migrationGuide(stablePins.hutch));
 	assert.deepEqual(syncReleaseToolchainPins(fixture.root, stablePins), {
 		pins: stablePins,
 		changed: [],
@@ -214,7 +178,6 @@ test("a missing or non-exact compiled pair prevents every target mutation", (t) 
 		assert.throws(() => syncPins(fixture.root, { resolvePairedVersion: () => paired }), /paired Cottontail pin must be an exact SemVer/);
 		assert.equal(readFileSync(fixture.paths.workflow, "utf8"), workflow());
 		assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver());
-		assert.equal(readFileSync(fixture.paths.migrationGuide, "utf8"), migrationGuide());
 	}
 });
 
@@ -225,7 +188,6 @@ test("a malformed canonical app pin prevents every target mutation", (t) => {
 	assert.throws(() => syncReleaseToolchainPins(fixture.root), /app Cottontail pin must be an exact SemVer/);
 	assert.equal(readFileSync(fixture.paths.workflow, "utf8"), workflow());
 	assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver());
-	assert.equal(readFileSync(fixture.paths.migrationGuide, "utf8"), migrationGuide());
 });
 
 test("pin synchronization validates every target before mutating any", (t) => {
@@ -241,30 +203,6 @@ test("pin synchronization validates every target before mutating any", (t) => {
 	assert.equal(readFileSync(fixture.paths.workflow, "utf8"), originalWorkflow);
 	assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver("latest"));
 });
-
-for (const hutch of [newPins.hutch, "0.28.2-canary.0"]) {
-	test(`a malformed documented pin prevents every target mutation for Hutch ${hutch}`, (t) => {
-		const pins = { ...newPins, hutch };
-		const originalWorkflow = workflow();
-		const originalResolver = resolver();
-		const fixture = createRepositoryFixture(t, {
-			config: `// @hutch cli=${pins.hutch} cottontail=${pins.cottontail}\n`,
-			workflow: originalWorkflow,
-			resolver: originalResolver,
-			migrationGuide: migrationGuide("latest"),
-		});
-		assert.throws(
-			() => syncReleaseToolchainPins(fixture.root, pins),
-			/documented pragma Hutch pin must be an exact SemVer 2\.0\.0/,
-		);
-		assert.equal(readFileSync(fixture.paths.workflow, "utf8"), originalWorkflow);
-		assert.equal(readFileSync(fixture.paths.resolver, "utf8"), originalResolver);
-		assert.equal(
-			readFileSync(fixture.paths.migrationGuide, "utf8"),
-			migrationGuide("latest"),
-		);
-	});
-}
 
 test("pin synchronization rejects malformed canonical pragma pins", (t) => {
 	const fixture = createRepositoryFixture(t, {
@@ -355,31 +293,3 @@ test("resolver synchronization rejects missing, duplicate, and malformed constan
 	);
 });
 
-for (const hutch of [newPins.hutch, "0.28.2-canary.0"]) {
-	test(`migration-guide synchronization rejects missing, duplicate, and malformed pins for Hutch ${hutch}`, () => {
-		assert.throws(
-			() => updateMigrationGuideHutchPin("# No install example\n", hutch),
-			/exactly one documented \/\/ @hutch pragma; found 0/,
-		);
-		assert.throws(
-			() =>
-				updateMigrationGuideHutchPin(
-					`${migrationGuide()}\n// @hutch cli=0.22.0 cottontail=0.5.0\n`,
-					hutch,
-				),
-			/exactly one documented \/\/ @hutch pragma; found 2/,
-		);
-		assert.throws(
-			() => updateMigrationGuideHutchPin(migrationGuide("latest"), hutch),
-			/documented pragma Hutch pin must be an exact SemVer 2\.0\.0/,
-		);
-		assert.throws(
-			() =>
-				updateMigrationGuideHutchPin(
-					migrationGuide().replace("cottontail=0.5.0", "cottontail=production"),
-					hutch,
-				),
-			/documented pragma Cottontail pin must be an exact SemVer 2\.0\.0/,
-		);
-	});
-}
