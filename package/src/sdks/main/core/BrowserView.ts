@@ -390,7 +390,10 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 			| "download-started"
 			| "download-progress"
 			| "download-completed"
-			| "download-failed",
+			| "download-failed"
+			| "render-process-gone"
+			| "unresponsive"
+			| "responsive",
 		handler: (event: unknown) => void,
 	) {
 		const specificName = `${name}-${this.id}`;
