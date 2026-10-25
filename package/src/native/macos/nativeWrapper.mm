@@ -3506,9 +3506,10 @@ static void schedulePendingResizeDrain() {
   return [self.webView canGoForward];
 }
 // WebKit has no public API to kill a WebContent process, and a hung one is
-// never shut down when its WKWebView goes away. Ask WebKit to drop the process
-// (SPI, guarded at runtime like _inspector above) so the next load starts a
-// fresh one, and SIGKILL it ourselves: WebKit's own kill can leave it running.
+// never shut down when its WKWebView goes away. SIGKILL it ourselves (WebKit's
+// own kill can leave it running), before WebKit reaps it so the pid can't have
+// been reused, then ask WebKit to drop it (SPI, guarded at runtime like
+// _inspector above) so the next load starts a fresh process.
 - (BOOL)terminateRenderer {
   if (!self.webView) {
     return NO;
@@ -3518,6 +3519,7 @@ static void schedulePendingResizeDrain() {
           respondsToSelector:NSSelectorFromString(@"_webProcessIdentifier")]) {
     pid = [[self.webView valueForKey:@"_webProcessIdentifier"] intValue];
   }
+  BOOL killed = pid > 0 && kill(pid, SIGKILL) == 0;
   SEL resetSelector =
       NSSelectorFromString(@"_killWebContentProcessAndResetState");
   SEL killSelector = NSSelectorFromString(@"_killWebContentProcess");
@@ -3532,7 +3534,6 @@ static void schedulePendingResizeDrain() {
     askedWebKit = YES;
   }
 #pragma clang diagnostic pop
-  BOOL killed = pid > 0 && kill(pid, SIGKILL) == 0;
   return askedWebKit || killed;
 }
 
