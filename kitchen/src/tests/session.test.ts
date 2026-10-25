@@ -80,6 +80,71 @@ export const sessionTests = [
   }),
 
   defineTest({
+    name: "ephemeral partitions end with their last view, unless Session holds them",
+    category: "Session",
+    description: "Views of a non-persist partition share one session while any is alive; after the last is removed a new view starts empty. A partition Session has used keeps its session",
+    timeout: 30000,
+    requires: { platform: ["darwin", "linux"] },
+    async run({ createWindow, log }) {
+      const reports = new Map<string, string>();
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch(request) {
+          const url = new URL(request.url);
+          if (url.pathname === "/report") {
+            reports.set(url.searchParams.get("tag") ?? "", url.searchParams.get("cookie") ?? "");
+            return new Response("ok");
+          }
+          const tag = url.searchParams.get("tag") ?? "";
+          const set = url.searchParams.has("set") ? `document.cookie = "n=1; path=/";` : "";
+          return new Response(
+            `<script>${set} fetch("/report?tag=${tag}&cookie=" + encodeURIComponent(document.cookie))</script>`,
+            { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } },
+          );
+        },
+      });
+      const host = await createWindow({ url: "views://test-harness/index.html", title: "Ephemeral partitions", renderer: "native" });
+      const open = (partition: string, query: string) =>
+        new BrowserView({ windowId: host.window.id, renderer: "native", partition, url: `http://127.0.0.1:${server.port}/?${query}`, frame: { x: 0, y: 0, width: 300, height: 200 } });
+      const reportFor = async (tag: string) => {
+        const deadline = Date.now() + 8000;
+        while (!reports.has(tag) && Date.now() < deadline) await sleep(100);
+        expect(reports.has(tag)).toBe(true);
+        return reports.get(tag)!;
+      };
+      const stamp = Date.now();
+      try {
+        // Only views hold this one.
+        const partition = `ephemeral-refs-${stamp}`;
+        const setter = open(partition, "tag=set&set=1");
+        expect(await reportFor("set")).toBe("n=1");
+        const sibling = open(partition, "tag=sibling");
+        expect(await reportFor("sibling")).toBe("n=1");
+        setter.remove();
+        sibling.remove();
+        await sleep(1000);
+        const after = await (open(partition, "tag=after"), reportFor("after"));
+        log(`views only: set=n=1, sibling=n=1, after last view="${after}"`);
+        expect(after).toBe("");
+
+        // Session used this one, so it outlives its views.
+        const held = `ephemeral-session-${stamp}`;
+        Session.fromPartition(held).cookies.get();
+        const heldSetter = open(held, "tag=held-set&set=1");
+        expect(await reportFor("held-set")).toBe("n=1");
+        heldSetter.remove();
+        await sleep(1000);
+        const heldAfter = await (open(held, "tag=held-after"), reportFor("held-after"));
+        log(`with Session: after last view="${heldAfter}"`);
+        expect(heldAfter).toBe("n=1");
+      } finally {
+        server.stop(true);
+      }
+    },
+  }),
+
+  defineTest({
     name: "Session.fromPartition",
     category: "Session",
     description: "Test creating a session from a partition name",
