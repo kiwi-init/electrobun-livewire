@@ -34,8 +34,9 @@ export const sessionTests = [
         expect(session.cookies.set({ name: "token", value: "secret", domain: "127.0.0.1", path: "/", httpOnly: true, sameSite: "strict" })).toBe(true);
         expect(session.cookies.set({ name: "theme", value: "dark", domain: "127.0.0.1", path: "/", sameSite: "lax" })).toBe(true);
 
+        log(`all cookies: ${JSON.stringify(session.cookies.get())}`);
         const stored = session.cookies.get({ url: origin });
-        log(`cookies.get: ${JSON.stringify(stored)}`);
+        log(`cookies.get({ url }): ${JSON.stringify(stored)}`);
         const token = stored.find((cookie) => cookie.name === "token");
         const theme = stored.find((cookie) => cookie.name === "theme");
         expect(token?.httpOnly).toBe(true);

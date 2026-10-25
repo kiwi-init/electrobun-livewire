@@ -11130,8 +11130,9 @@ extern "C" const char *sessionGetCookies(const char *partitionIdentifier,
                 } else {
                   matches = [host isEqualToString:cookieDomain];
                 }
-                if (matches && cookie.path && url.path) {
-                  matches = [url.path hasPrefix:cookie.path];
+                if (matches && cookie.path) {
+                  NSString *urlPath = url.path.length ? url.path : @"/";
+                  matches = [urlPath hasPrefix:cookie.path];
                 }
               } else if (filterDomain) {
                 NSString *cookieDomain = cookie.domain;
