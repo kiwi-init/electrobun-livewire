@@ -85,6 +85,7 @@ static bool wgpuDebugEnabled() {
 #include "../shared/permissions.h"
 #include "../shared/permissions_cef.h"
 #include "../shared/preload_script.h"
+#include "../shared/preload_injection.h"
 #include "../shared/shutdown_guard.h"
 #include "../shared/thread_safe_map.h"
 #include "../shared/views_url.h"
@@ -5903,7 +5904,6 @@ private:
 class ElectrobunResponseFilter : public CefResponseFilter {
 private:
   std::string buffer_;
-  bool has_head_;
   bool injected_;
   PreloadScript electrobun_script_;
   PreloadScript custom_script_;
@@ -5911,7 +5911,7 @@ private:
 public:
   ElectrobunResponseFilter(const PreloadScript &electrobunScript,
                            const PreloadScript &customScript)
-      : has_head_(false), injected_(false),
+      : injected_(false),
         electrobun_script_(electrobunScript), custom_script_(customScript) {}
 
   virtual FilterStatus Filter(void *data_in, size_t data_in_size,
@@ -5949,62 +5949,15 @@ public:
                              : RESPONSE_FILTER_NEED_MORE_DATA;
     }
 
-    // Look for <head> tag if we haven't found it yet
-    if (!has_head_) {
-      size_t head_pos = buffer_.find("<head>");
-      if (head_pos != std::string::npos) {
-        has_head_ = true;
-
-        // Inject our scripts after the <head> tag
-        std::string scripts = "<script>\n";
-        scripts += electrobun_script_.code;
-        scripts += "\n</script>\n";
-
-        if (!custom_script_.code.empty()) {
-          scripts += "<script>\n";
-          scripts += custom_script_.code;
-          scripts += "\n</script>\n";
-        }
-
-        buffer_.insert(head_pos + 6, scripts); // Insert after <head>
-        injected_ = true;
+    // Inject on the first chunk. A short document without <head> can arrive
+    // in one piece, and waiting for more data before falling back meant it
+    // never got the preload at all.
+    if (!buffer_.empty()) {
+      std::string scripts = "<script>\n" + electrobun_script_.code + "\n</script>\n";
+      if (!custom_script_.code.empty()) {
+        scripts += "<script>\n" + custom_script_.code + "\n</script>\n";
       }
-    }
-
-    // If we still haven't found <head> but the buffer is getting large,
-    // we should check for <html> or just inject at the beginning
-    if (!has_head_ && buffer_.size() > 1024) {
-      size_t html_pos = buffer_.find("<html>");
-      if (html_pos != std::string::npos) {
-        // Inject after <html> tag
-        std::string scripts = "<head>\n<script>\n";
-        scripts += electrobun_script_.code;
-        scripts += "\n</script>\n";
-
-        if (!custom_script_.code.empty()) {
-          scripts += "<script>\n";
-          scripts += custom_script_.code;
-          scripts += "\n</script>\n";
-        }
-
-        scripts += "</head>\n";
-
-        buffer_.insert(html_pos + 6, scripts); // Insert after <html>
-      } else {
-        // As a last resort, inject at the beginning
-        std::string scripts = "<script>\n";
-        scripts += electrobun_script_.code;
-        scripts += "\n</script>\n";
-
-        if (!custom_script_.code.empty()) {
-          scripts += "<script>\n";
-          scripts += custom_script_.code;
-          scripts += "\n</script>\n";
-        }
-
-        buffer_.insert(0, scripts);
-      }
-
+      electrobun::injectPreloadScripts(buffer_, scripts);
       injected_ = true;
     }
 
@@ -6021,7 +5974,6 @@ public:
   virtual bool InitFilter() override {
     // Initialize any resources needed for filtering
     buffer_.clear();
-    has_head_ = false;
     injected_ = false;
     return true;
   }

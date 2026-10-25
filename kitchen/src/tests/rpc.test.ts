@@ -347,6 +347,45 @@ function inlineHtmlBridgeTest(name: string, renderer: "native" | "cef") {
   });
 }
 
+// CEF injects the preload by rewriting the HTML response; a document without
+// <head> must still get it (and keep its doctype's standards mode).
+function headlessPreloadTest(name: string, body: string, compatMode: string) {
+  return defineTest({
+    name,
+    category: "RPC",
+    description: "Test that CEF injects the preload into a document that has no <head>",
+    timeout: 25000,
+    async run({ createWindow, log }) {
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: () => new Response(body, { headers: { "content-type": "text/html" } }),
+      });
+      try {
+        const rpc = createTestHarnessRPC(3000);
+        const win = await createWindow({
+          url: `http://127.0.0.1:${server.port}/`,
+          rpc,
+          renderer: "cef",
+          title: name,
+        });
+        await sleep(2000);
+        // The page can't answer RPC, so it reports by navigating to the
+        // harness (a default bridge origin) with the result in the query.
+        win.webview.executeJavascript(
+          `location.href = "views://test-harness/index.html?probe=" + [typeof window.__electrobun, document.compatMode].join(",")`,
+        );
+        await sleep(2500);
+        const search = await rpc.request.evaluateJavascriptWithResponse({ script: "return location.search" });
+        log(`probe: ${search}`);
+        expect(search).toBe(`?probe=object,${compatMode}`);
+      } finally {
+        server.stop(true);
+      }
+    },
+  });
+}
+
 export const rpcTests = [
 	defineTest({
 		name: "Webview tag BrowserView created event",
@@ -519,6 +558,9 @@ export const rpcTests = [
       expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
     },
   }),
+
+  headlessPreloadTest("CEF preload in a head-less document with a doctype", "<!doctype html><body>headless</body>", "CSS1Compat"),
+  headlessPreloadTest("CEF preload in a head-less document without a doctype", "<p>no doctype, no head</p>", "BackCompat"),
 
   defineTest({
     name: "webview to bun: request with response",
