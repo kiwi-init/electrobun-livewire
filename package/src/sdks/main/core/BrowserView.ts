@@ -354,6 +354,17 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		return ffi.request.webviewGetPageZoom({ id: this.id }) as number;
 	}
 
+	/**
+	 * Captures what the view shows as a PNG data URL, also while its window is
+	 * hidden. Native WebKit views on macOS only for now; elsewhere it rejects.
+	 */
+	snapshot(options?: { timeoutMs?: number }): Promise<string> {
+		return ffi.request.webviewSnapshot({
+			id: this.id,
+			timeoutMs: options?.timeoutMs ?? 10_000,
+		});
+	}
+
 	// todo (yoav): move this to a class that also has off, append, prepend, etc.
 	// name should only allow browserView events
 	// Note: normalize event names to willNavigate instead of ['will-navigate'] to save

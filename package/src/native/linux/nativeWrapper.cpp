@@ -10715,8 +10715,8 @@ ELECTROBUN_EXPORT void showContextMenu(const char* jsonString, void* contextMenu
     fflush(stdout);
 }
 
-ELECTROBUN_EXPORT void getWebviewSnapshot(uint32_t hostId, uint32_t webviewId, double x, double y, double width, double height, void* completionHandler) {
-    // TODO: Implement webview snapshot
+ELECTROBUN_EXPORT bool getWebviewSnapshot(void* webview, uint32_t requestId, SnapshotCallback callback) {
+    return false;
 }
 
 void setJSUtils(void* getMimeType, void* getHTMLForWebviewSync) {

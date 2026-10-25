@@ -13310,14 +13310,9 @@ ELECTROBUN_EXPORT void showContextMenu(const char *jsonString, ZigStatusItemHand
     });
 }
 
-ELECTROBUN_EXPORT void getWebviewSnapshot(uint32_t hostId, uint32_t webviewId,
-                       WKWebView *webView,
+ELECTROBUN_EXPORT bool getWebviewSnapshot(void* webview, uint32_t requestId,
                        zigSnapshotCallback callback) {
-    // Stub implementation
-    if (callback) {
-        static const char* emptyDataUrl = "data:image/png;base64,";
-        callback(hostId, webviewId, emptyDataUrl);
-    }
+    return false;
 }
 
 ELECTROBUN_EXPORT void setJSUtils(GetMimeType getMimeType, GetHTMLForWebviewSync getHTMLForWebviewSync) {

@@ -10214,32 +10214,43 @@ extern "C" void showContextMenu(const char *jsonString,
   });
 }
 
-extern "C" void getWebviewSnapshot(uint32_t hostId, uint32_t webviewId,
-                                   WKWebView *webView,
+extern "C" bool getWebviewSnapshot(AbstractView *abstractView,
+                                   uint32_t requestId,
                                    zigSnapshotCallback callback) {
-  WKSnapshotConfiguration *snapshotConfig =
-      [[WKSnapshotConfiguration alloc] init];
-  [webView
-      takeSnapshotWithConfiguration:snapshotConfig
-                  completionHandler:^(NSImage *snapshotImage, NSError *error) {
-                    if (error) {
-                      NSLog(@"Error capturing snapshot: %@", error);
-                      return;
-                    }
-                    NSBitmapImageRep *imgRep = [[NSBitmapImageRep alloc]
-                        initWithData:[snapshotImage TIFFRepresentation]];
-                    NSData *pngData =
-                        [imgRep representationUsingType:NSBitmapImageFileTypePNG
-                                             properties:@{}];
-                    NSString *base64String =
-                        [pngData base64EncodedStringWithOptions:0];
-                    NSString *dataUrl =
-                        [NSString stringWithFormat:@"data:image/png;base64,%@",
-                                                   base64String];
-                    if (callback) {
-                      callback(hostId, webviewId, [dataUrl UTF8String]);
-                    }
-                  }];
+  if (!callback || ![abstractView isKindOfClass:[WKWebViewImpl class]]) {
+    return false;
+  }
+  WKWebViewImpl *view = (WKWebViewImpl *)abstractView;
+  runOnMainThreadAsyncVoid(^{
+    WKWebView *webView = view.isRemoved ? nil : view.webView;
+    if (!webView) {
+      callback(requestId, NULL, strdup("the webview was removed"));
+      return;
+    }
+    [webView
+        takeSnapshotWithConfiguration:[[WKSnapshotConfiguration alloc] init]
+                    completionHandler:^(NSImage *image, NSError *error) {
+                      NSData *tiff = image.TIFFRepresentation;
+                      NSData *png =
+                          tiff ? [[[NSBitmapImageRep alloc] initWithData:tiff]
+                                     representationUsingType:
+                                         NSBitmapImageFileTypePNG
+                                                  properties:@{}]
+                               : nil;
+                      if (!png) {
+                        NSString *reason =
+                            error.localizedDescription
+                                ?: @"WebKit returned no image";
+                        callback(requestId, NULL, strdup(reason.UTF8String));
+                        return;
+                      }
+                      NSString *dataUrl = [@"data:image/png;base64,"
+                          stringByAppendingString:
+                              [png base64EncodedStringWithOptions:0]];
+                      callback(requestId, strdup(dataUrl.UTF8String), NULL);
+                    }];
+  });
+  return true;
 }
 
 extern "C" void setJSUtils(GetMimeType getMimeType,

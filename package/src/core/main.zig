@@ -113,6 +113,7 @@ const GlobalShortcutHandler = *const fn ([*:0]const u8) callconv(.c) void;
 const QuitRequestedHandler = *const fn () callconv(.c) void;
 const URLOpenHandler = *const fn ([*:0]const u8) callconv(.c) void;
 const AppReopenHandler = *const fn () callconv(.c) void;
+const WebviewSnapshotHandler = *const fn (u32, ?[*:0]u8, ?[*:0]u8) callconv(.c) void;
 const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
 const WebviewSecretKey = [Aes256Gcm.key_length]u8;
 const websocket_magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -3514,6 +3515,18 @@ export fn webviewStopFind(webview_id: u32) void {
     const webview = requireWebviewPtr(webview_id) orelse return;
     const webview_stop_find = lookupNativeSymbol(WebviewStopFindFn, "webviewStopFind") orelse return;
     webview_stop_find(webview);
+}
+
+export fn getWebviewSnapshot(webview_id: u32, request_id: u32, handler: ?WebviewSnapshotHandler) bool {
+    clearLastError();
+    const GetWebviewSnapshotFn = *const fn (WebviewPtr, u32, ?WebviewSnapshotHandler) callconv(.c) bool;
+    const webview = requireWebviewPtr(webview_id) orelse return false;
+    const get_webview_snapshot = lookupNativeSymbol(GetWebviewSnapshotFn, "getWebviewSnapshot") orelse return false;
+    if (!get_webview_snapshot(webview, request_id, handler)) {
+        setLastError("Webview {d} can't take snapshots on this platform or renderer yet", .{webview_id});
+        return false;
+    }
+    return true;
 }
 
 export fn evaluateJavaScriptWithNoCompletion(webview_id: u32, js: [*:0]const u8) void {

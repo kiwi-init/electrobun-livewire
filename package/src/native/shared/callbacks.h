@@ -35,8 +35,9 @@ typedef void (*WindowKeyHandler)(uint32_t windowId, uint32_t keyCode, uint32_t m
 typedef void (*StatusItemHandler)(uint32_t trayId, const char* action);
 typedef void (*MenuHandler)(const char* menuItemId);
 
-// Snapshot callback
-typedef void (*SnapshotCallback)(uint32_t hostId, uint32_t webviewId, const char* dataUrl);
+// Snapshot callback: exactly one of dataUrl and error is set, malloc'd; the
+// receiver frees both.
+typedef void (*SnapshotCallback)(uint32_t requestId, char* dataUrl, char* error);
 
 // URL open handler for deep linking
 typedef void (*URLOpenHandler)(const char* url);
