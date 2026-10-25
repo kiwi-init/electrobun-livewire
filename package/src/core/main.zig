@@ -185,7 +185,6 @@ const WebviewState = struct {
     secret_key: WebviewSecretKey,
     socket_handle: ?std.posix.socket_t,
     transport_ready: bool,
-    plaintext_transport: bool,
 };
 
 const WgpuViewState = struct {
@@ -965,7 +964,6 @@ const WebviewTransportContext = struct {
     secret_key: WebviewSecretKey,
     socket_handle: ?std.posix.socket_t,
     transport_ready: bool,
-    plaintext_transport: bool,
 };
 
 fn lookupWebviewTransportContext(webview_id: u32) ?WebviewTransportContext {
@@ -974,7 +972,6 @@ fn lookupWebviewTransportContext(webview_id: u32) ?WebviewTransportContext {
         .secret_key = state.secret_key,
         .socket_handle = state.socket_handle,
         .transport_ready = state.transport_ready,
-        .plaintext_transport = state.plaintext_transport,
     };
 }
 
@@ -1401,19 +1398,6 @@ fn decryptHostTransportPacket(message_json: []const u8, secret_key: WebviewSecre
     return plaintext;
 }
 
-fn isPlaintextHostTransportPacket(message_json: []const u8) bool {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, message_json, .{}) catch return false;
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return false;
-    const type_value = parsed.value.object.get("type") orelse return false;
-    if (type_value != .string) return false;
-
-    return std.mem.eql(u8, type_value.string, "message") or
-        std.mem.eql(u8, type_value.string, "request") or
-        std.mem.eql(u8, type_value.string, "response");
-}
-
 fn enqueueHostTransportPlaintext(webview_id: u32, context: WebviewTransportContext, plaintext: []const u8) void {
     if (context.socket_handle) |socket_handle| {
         markWebviewTransportReady(webview_id, socket_handle);
@@ -1430,10 +1414,6 @@ fn dispatchHostTransportMessage(webview_id: u32, encrypted_packet: []const u8) v
     const context = lookupWebviewTransportContext(webview_id) orelse return;
 
     const plaintext = decryptHostTransportPacket(encrypted_packet, context.secret_key) catch {
-        if (context.plaintext_transport and isPlaintextHostTransportPacket(encrypted_packet)) {
-            enqueueHostTransportPlaintext(webview_id, context, encrypted_packet);
-            return;
-        }
         incrementHostTransportDebug("decrypt_errors");
         return;
     };
@@ -1442,13 +1422,10 @@ fn dispatchHostTransportMessage(webview_id: u32, encrypted_packet: []const u8) v
     enqueueHostTransportPlaintext(webview_id, context, plaintext);
 }
 
-// True when the packet decrypts with the webview's key (or is a valid plaintext
-// packet while plaintext transport is on).
+// True when the packet decrypts with the webview's key.
 fn hostTransportPacketAuthenticates(webview_id: u32, packet: []const u8) bool {
     const context = lookupWebviewTransportContext(webview_id) orelse return false;
-    const plaintext = decryptHostTransportPacket(packet, context.secret_key) catch {
-        return context.plaintext_transport and isPlaintextHostTransportPacket(packet);
-    };
+    const plaintext = decryptHostTransportPacket(packet, context.secret_key) catch return false;
     allocator.free(plaintext);
     return true;
 }
@@ -3267,7 +3244,6 @@ export fn createWebview(
         .secret_key = parsed_secret_key,
         .socket_handle = null,
         .transport_ready = false,
-        .plaintext_transport = false,
     }) catch |err| {
         webview_registry_mutex.unlock(coreIo());
         setLastError("Failed to store webview state: {s}", .{@errorName(err)});
@@ -3594,18 +3570,6 @@ export fn clearWebviewHostTransport(webview_id: u32) void {
     closeAndClearWebviewSocketHandle(webview_id);
 }
 
-export fn setWebviewPlaintextHostTransport(webview_id: u32, enabled: bool) void {
-    clearLastError();
-    webview_registry_mutex.lockUncancelable(coreIo());
-    defer webview_registry_mutex.unlock(coreIo());
-
-    const state = webview_registry.getPtr(webview_id) orelse {
-        setLastError("Webview {d} not found", .{webview_id});
-        return;
-    };
-    state.plaintext_transport = enabled;
-}
-
 export fn sendHostMessageToWebviewViaTransport(webview_id: u32, message_json: [*:0]const u8) bool {
     clearLastError();
 
@@ -3618,14 +3582,6 @@ export fn sendHostMessageToWebviewViaTransport(webview_id: u32, message_json: [*
         return false;
     }
     const socket_handle = context.socket_handle orelse return false;
-
-    if (context.plaintext_transport) {
-        const plaintext_packet = allocator.dupe(u8, std.mem.span(message_json)) catch |err| {
-            setLastError("Failed to allocate host transport packet: {s}", .{@errorName(err)});
-            return false;
-        };
-        return enqueueHostTransportSend(webview_id, socket_handle, 0x1, plaintext_packet);
-    }
 
     const encrypted_packet = encryptHostTransportPacket(std.mem.span(message_json), context.secret_key) catch |err| {
         setLastError("Failed to encrypt host transport packet: {s}", .{@errorName(err)});
