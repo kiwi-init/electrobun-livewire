@@ -160,6 +160,9 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	startPassthrough: boolean = false;
 	spellCheck: boolean = false;
 	isRemoved: boolean = false;
+	// Set just before the view's renderer is killed on purpose (e.g. by wake
+	// recovery), so a render-process-gone listener can tell it from a crash.
+	rendererExitExpected: string | null = null;
 
 	get ptr(): Pointer | null {
 		if (this.isRemoved) {
@@ -703,6 +706,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		view.startPassthrough = options.startPassthrough ?? false;
 		view.spellCheck = options.spellCheck ?? false;
 		view.isRemoved = false;
+		view.rendererExitExpected = null;
 		BrowserViewMap[id] = view as BrowserView<any>;
 		return view;
 	}

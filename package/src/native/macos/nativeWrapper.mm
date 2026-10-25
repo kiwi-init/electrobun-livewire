@@ -660,6 +660,7 @@ static URLOpenHandler g_urlOpenHandler = nullptr;
 static std::vector<std::string> g_pendingUrlOpenPaths;
 static std::mutex g_urlOpenMutex;
 static AppReopenHandler g_appReopenHandler = nullptr;
+static AppReopenHandler g_appWakeHandler = nullptr;
 static QuitRequestedHandler g_quitRequestedHandler = nullptr;
 static std::atomic<bool> g_shutdownComplete{false};
 static std::atomic<bool> g_eventLoopStopping{false};
@@ -10227,6 +10228,80 @@ extern "C" void setURLOpenHandler(URLOpenHandler handler) {
 
 extern "C" void setAppReopenHandler(AppReopenHandler handler) {
   g_appReopenHandler = handler;
+}
+
+// Tells Bun when the Mac wakes from sleep. After some wakes a WebContent
+// process loses its connection to the Networking process and its page freezes
+// for good; Bun probes each webview and recycles the ones that don't answer.
+extern "C" void setAppWakeHandler(AppReopenHandler handler) {
+  g_appWakeHandler = handler;
+  static dispatch_once_t observing;
+  dispatch_once(&observing, ^{
+    runOnMainThreadAsyncVoid(^{
+      [[[NSWorkspace sharedWorkspace] notificationCenter]
+          addObserverForName:NSWorkspaceDidWakeNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification *note) {
+                    (void)note;
+                    if (g_appWakeHandler) {
+                      g_appWakeHandler();
+                    }
+                  }];
+    });
+  });
+}
+
+// Nonces of probes whose script ran: the page's JS is alive. Recorded from
+// the evaluate's completion, which doesn't go through the Networking process.
+static NSMutableSet<NSString *> *g_probeAnsweredNonces = nil;
+
+// Makes the page open a WebSocket to the core's loopback transport at
+// /probe?nonce=..., the WebContent -> Networking path a frozen page has lost.
+// It runs in its own content world so the page's scripts and CSP can't
+// interfere. Returns false if the webview can't be probed.
+extern "C" bool webviewProbeNetwork(AbstractView *abstractView, uint32_t port,
+                                    const char *nonce) {
+  if (!abstractView || !nonce ||
+      !globalAbstractViews[@(abstractView.webviewId)] ||
+      ![abstractView isKindOfClass:[WKWebViewImpl class]]) {
+    return false;
+  }
+  WKWebView *webView = ((WKWebViewImpl *)abstractView).webView;
+  if (!webView) {
+    return false;
+  }
+  NSString *nonceString = [NSString stringWithUTF8String:nonce];
+  NSString *script = [NSString
+      stringWithFormat:@"try { const s = new WebSocket('ws://127.0.0.1:%u/"
+                       @"probe?nonce=%@'); s.onopen = s.onerror = () => "
+                       @"s.close(); } catch (e) {} true",
+                       port, nonceString];
+  runOnMainThreadAsyncVoid(^{
+    [webView evaluateJavaScript:script
+                        inFrame:nil
+                 inContentWorld:[WKContentWorld worldWithName:@"electrobun-probe"]
+              completionHandler:^(id result, NSError *error) {
+                if (error || ![result isKindOfClass:[NSNumber class]]) return;
+                if (!g_probeAnsweredNonces) g_probeAnsweredNonces = [NSMutableSet set];
+                // Bounded: nonces are only read back within seconds of a wake.
+                if (g_probeAnsweredNonces.count > 256) [g_probeAnsweredNonces removeAllObjects];
+                [g_probeAnsweredNonces addObject:nonceString];
+              }];
+  });
+  return true;
+}
+
+// Whether the probe with this nonce ran its script (see webviewProbeNetwork).
+extern "C" bool webviewProbeAnswered(const char *nonce) {
+  if (!nonce) return false;
+  NSString *nonceString = [NSString stringWithUTF8String:nonce];
+  __block BOOL answered = NO;
+  runOnMainThreadSyncVoid(^{
+    answered = [g_probeAnsweredNonces containsObject:nonceString];
+    if (answered) [g_probeAnsweredNonces removeObject:nonceString];
+  });
+  return answered;
 }
 
 extern "C" void setDockIconVisible(bool visible) {

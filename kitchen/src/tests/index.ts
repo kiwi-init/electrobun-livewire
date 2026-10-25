@@ -26,6 +26,7 @@ import { opfsTests } from "./opfs.test";
 import { uiRuntimeTests } from "./ui-runtime.test";
 import { appDataProtocolTests } from "./appdata-protocol.test";
 import { appEngineTests } from "./appengine.test";
+import { wakeRecoveryTests } from "./wake-recovery.test";
 import { webview2InitializationTests } from "./webview2-initialization.test";
 
 // Interactive tests
@@ -73,6 +74,7 @@ export const allTests: TestDefinition[] = [
   ...uiRuntimeTests,
   ...appDataProtocolTests,
   ...appEngineTests,
+  ...wakeRecoveryTests,
   ...webview2InitializationTests,
   ...wgpuFfiTests,
   ...wgpuAdapterTests,

@@ -188,6 +188,18 @@ export const quitAfterApproval = (
 	}
 };
 
+// Probes every macOS system webview and gives the ones that can't reach the
+// network anymore a fresh process. Runs on its own after each wake from sleep
+// (see the "did-wake" app event); returns the ids of the webviews it recycled.
+export const recoverWebviewsAfterWake = (options?: {
+	settleMs?: number;
+	timeoutMs?: number;
+	probePort?: number;
+	ids?: number[];
+}): Promise<number[]> =>
+	// Loaded lazily: wakeRecovery imports BrowserView, which imports this file.
+	require("./wakeRecovery").recoverWebviewsAfterWake(options);
+
 export const quit = (code = 0): boolean => {
 	const approval = requestQuitApproval();
 	if (!approval) return false;

@@ -120,6 +120,11 @@ export class AppEngine {
 		return this.showingManifest;
 	}
 
+	// The BrowserView the UI currently runs in (replaced after a hang).
+	getView(): BrowserView | null {
+		return this.view;
+	}
+
 	async start() {
 		if (this.started) return;
 		this.started = true;
@@ -181,7 +186,14 @@ export class AppEngine {
 		this.rpc = rpc;
 		const view = this.view;
 		view.on("render-process-gone", () => {
-			if (view === this.view) this.onRendererGone();
+			if (view !== this.view) return;
+			// Wake recovery killed a frozen process and reloads the same UI, which
+			// boots again: not the UI's failure.
+			if (view.rendererExitExpected) {
+				view.rendererExitExpected = null;
+				return;
+			}
+			this.onRendererGone();
 		});
 	}
 
