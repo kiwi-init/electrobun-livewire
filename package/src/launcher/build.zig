@@ -33,6 +33,27 @@ pub fn build(b: *std.Build) void {
         exe.headerpad_size = 0x1000;
     }
 
+    // App Sandbox (required for the Mac App Store) denies the mach-lookup of
+    // com.apple.coreservices.launchservicesd, so the app must check in with
+    // LaunchServices while dyld loads the bundle's main executable, when it
+    // still holds its launch context. AppKit does that check-in when it loads.
+    // Without it here, the runtime child first meets AppKit through dlopen of
+    // the native wrapper, too late, and NSApplication aborts. The launcher
+    // never calls into Cocoa, hence `needed` to keep the load command.
+    if (target.result.os.tag == .macos) {
+        const output = b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" });
+        const macos_sdk = std.mem.trim(u8, output, " \t\r\n");
+        if (macos_sdk.len == 0) @panic("xcrun returned an empty macOS SDK path");
+        exe.root_module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ macos_sdk, "usr", "lib" }) });
+        exe.root_module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{
+            macos_sdk,
+            "System",
+            "Library",
+            "Frameworks",
+        }) });
+        exe.root_module.linkFramework("Cocoa", .{ .needed = true });
+    }
+
     // For production Windows builds, use GUI subsystem to hide console window
     // For dev builds (Debug mode), use default console subsystem for CLI interaction
     const is_windows = target.result.os.tag == .windows;
