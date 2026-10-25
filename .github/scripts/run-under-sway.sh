@@ -75,6 +75,8 @@ fi
 
 export WAYLAND_DISPLAY="$socket"
 export GDK_BACKEND=wayland
+# Lets Kitchen tests know there's no real keyboard or pointer.
+export KITCHEN_HEADLESS_SWAY=1
 echo "sway ready on $WAYLAND_DISPLAY (scale $scale, XWayland off)"
 swaymsg -t get_outputs -r | jq -c '.[] | {name, current_mode, scale}' || true
 

@@ -40,9 +40,22 @@ export const utilsTests = [
         throw new Error("wl-copy and wl-paste are needed (install wl-clipboard)");
       }
 
+      // A compositor only takes a selection from a client it has sent an
+      // input event to. Headless sway on CI has no keyboard or pointer, so
+      // press Shift on a virtual keyboard to give the focused app one, as a
+      // real click or keypress would.
+      if (process.env["KITCHEN_HEADLESS_SWAY"]) {
+        const wtype = Bun.which("wtype");
+        if (!wtype) throw new Error("wtype is needed under headless sway");
+        Bun.spawnSync([wtype, "-k", "Shift_L"], { timeout: 5000 });
+        await sleep(100);
+      }
+
       const fromApp = `from Electrobun ${Date.now()}`;
       Utils.clipboardWriteText(fromApp);
       await sleep(200);
+      const types = Bun.spawnSync([wlPaste, "--list-types"], { timeout: 5000 });
+      log(`wl-paste --list-types: ${types.stdout.toString().trim() || types.stderr.toString().trim()}`);
       const pasted = Bun.spawnSync([wlPaste, "--no-newline"], { timeout: 5000 });
       expect(pasted.stdout.toString()).toBe(fromApp);
       log(`wl-paste read the app's text: "${fromApp}"`);
