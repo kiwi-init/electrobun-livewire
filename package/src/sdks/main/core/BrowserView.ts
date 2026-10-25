@@ -72,7 +72,8 @@ export type BrowserViewOptions<T = undefined> = {
 	newWindow: NewWindowPolicy;
 	// Globs (navigationRules syntax) for the pages that get RPC. Defaults to
 	// views://*, appdata://*, the http(s) origin of `url`, and about:blank for
-	// inline `html`. Other pages, and every subframe, run as if sandboxed.
+	// inline `html`. Other pages, and every subframe, run as if sandboxed (a
+	// same-origin iframe can still reach its parent's bridge through `parent`).
 	// ["*"] gives RPC to any top-level page the view shows.
 	bridgeOrigins: string[] | null;
 	// Sandbox mode: when true, disables RPC and only allows event emission

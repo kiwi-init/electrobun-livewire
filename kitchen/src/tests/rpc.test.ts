@@ -533,6 +533,38 @@ export const rpcTests = [
   inlineHtmlBridgeTest("inline html views keep their bridge (CEF)", "cef"),
 
   defineTest({
+    name: "bridge messages without the view's token are dropped",
+    category: "RPC",
+    description: "Test that a message posted straight to the native bridge, bypassing the preload's bridge wrapper, never reaches Bun",
+    timeout: 20000,
+    async run({ createWindow, log }) {
+      const received: number[] = [];
+      const rpc = createTestHarnessRPC(3000, {
+        bunStressMessages: { record: (id: number) => received.push(id) } as any,
+      });
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        renderer: "native",
+        title: "Bridge token",
+      });
+      await sleep(2000);
+      const packet = (id: number) =>
+        JSON.stringify({ type: "message", id: "stressMessageToBun", payload: { id } });
+      win.webview.executeJavascript(
+        `try { window.webkit.messageHandlers.hostBridge.postMessage(${JSON.stringify(packet(901))}); } catch (e) {}`,
+      );
+      win.webview.executeJavascript(
+        `window.__electrobunHostBridge.postMessage(${JSON.stringify(packet(5))});`,
+      );
+      await sleep(1000);
+      log(`Bun received: ${JSON.stringify(received)}`);
+      expect(received.includes(5)).toBe(true);
+      expect(received.includes(901)).toBe(false);
+    },
+  }),
+
+  defineTest({
     name: "rpc socket closes connections that never authenticate",
     category: "RPC",
     description: "Test that an idle page keeps its RPC socket (it authenticates with a hello on open) while a connection that never proves the key is closed",
