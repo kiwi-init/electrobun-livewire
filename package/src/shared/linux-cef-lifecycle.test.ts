@@ -109,8 +109,10 @@ describe("Linux CEF view lifecycle", () => {
 		expect(countNoArgumentCalls("CefQuitMessageLoop")).toBe(1);
 		expect(countNoArgumentCalls("CefShutdown")).toBe(1);
 
-		// The WebKit-only path still uses GTK's loop and never enters CEF.
-		expect(webKitLoop).toContain("gtk_main()");
+		// The WebKit-only path still uses GTK's loop (the toolkit's main loop,
+		// gtk_main in the GTK3 layer) and never enters CEF.
+		expect(webKitLoop).toContain("toolkit::runMainLoop()");
+		expect(source).toMatch(/void runMainLoop\(\) \{\s*gtk_main\(\);/);
 		expect(webKitLoop).not.toContain("CefRunMessageLoop");
 		expect(webKitLoop).not.toContain("CefShutdown");
 	});
