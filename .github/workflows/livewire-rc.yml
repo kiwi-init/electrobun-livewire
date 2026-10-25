@@ -1,0 +1,222 @@
+name: Livewire release candidate
+
+# Builds the devkit for every platform and publishes it as a GitHub prerelease
+# that Hutch can install from this repository:
+#
+#   ELECTROBUN_RELEASES_BASE_URL=https://github.com/kiwi-init/electrobun-livewire/releases/download
+#   hutch.config.ts: electrobun: { version: "<the RC version>" }
+#
+# Cut one: run `node package/scripts/set-livewire-version.mjs X.Y.Z-livewire.rc.N`,
+# merge that PR, then dispatch this workflow on main. From any other branch it's
+# a dry run: everything is built and indexed, nothing is published.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livewire-rc
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Read and check the Livewire version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package/package.json").version')"
+          node --input-type=module -e '
+            const { isLivewireVersion } = await import("./package/scripts/set-livewire-version.mjs");
+            if (!isLivewireVersion(process.argv[1])) {
+              console.error(`package.json version ${process.argv[1]} is not a Livewire version (needs a "livewire" prerelease identifier); run set-livewire-version.mjs first`);
+              process.exit(1);
+            }' "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then echo "publish=true" >> "$GITHUB_OUTPUT"; else echo "publish=false" >> "$GITHUB_OUTPUT"; fi
+          echo "Livewire $version (publish: $([[ "$GITHUB_REF" == "refs/heads/main" ]] && echo yes || echo 'no, dry run'))"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, platform: darwin, arch: arm64, platform_name: darwin }
+          - { os: macos-26-intel, platform: darwin, arch: x64, platform_name: darwin }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, platform_name: linux }
+          - { os: ubuntu-24.04-arm, platform: linux, arch: arm64, platform_name: linux }
+          - { os: windows-2025, platform: win32, arch: x64, platform_name: win }
+          - { os: windows-11-arm, platform: win32, arch: arm64, platform_name: win }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      ELECTROBUN_BUILD_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.1'
+      - name: Verify native macOS runner architecture
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          expected_machine=x86_64
+          if [[ "$EXPECTED_ARCH" == arm64 ]]; then expected_machine=arm64; fi
+          test "$(uname -m)" = "$expected_machine"
+          test "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" != 1
+      - uses: ./.github/actions/install-hutch
+        with:
+          channel: canary
+      - name: Setup MSVC Developer Command Prompt
+        if: matrix.platform == 'win32'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Free disk space (Linux)
+        if: matrix.platform == 'linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libpipewire-0.3-dev build-essential cmake pkg-config
+      - name: Install dependencies
+        working-directory: package
+        run: hutch run install
+      - name: Get CEF version for cache key
+        id: cef-version
+        shell: bash
+        run: |
+          CEF_VER=$(grep "const CEF_VERSION " package/src/shared/cef-version.ts | head -1 | sed "s/.*\`\(.*\)\`.*/\1/" | tr '+' '-')
+          echo "version=$CEF_VER" >> "$GITHUB_OUTPUT"
+      - name: Cache CEF vendor directory
+        uses: actions/cache@v5
+        with:
+          path: package/vendors/cef
+          key: cef-${{ matrix.platform_name }}-${{ matrix.arch }}-${{ steps.cef-version.outputs.version }}
+      - name: Cache core build dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            package/vendors/zig
+            package/vendors/zig-asar
+            package/vendors/zig-bsdiff
+            package/vendors/zig-zstd
+            package/vendors/wgpu
+          key: core-build-dependencies-${{ matrix.platform_name }}-${{ matrix.arch }}-${{ hashFiles('package/src/shared/build-dependencies.ts') }}
+      - name: Build the devkit for ${{ matrix.platform_name }}-${{ matrix.arch }}
+        working-directory: package
+        run: node scripts/package-release.js
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: electrobun-core-${{ matrix.platform_name }}-${{ matrix.arch }}
+          path: package/electrobun-core-${{ matrix.platform_name }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+      - name: Upload CEF artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: electrobun-cef-${{ matrix.platform_name }}-${{ matrix.arch }}
+          path: package/electrobun-cef-${{ matrix.platform_name }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: v${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.1'
+      - name: Verify the tag matches package.json
+        env:
+          RELEASE_TAG: ${{ env.TAG }}
+          RELEASE_PACKAGE_JSON: package/package.json
+          EXPLICIT_PRERELEASE: 'true'
+        run: node package/scripts/verify-release-version.mjs
+      - name: Download devkit artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: electrobun-*
+          path: artifacts
+          merge-multiple: true
+      - name: Create the artifact index Hutch reads
+        run: >-
+          node package/scripts/create-artifact-index.mjs
+          --artifacts artifacts
+          --output artifacts/electrobun-artifacts.json
+          --repository "$GITHUB_REPOSITORY"
+          --tag "$TAG"
+          --expect macos-arm64,macos-x64,linux-arm64,linux-x64,windows-x64,windows-arm64
+      - name: Keep the index from a dry run
+        if: needs.version.outputs.publish != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: dry-run-electrobun-artifacts
+          path: artifacts/electrobun-artifacts.json
+      - name: Publish the prerelease
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG already exists; bump the version with set-livewire-version.mjs for a new candidate." >&2
+            exit 1
+          fi
+          # Created with the workflow token, so the tag doesn't trigger release.yml.
+          gh release create "$TAG" artifacts/*.tar.gz artifacts/electrobun-artifacts.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Livewire $VERSION" \
+            --notes "Livewire release candidate $VERSION, built from $GITHUB_SHA.
+
+          Install with Hutch: set \`ELECTROBUN_RELEASES_BASE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download\` and \`electrobun: { version: \"$VERSION\" }\` in hutch.config.ts."
+
+  smoke:
+    needs: [version, release]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.1'
+      - uses: ./.github/actions/install-hutch
+        with:
+          channel: canary
+      - name: Kitchen installs the published devkit through Hutch and builds
+        working-directory: kitchen
+        env:
+          ELECTROBUN_RELEASES_BASE_URL: https://github.com/${{ github.repository }}/releases/download
+        run: |
+          hutch run install
+          hutch electrobun build --env=dev

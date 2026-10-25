@@ -58,4 +58,14 @@ Livewire is a hard fork. We don't track or sync upstream, and we never open pull
 
 ## Releases
 
-Don't run `hutch push:*`, `release.yml` or any `v*` tag until Livewire owns its release pipeline. Those publish Electrobun versions under upstream's names.
+Livewire ships release candidates with `livewire-rc.yml`. Don't run `hutch push:*` or `release.yml`, and don't push `v*` tags by hand: those are upstream's pipeline and names.
+
+1. `node package/scripts/set-livewire-version.mjs X.Y.Z-livewire.rc.N` stamps the version everywhere; open a PR with it.
+2. After it merges, run `gh workflow run livewire-rc.yml --ref main`. It builds all six platforms, publishes the GitHub prerelease `vX.Y.Z-livewire.rc.N` with the devkit and its index, and then has Kitchen install it through Hutch. On any other ref it's a dry run that publishes nothing.
+
+To build an app (like Channels) against a candidate:
+
+```sh
+export ELECTROBUN_RELEASES_BASE_URL=https://github.com/kiwi-init/electrobun-livewire/releases/download
+# hutch.config.ts: electrobun: { version: "X.Y.Z-livewire.rc.N" }
+```
