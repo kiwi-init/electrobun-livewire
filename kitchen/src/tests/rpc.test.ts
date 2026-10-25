@@ -349,7 +349,7 @@ function inlineHtmlBridgeTest(name: string, renderer: "native" | "cef") {
 
 // CEF injects the preload by rewriting the HTML response; a document without
 // <head> must still get it (and keep its doctype's standards mode).
-function headlessPreloadTest(name: string, body: string, compatMode: string) {
+function headlessPreloadTest(name: string, body: string | string[], compatMode: string) {
   return defineTest({
     name,
     category: "RPC",
@@ -359,7 +359,20 @@ function headlessPreloadTest(name: string, body: string, compatMode: string) {
       const server = Bun.serve({
         hostname: "127.0.0.1",
         port: 0,
-        fetch: () => new Response(body, { headers: { "content-type": "text/html" } }),
+        // A list of chunks is streamed with a pause between them.
+        fetch: () => {
+          if (typeof body === "string") return new Response(body, { headers: { "content-type": "text/html" } });
+          const chunks = [...body];
+          const stream = new ReadableStream({
+            async pull(controller) {
+              const next = chunks.shift();
+              if (next === undefined) return controller.close();
+              controller.enqueue(new TextEncoder().encode(next));
+              await new Promise((resolve) => setTimeout(resolve, 300));
+            },
+          });
+          return new Response(stream, { headers: { "content-type": "text/html" } });
+        },
       });
       try {
         const rpc = createTestHarnessRPC(3000);
@@ -593,6 +606,8 @@ export const rpcTests = [
 
   headlessPreloadTest("CEF preload in a head-less document with a doctype", "<!doctype html><body>headless</body>", "CSS1Compat"),
   headlessPreloadTest("CEF preload in a head-less document without a doctype", "<p>no doctype, no head</p>", "BackCompat"),
+  headlessPreloadTest("CEF preload in a page streamed in tiny chunks keeps its doctype", ["<!doc", "type html><body>streamed</body>"], "CSS1Compat"),
+  headlessPreloadTest("CEF preload in a document with no tags at all", "just text, no tags", "BackCompat"),
 
   defineTest({
     name: "webview to bun: request with response",
