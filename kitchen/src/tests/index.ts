@@ -40,6 +40,7 @@ import { windowEventTests } from "./interactive/window-events.test";
 import { chromelessTests } from "./interactive/chromeless.test";
 import { multiwindowCefTests } from "./interactive/multiwindow-cef.test";
 import { quitTests } from "./interactive/quit-test.test";
+import { notificationTests } from "./interactive/notifications.test";
 import { webviewSettingsTests } from "./interactive/webview-settings.test";
 import { webviewCleanupTests } from "./interactive/webview-cleanup.test";
 import { wgpuViewTests } from "./interactive/wgpu-view.test";
@@ -92,6 +93,7 @@ export const allTests: TestDefinition[] = [
   ...chromelessTests,
   ...multiwindowCefTests,
   ...quitTests,
+  ...notificationTests,
   ...webviewSettingsTests,
   ...webviewCleanupTests,
   ...wgpuViewTests,
@@ -142,6 +144,7 @@ export {
   chromelessTests,
   multiwindowCefTests,
   quitTests,
+  notificationTests,
   webviewSettingsTests,
   webviewCleanupTests,
   wgpuViewTests,
