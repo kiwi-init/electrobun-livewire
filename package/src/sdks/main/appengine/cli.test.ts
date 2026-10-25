@@ -132,6 +132,17 @@ describe("livewire ui CLI", () => {
 		expect(existsSync(join(root, "s4", "manifest.json"))).toBe(false);
 	});
 
+	test("--flat puts the bundle next to manifest.json, for hosts without folders", async () => {
+		const flatSite = join(root, "flat-site");
+		const result = await publish({ srcDir: uiSource("flat", "4.0.0"), privateKeyPem, siteDir: flatSite, flat: true });
+		expect(result.manifest.bundleUrl).toMatch(/^4\.0\.0-[0-9a-f]{12}\.uipack$/);
+		expect(readdirSync(flatSite).sort()).toEqual([result.manifest.bundleUrl, "manifest.json"].sort());
+		expect(verifySite({ siteDir: flatSite, publicKey: keys.publicKey }).bundle).toEqual({ files: 2 });
+		const based = await publish({ srcDir: uiSource("flat-based", "4.0.1"), privateKeyPem, siteDir: flatSite, flat: true, baseUrl: "https://example.com/dl/" });
+		expect(based.manifest.bundleUrl).toBe(`https://example.com/dl/${based.manifest.bundleUrl.split("/").at(-1)}`);
+		expect(based.manifest.bundleUrl).not.toContain("/bundles/");
+	});
+
 	test("durations", () => {
 		expect(parseDuration("90m")).toBe(5_400_000);
 		expect(parseDuration("12h")).toBe(43_200_000);
