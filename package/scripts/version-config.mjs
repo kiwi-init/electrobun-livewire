@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertStrictSemVer } from "../src/shared/strict-semver.js";
 
@@ -187,45 +187,9 @@ export function createRustSdkVersionUpdates(repositoryRoot, version) {
 			path: join(repositoryRoot, "kitchen", "Cargo.lock"),
 			update: updateElectrobunCargoLockVersion,
 		},
-		{
-			path: join(
-				repositoryRoot,
-				"templates",
-				"rust-flock-wgpu",
-				"Cargo.lock",
-			),
-			update: updateElectrobunCargoLockVersion,
-		},
 	];
 	return targets.map(({ path, update }) => ({
 		path,
 		source: update(readFileSync(path, "utf8"), version, path),
 	}));
-}
-
-// Repository templates are local-development inputs. They deliberately omit
-// release selectors so package/scripts/dev-template.ts can pair them with the
-// freshly built package/dist tree. The template publisher adds the exact
-// product version only to its staged archive copy.
-export function assertTemplateSourcesUnpinned(templatesDir) {
-	for (const entry of readdirSync(templatesDir, { withFileTypes: true })) {
-		if (!entry.isDirectory()) continue;
-		const path = join(templatesDir, entry.name, "hutch.config.ts");
-		let source;
-		try {
-			source = readFileSync(path, "utf8");
-		} catch {
-			continue;
-		}
-		if (/^\/\/\s*@hutch\b/m.test(source)) {
-			throw new Error(
-				`${path} repository source must not carry a // @hutch pragma`,
-			);
-		}
-		if (electrobunProductConfigPattern.test(source)) {
-			throw new Error(
-				`${path} repository source must not pin electrobun.version; publication stamps the staged copy`,
-			);
-		}
-	}
 }
