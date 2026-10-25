@@ -169,6 +169,37 @@ export const appEngineTests = [
 	}),
 
 	defineTest({
+		name: "AppEngine rolls back a UI that calls a capability its contract doesn't have",
+		category: "AppEngine",
+		description: "A UI whose manifest claims a contract the engine satisfies, but whose code calls a capability outside it, is rejected by the bridge, fails its boot and is rolled back (the spike's v3b)",
+		timeout: 30000,
+		async run({ createWindow, log }) {
+			const t = setup(createWindow, "liar");
+			try {
+				const v1 = t.publish(UIS.good("v1"));
+				await t.start();
+				await until(t.events, is("promoted", v1));
+				// Same code as a UI that needs contract 2, published as needing ^1.
+				const v2 = t.publish(`<!doctype html><script>
+					(async () => {
+						await window.engine.invoke("clipboard.read", {});
+						window.engine.ready();
+					})();
+				</script>`, 1, "^1.0.0");
+				const accepted = await t.check();
+				expect(accepted.result === "refused").toBe(false);
+				const failed = await until(t.events, is("failed", v2));
+				expect(failed.type === "failed" && failed.reason).toContain("clipboard.read");
+				expect(failed.type === "failed" && failed.banned).toBe(true);
+				await until(t.events, (e) => e.type === "ready" && e.manifest.sha256 === v1.sha256 && t.events.indexOf(e) > t.events.indexOf(failed));
+				log(`${t.events.map(describe).join(" → ")}; ${failed.type === "failed" ? failed.reason : ""}`);
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
 		name: "AppEngine gives the UI its contract on window.engine",
 		category: "AppEngine",
 		description: "window.engine.contract and has(cap) list the engine's capabilities, and invoke() refuses names outside them",
