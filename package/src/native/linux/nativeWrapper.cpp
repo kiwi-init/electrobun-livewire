@@ -9861,6 +9861,13 @@ ELECTROBUN_EXPORT bool webviewSetSpellCheck(AbstractView* abstractView, bool ena
     return false;
 }
 
+// No native bridge-origin check here yet; the preload still gives the bridge
+// only to pages on the bridge origins.
+ELECTROBUN_EXPORT void setWebviewBridgeOrigins(AbstractView* abstractView, const char* originsJson) {
+    (void)abstractView;
+    (void)originsJson;
+}
+
 ELECTROBUN_EXPORT void setWebviewNavigationRules(AbstractView* abstractView, const char* rulesJson) {
     if (abstractView) {
         std::string rulesStr(rulesJson ? rulesJson : "");  // Copy the string to ensure it survives

@@ -102,6 +102,7 @@ export class TestExecutor {
           spellCheck: options.spellCheck ?? false,
           navigationRules: options.navigationRules,
           newWindow: options.newWindow,
+          bridgeOrigins: options.bridgeOrigins,
         });
 
         // Wait a bit for window to be created

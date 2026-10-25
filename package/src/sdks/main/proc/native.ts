@@ -369,6 +369,10 @@ const core = (() => {
 				args: [FFIType.bool, FFIType.bool],
 				returns: FFIType.void,
 			},
+			setNextWebviewBridgeOrigins: {
+				args: [FFIType.cstring],
+				returns: FFIType.void,
+			},
 			getWebviewPointer: {
 				args: [FFIType.u32],
 				returns: FFIType.ptr,
@@ -2007,6 +2011,7 @@ const _ffiImpl = {
 			autoResize: boolean;
 			navigationRules: string | null;
 			newWindow: NewWindowPolicy;
+			bridgeOrigins: string[] | null;
 			sandbox: boolean;
 			startTransparent: boolean;
 			startPassthrough: boolean;
@@ -2026,6 +2031,7 @@ const _ffiImpl = {
 				autoResize,
 				navigationRules,
 				newWindow,
+				bridgeOrigins,
 				sandbox,
 				startTransparent,
 				startPassthrough,
@@ -2036,6 +2042,12 @@ const _ffiImpl = {
 				allowedProtocols.views,
 				allowedProtocols.appData,
 			);
+			// Without this the core picks the defaults from the view's URL.
+			if (bridgeOrigins) {
+				core_.symbols.setNextWebviewBridgeOrigins(
+					toCString(JSON.stringify(bridgeOrigins)),
+				);
+			}
 
 			const webviewId = core_.symbols.createWebview(
 				windowId,

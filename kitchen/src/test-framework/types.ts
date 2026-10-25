@@ -80,6 +80,7 @@ export interface WindowOptions {
   spellCheck?: boolean;
   navigationRules?: string; // JSON array of rules, as BrowserWindow takes it
   newWindow?: 'deny' | 'external' | 'popup';
+  bridgeOrigins?: string[];
 }
 
 export interface TestWindow {
