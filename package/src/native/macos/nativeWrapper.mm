@@ -29,6 +29,7 @@ static bool wgpuDebugEnabled() {
 #include "../shared/pending_resize_queue.h"
 #include "inspector_layout.h"
 #include "spell_check.h"
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <UserNotifications/UserNotifications.h>
 #include <atomic>
 #include <mutex>
@@ -11049,14 +11050,135 @@ extern "C" const char *getCursorScreenPoint(void) {
   return resultStorage.c_str();
 }
 
+// Screen Recording access. getScreenCaptureAccess never prompts;
+// requestScreenCaptureAccess shows macOS's prompt the first time it's asked
+// and afterwards just reports what the user chose in System Settings.
+extern "C" bool getScreenCaptureAccess(void) {
+  return CGPreflightScreenCaptureAccess();
+}
+
+extern "C" bool requestScreenCaptureAccess(void) {
+  return CGRequestScreenCaptureAccess();
+}
+
+namespace {
+
+// ScreenCaptureKit answers on its own queue. captureScreenRegion runs on Bun's
+// worker thread (the main thread runs the event loop), so it waits, but not
+// forever.
+constexpr int64_t kScreenCaptureTimeoutNs = 5 * (int64_t)NSEC_PER_SEC;
+
+// Listing shareable content walks every window, so the displays are kept
+// until the set of active displays changes. Bounds are read live from
+// CGDisplayBounds, so moving a display doesn't need a new list.
+std::mutex g_shareableDisplaysLock;
+NSArray<SCDisplay *> *g_shareableDisplays = nil;
+
+bool sameDisplays(NSArray<SCDisplay *> *displays) {
+  CGDirectDisplayID active[32];
+  uint32_t count = 0;
+  if (CGGetActiveDisplayList(32, active, &count) != kCGErrorSuccess ||
+      count != displays.count) {
+    return false;
+  }
+  for (uint32_t i = 0; i < count; i++) {
+    bool found = false;
+    for (SCDisplay *display in displays) {
+      found = found || display.displayID == active[i];
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+
+NSArray<SCDisplay *> *shareableDisplays() {
+  {
+    std::lock_guard<std::mutex> guard(g_shareableDisplaysLock);
+    if (g_shareableDisplays && sameDisplays(g_shareableDisplays)) {
+      return g_shareableDisplays;
+    }
+  }
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  // __block storage moves to the heap with the block, so a late answer after
+  // a timeout writes there, not to this stack frame.
+  __block NSArray<SCDisplay *> *displays = nil;
+  [SCShareableContent
+      getShareableContentExcludingDesktopWindows:NO
+                             onScreenWindowsOnly:YES
+                               completionHandler:^(SCShareableContent *content,
+                                                   NSError *error) {
+                                 if (!error) {
+                                   displays = content.displays;
+                                 }
+                                 dispatch_semaphore_signal(done);
+                               }];
+  if (dispatch_semaphore_wait(
+          done, dispatch_time(DISPATCH_TIME_NOW, kScreenCaptureTimeoutNs))) {
+    return nil;
+  }
+  std::lock_guard<std::mutex> guard(g_shareableDisplaysLock);
+  g_shareableDisplays = displays;
+  return displays;
+}
+
+struct DisplayCapture {
+  std::mutex lock;
+  bool abandoned = false;
+  CGImageRef image = nullptr;
+};
+
+// One image of `area` (points, relative to the display's top-left corner) at
+// one pixel per point.
+CGImageRef captureDisplayArea(SCDisplay *display, CGRect area, size_t width,
+                              size_t height) {
+  SCContentFilter *filter =
+      [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
+  SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
+  config.sourceRect = area;
+  config.width = width;
+  config.height = height;
+  config.scalesToFit = YES;
+  config.showsCursor = NO;
+
+  auto capture = std::make_shared<DisplayCapture>();
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  [SCScreenshotManager
+      captureImageWithFilter:filter
+               configuration:config
+           completionHandler:^(CGImageRef image, NSError *error) {
+             (void)error;
+             std::lock_guard<std::mutex> guard(capture->lock);
+             if (image && !capture->abandoned) {
+               capture->image = CGImageRetain(image);
+             }
+             dispatch_semaphore_signal(done);
+           }];
+  const bool timedOut =
+      dispatch_semaphore_wait(
+          done, dispatch_time(DISPATCH_TIME_NOW, kScreenCaptureTimeoutNs)) != 0;
+  std::lock_guard<std::mutex> guard(capture->lock);
+  if (timedOut) {
+    capture->abandoned = true;
+    if (capture->image) {
+      CGImageRelease(capture->image);
+    }
+    return nullptr;
+  }
+  return capture->image;
+}
+
+} // namespace
+
 // Capture a logical-point screen region as tightly packed, top-to-bottom RGBA.
 //
 // Screen's public coordinates use the same top-left global coordinate space as
-// CoreGraphics' window-server APIs (getCursorScreenPoint performs the Cocoa
-// bottom-left -> CoreGraphics top-left conversion above). Nominal resolution is
-// intentional: unlike a best-resolution capture, it produces one pixel for
-// each requested logical screen point even on Retina displays and across a
-// mixed-scale multi-display desktop.
+// CoreGraphics' display bounds (getCursorScreenPoint performs the Cocoa
+// bottom-left -> CoreGraphics top-left conversion above). Each display the
+// region touches is captured with ScreenCaptureKit at one pixel per logical
+// point, even on Retina displays and across a mixed-scale desktop, and parts
+// of the region on no display are opaque black.
 extern "C" bool captureScreenRegion(double x, double y, uint32_t width,
                                     uint32_t height, uint8_t *out_rgba,
                                     uint64_t out_len) {
@@ -11083,68 +11205,85 @@ extern "C" bool captureScreenRegion(double x, double y, uint32_t width,
     return false;
   }
 
-  // Do not return a misleading wallpaper-only/blank capture when TCC has
-  // denied Screen Recording access.
+  // Without Screen Recording access there is nothing to capture; fail rather
+  // than return a blank image (the caller can check getScreenCaptureAccess).
   if (!CGPreflightScreenCaptureAccess()) {
     return false;
   }
 
   @autoreleasepool {
-    const CGRect screenBounds =
-        CGRectMake((CGFloat)x, (CGFloat)y, (CGFloat)width, (CGFloat)height);
-    const CGWindowImageOption imageOptions =
-        (CGWindowImageOption)(kCGWindowImageNominalResolution |
-                              kCGWindowImageShouldBeOpaque);
-    CGImageRef image =
-        CGWindowListCreateImage(screenBounds, kCGWindowListOptionOnScreenOnly,
-                                kCGNullWindowID, imageOptions);
-    if (!image) {
-      return false;
-    }
-
-    // Nominal-resolution capture is the contract that makes the result one
-    // sample per logical coordinate. Refuse an unexpected result instead of
-    // silently stretching or cropping it into the caller's buffer.
-    if (CGImageGetWidth(image) != (size_t)width ||
-        CGImageGetHeight(image) != (size_t)height) {
-      CGImageRelease(image);
+    NSArray<SCDisplay *> *displays = shareableDisplays();
+    if (!displays) {
       return false;
     }
 
     CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     if (!colorSpace) {
-      CGImageRelease(image);
       return false;
     }
-
     const size_t bytesPerRow = (size_t)width * 4;
     const CGBitmapInfo bitmapInfo =
-        (CGBitmapInfo)(kCGBitmapByteOrder32Big |
-                       kCGImageAlphaPremultipliedLast);
+        (CGBitmapInfo)kCGBitmapByteOrder32Big |
+        (CGBitmapInfo)kCGImageAlphaPremultipliedLast;
     CGContextRef context =
         CGBitmapContextCreate(out_rgba, (size_t)width, (size_t)height, 8,
                               bytesPerRow, colorSpace, bitmapInfo);
     CGColorSpaceRelease(colorSpace);
     if (!context) {
+      return false;
+    }
+    CGContextSetBlendMode(context, kCGBlendModeCopy);
+    CGContextSetInterpolationQuality(context, kCGInterpolationNone);
+    CGContextSetRGBFillColor(context, 0, 0, 0, 1);
+    CGContextFillRect(context, CGRectMake(0, 0, width, height));
+
+    const CGRect region = CGRectMake(x, y, width, height);
+    bool capturedAny = false;
+    for (SCDisplay *display in displays) {
+      const CGRect bounds = CGDisplayBounds(display.displayID);
+      const CGRect part = CGRectIntersection(bounds, region);
+      if (CGRectIsEmpty(part)) {
+        continue;
+      }
+      const size_t partWidth = (size_t)llround(part.size.width);
+      const size_t partHeight = (size_t)llround(part.size.height);
+      if (partWidth == 0 || partHeight == 0) {
+        continue;
+      }
+
+      CGImageRef image = captureDisplayArea(
+          display, CGRectOffset(part, -bounds.origin.x, -bounds.origin.y),
+          partWidth, partHeight);
+      // Refuse an unexpected size instead of silently stretching or cropping
+      // it into the caller's buffer.
+      if (!image || CGImageGetWidth(image) != partWidth ||
+          CGImageGetHeight(image) != partHeight) {
+        if (image) {
+          CGImageRelease(image);
+        }
+        CGContextRelease(context);
+        return false;
+      }
+
+      // The bitmap's first row is the top edge, and Quartz's y axis points
+      // up, so a part `top` points below the region's top edge is drawn
+      // with its lower edge at height - top - partHeight.
+      const double left = part.origin.x - x;
+      const double top = part.origin.y - y;
+      CGContextDrawImage(context,
+                         CGRectMake(left, (double)height - top - partHeight,
+                                    partWidth, partHeight),
+                         image);
       CGImageRelease(image);
+      capturedAny = true;
+    }
+    CGContextRelease(context);
+    if (!capturedAny) {
       return false;
     }
 
-    CGContextSetBlendMode(context, kCGBlendModeCopy);
-    CGContextSetInterpolationQuality(context, kCGInterpolationNone);
-
-    // Bitmap-context row zero is the lower edge in Quartz coordinates,
-    // while this ABI promises row zero is the top edge of the screen.
-    CGContextTranslateCTM(context, 0, (CGFloat)height);
-    CGContextScaleCTM(context, 1, -1);
-    CGContextDrawImage(
-        context, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height), image);
-
-    CGContextRelease(context);
-    CGImageRelease(image);
-
-    // The capture requests an opaque image, and the public ABI requires an
-    // opaque result. Make alpha deterministic without touching RGB.
+    // The public ABI promises an opaque result. Make alpha deterministic
+    // without touching RGB.
     for (uint64_t offset = 3; offset < expectedLength; offset += 4) {
       out_rgba[offset] = 0xff;
     }

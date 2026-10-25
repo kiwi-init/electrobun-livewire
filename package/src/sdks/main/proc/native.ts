@@ -912,6 +912,14 @@ export const native = (() => {
 						args: [FFIType.cstring],
 						returns: FFIType.bool,
 					},
+					getScreenCaptureAccess: {
+						args: [],
+						returns: FFIType.bool,
+					},
+					requestScreenCaptureAccess: {
+						args: [],
+						returns: FFIType.bool,
+					},
 				}
 				: {}),
 			...(process.platform === "win32"
@@ -1348,6 +1356,8 @@ type DarwinNativeWrapperSymbols = {
 	wgpuViewSetAlphaBlending: (view: Pointer, enabled: boolean) => void;
 	webviewProbeNetwork: (view: Pointer, port: number, nonce: CString) => boolean;
 	webviewProbeAnswered: (nonce: CString) => boolean;
+	getScreenCaptureAccess: () => boolean;
+	requestScreenCaptureAccess: () => boolean;
 	setWGPUPointerHandler: (handler: Pointer | null) => void;
 	setWGPUKeyHandler: (handler: Pointer | null) => void;
 	uiMeasureText: (
@@ -3344,9 +3354,36 @@ export const Screen = {
 	},
 
 	/**
-	 * Capture a rectangular region of the desktop as row-major RGBA pixels.
-	 * Coordinates and dimensions use Electrobun's logical screen coordinate
-	 * system; fractional origins are aligned down to the logical pixel grid.
+	 * Whether the app may capture the screen. On macOS that's the Screen
+	 * Recording permission, and checking never prompts. Elsewhere it's true:
+	 * Windows needs no permission, and on Wayland the portal asks at the first
+	 * capture.
+	 */
+	hasCaptureAccess: (): boolean => {
+		if (!hasFFI || process.platform !== "darwin") return true;
+		return getDarwinNativeWrapperSymbols().getScreenCaptureAccess?.() ?? false;
+	},
+
+	/**
+	 * Asks for screen capture access and returns whether the app has it. On
+	 * macOS the first call shows the system's Screen Recording prompt; after
+	 * that the user changes it in System Settings, and macOS applies a new
+	 * grant only after the app restarts. Elsewhere it's hasCaptureAccess().
+	 */
+	requestCaptureAccess: (): boolean => {
+		if (!hasFFI || process.platform !== "darwin") return true;
+		return getDarwinNativeWrapperSymbols().requestScreenCaptureAccess?.() ?? false;
+	},
+
+	/**
+	 * Capture a rectangular region of the desktop as row-major RGBA pixels,
+	 * top row first, one pixel per logical point. Coordinates and dimensions
+	 * use Electrobun's logical screen coordinate system; fractional origins are
+	 * aligned down to the logical pixel grid.
+	 * On macOS this uses ScreenCaptureKit, parts of the region on no display
+	 * are opaque black, and it needs the Screen Recording
+	 * permission: without it this returns null, which hasCaptureAccess() tells
+	 * apart from other failures (ask with requestCaptureAccess()).
 	 * On Wayland, the first call starts the desktop's monitor-sharing portal and
 	 * returns null until the user approves a monitor and its first frame arrives.
 	 * Returns null when capture is unavailable or the rectangle is invalid.
