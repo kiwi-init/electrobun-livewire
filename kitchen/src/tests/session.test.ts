@@ -26,8 +26,8 @@ export const sessionTests = [
         expect(byName("token")?.sameSite).toBe("strict");
         expect(byName("theme")?.httpOnly).toBe(false);
         expect(byName("theme")?.sameSite).toBe("lax");
-        // A secure cookie only matches an https:// URL.
-        const open = session.cookies.get({ url: "https://127.0.0.1" }).find((cookie) => cookie.name === "open");
+        // A secure cookie doesn't match http://; get() with no filter returns every cookie.
+        const open = session.cookies.get().find((cookie) => cookie.name === "open");
         expect(open?.sameSite).toBe("no_restriction");
       } finally {
         session.cookies.clear();
@@ -40,9 +40,7 @@ export const sessionTests = [
     category: "Session",
     description: "A page in the cookie's partition sends the httpOnly cookie to its server, but its script can't read it",
     timeout: 20000,
-    // Linux: cookies set through Session don't reach views of the same
-    // partition yet (separate data managers), tracked on its own.
-    requires: { platform: "darwin" },
+    requires: { platform: ["darwin", "linux"] },
     async run({ createWindow, log }) {
       const reports: { documentCookie: string; header: string }[] = [];
       const server = Bun.serve({
