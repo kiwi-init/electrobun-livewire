@@ -137,7 +137,7 @@ test("the stamped paired versions mirror the repository pragma", () => {
 	);
 });
 
-test("publishes from the unified product release lane before templates", () => {
+test("publishes from the unified product release lane before Kitchen", () => {
 	const productWorkflow = readFileSync(
 		join(repositoryRoot, ".github", "workflows", "release.yml"),
 		"utf8",
@@ -156,7 +156,7 @@ test("publishes from the unified product release lane before templates", () => {
 	);
 	assert.match(
 		productWorkflow,
-		/^  publish-templates:\n    needs: \[npm-acceptance\]$/m,
+		/^  publish-kitchen:\n    needs: \[npm-acceptance\]$/m,
 	);
 	assert.match(
 		productWorkflow,

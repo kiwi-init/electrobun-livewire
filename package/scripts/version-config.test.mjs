@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
-	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	readdirSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -14,7 +12,6 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	createRustSdkVersionUpdates,
-	assertTemplateSourcesUnpinned,
 	parseRepositoryPragmaPins,
 	stampNpmBootstrapPairedVersions,
 	updateElectrobunCargoLockVersion,
@@ -204,7 +201,7 @@ test("Cargo identity updates fail closed on malformed package tables", () => {
 	);
 });
 
-test("Rust release bump plan is limited to the SDK and its two lockfiles", () => {
+test("Rust release bump plan is limited to the SDK and the Kitchen lockfile", () => {
 	const updates = createRustSdkVersionUpdates(
 		repositoryRoot,
 		"2.0.1-beta.0",
@@ -216,7 +213,6 @@ test("Rust release bump plan is limited to the SDK and its two lockfiles", () =>
 		[
 			"package/src/sdks/rust/Cargo.toml",
 			"kitchen/Cargo.lock",
-			"templates/rust-flock-wgpu/Cargo.lock",
 		],
 	);
 	for (const { source } of updates) {
@@ -225,39 +221,6 @@ test("Rust release bump plan is limited to the SDK and its two lockfiles", () =>
 			/name = "electrobun"\r?\nversion = "2\.0\.1-beta\.0"/,
 		);
 	}
-});
-
-test("release bumps require every repository template source to remain unpinned", () => {
-	const templatesRoot = fileURLToPath(
-		new URL("../../templates/", import.meta.url),
-	);
-	assertTemplateSourcesUnpinned(templatesRoot);
-	assert.throws(() => {
-		const scratch = mkdtempSync(join(tmpdir(), "template-float-"));
-		try {
-			mkdirSync(join(scratch, "pinned"));
-			writeFileSync(
-				join(scratch, "pinned", "hutch.config.ts"),
-				"// @hutch cli=0.7.3 cottontail=0.4.4\nexport default {};\n",
-			);
-			assertTemplateSourcesUnpinned(scratch);
-		} finally {
-			rmSync(scratch, { recursive: true, force: true });
-		}
-	}, /repository source must not carry a \/\/ @hutch pragma/);
-	assert.throws(() => {
-		const scratch = mkdtempSync(join(tmpdir(), "template-product-pin-"));
-		try {
-			mkdirSync(join(scratch, "pinned"));
-			writeFileSync(
-				join(scratch, "pinned", "hutch.config.ts"),
-				'export default { "electrobun": { note: true, "version": "2.0.0" } };\n',
-			);
-			assertTemplateSourcesUnpinned(scratch);
-		} finally {
-			rmSync(scratch, { recursive: true, force: true });
-		}
-	}, /repository source must not pin electrobun\.version/);
 });
 
 test("the npm bootstrap paired versions stamp from the repository pragma", () => {
@@ -285,7 +248,7 @@ test("the npm bootstrap paired versions stamp from the repository pragma", () =>
 	);
 });
 
-test("checked-in package, lock, Kitchen, and template product identities agree", () => {
+test("checked-in package, lock, and Kitchen product identities agree", () => {
 	const packageManifest = JSON.parse(
 		readFileSync(join(repositoryRoot, "package", "package.json"), "utf8"),
 	);
@@ -316,7 +279,6 @@ test("checked-in package, lock, Kitchen, and template product identities agree",
 	);
 	assert.doesNotMatch(kitchenSource, /\belectrobun\s*:\s*\{/);
 
-		assertTemplateSourcesUnpinned(join(repositoryRoot, "templates"));
 	assert.equal(npmBootstrapManifest.optionalDependencies, undefined);
 
 	for (const update of createRustSdkVersionUpdates(repositoryRoot, version)) {
@@ -423,8 +385,7 @@ test("push:beta dry semantics produce 2.0.1-beta.0 from 2.0.0", () => {
 			).version,
 			version,
 		);
-		assertTemplateSourcesUnpinned(join(repositoryRoot, "templates"));
-		assert.equal(createRustSdkVersionUpdates(repositoryRoot, version).length, 3);
+		assert.equal(createRustSdkVersionUpdates(repositoryRoot, version).length, 2);
 	} finally {
 		rmSync(temporaryRoot, { recursive: true, force: true });
 	}
