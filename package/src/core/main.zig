@@ -1706,19 +1706,27 @@ fn buildElectrobunPreload(
     }
 
     const preload_script = webview_runtime_state.preload_script.?;
+    const sandboxed_preload_script = webview_runtime_state.preload_script_sandboxed.?;
+    // The RPC secrets and the host/internal bridges are for the view's own
+    // top-level page only. Subframes (iframes of any origin) get the event
+    // bridge and the sandboxed preload, like a sandboxed view.
     return allocPrintZ(
         allocator,
         \\window.__electrobunPlatform = "{s}";
         \\window.__electrobunWebviewId = {d};
         \\window.__electrobunWindowId = {d};
+        \\window.__electrobunEventBridge = window.__electrobunEventBridge || window.webkit?.messageHandlers?.eventBridge || window.eventBridge || window.chrome?.webview?.hostObjects?.eventBridge;
+        \\if (window === window.top) {{
         \\window.__electrobunHostSocketPort = {d};
         \\window.__electrobunRpcSocketPort = {d};
         \\window.__electrobunSecretKeyBytes = [{s}];
-        \\window.__electrobunEventBridge = window.__electrobunEventBridge || window.webkit?.messageHandlers?.eventBridge || window.eventBridge || window.chrome?.webview?.hostObjects?.eventBridge;
         \\window.__electrobunInternalBridge = window.__electrobunInternalBridge || window.webkit?.messageHandlers?.internalBridge || window.internalBridge || window.chrome?.webview?.hostObjects?.internalBridge;
         \\window.__electrobunHostBridge = window.__electrobunHostBridge || window.__electrobunBunBridge || window.webkit?.messageHandlers?.hostBridge || window.webkit?.messageHandlers?.bunBridge || window.hostBridge || window.bunBridge || window.chrome?.webview?.hostObjects?.hostBridge || window.chrome?.webview?.hostObjects?.bunBridge;
         \\window.__electrobunBunBridge = window.__electrobunBunBridge || window.webkit?.messageHandlers?.bunBridge || window.bunBridge || window.chrome?.webview?.hostObjects?.bunBridge;
         \\{s}
+        \\}} else {{
+        \\{s}
+        \\}}
     ,
         .{
             @tagName(builtin.os.tag),
@@ -1728,6 +1736,7 @@ fn buildElectrobunPreload(
             webview_runtime_state.rpc_port,
             std.mem.span(secret_key),
             preload_script,
+            sandboxed_preload_script,
         },
     ) catch |err| {
         setLastError("Failed to build preload script: {s}", .{@errorName(err)});

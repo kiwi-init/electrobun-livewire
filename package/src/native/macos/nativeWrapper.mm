@@ -1075,6 +1075,8 @@ static NSMutableDictionary<NSNumber *, AbstractView *> *globalAbstractViews =
 @interface MyScriptMessageHandler : NSObject <WKScriptMessageHandler>
 @property(nonatomic, assign) HandlePostMessage zigCallback;
 @property(nonatomic, assign) uint32_t webviewId;
+// RPC bridges: ignore messages from subframes (iframes of any origin).
+@property(nonatomic, assign) BOOL mainFrameOnly;
 @end
 
 @interface MyScriptMessageHandlerWithReply
@@ -3090,6 +3092,8 @@ static void schedulePendingResizeDrain() {
       didReceiveScriptMessage:(WKScriptMessage *)message {
   if (!self.zigCallback || ![message.body isKindOfClass:[NSString class]])
     return;
+  if (self.mainFrameOnly && !message.frameInfo.isMainFrame)
+    return;
   const char *body = [(NSString *)message.body UTF8String];
   if (body)
     self.zigCallback(self.webviewId, body);
@@ -3266,6 +3270,7 @@ static void schedulePendingResizeDrain() {
             [[MyScriptMessageHandler alloc] init];
         bunHandler.zigCallback = bunBridgeHandler;
         bunHandler.webviewId = webviewId;
+        bunHandler.mainFrameOnly = YES;
         [self.webView.configuration.userContentController
             addScriptMessageHandler:bunHandler
                                name:[NSString
@@ -3283,6 +3288,7 @@ static void schedulePendingResizeDrain() {
             [[MyScriptMessageHandler alloc] init];
         webviewTagHandler.zigCallback = internalBridgeHandler;
         webviewTagHandler.webviewId = webviewId;
+        webviewTagHandler.mainFrameOnly = YES;
         [self.webView.configuration.userContentController
             addScriptMessageHandler:webviewTagHandler
                                name:[NSString
