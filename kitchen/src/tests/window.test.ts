@@ -358,6 +358,7 @@ export const windowTests = [
 
   defineTest({
     name: "Window fullscreen toggle",
+    requires: { foreground: true },
     category: "BrowserWindow",
     description: "Test window fullscreen mode",
     timeout: 15000,
@@ -389,6 +390,7 @@ export const windowTests = [
 
   defineTest({
     name: "Window fullscreen toggle with hidden titlebar",
+    requires: { foreground: true },
     category: "BrowserWindow",
     description: "Test macOS fullscreen mode when titleBarStyle is hidden",
     timeout: 15000,
@@ -505,6 +507,7 @@ export const windowTests = [
 
   defineTest({
     name: "Window focus",
+    requires: { foreground: true },
     category: "BrowserWindow",
     description: "Test window focus method",
     async run({ createWindow, log }) {
@@ -541,6 +544,7 @@ export const windowTests = [
 
   defineTest({
     name: "Window state restore across launches",
+    requires: { foreground: true },
     category: "BrowserWindow",
     description: "A window with windowState reopens with its last frame, maximized and full-screen state",
     timeout: 40000,
@@ -722,6 +726,7 @@ export const windowTests = [
 
   ...(['default', 'hiddenInset', 'hidden'] satisfies TitleBarStyle[]).map(titleBarStyle => defineTest({
     name: `Window focus and blur events (titleBarStyle: ${titleBarStyle})`,
+    requires: { foreground: true },
     category: "BrowserWindow",
     description: "Test that focus and blur events fire when windows gain and lose focus",
     async run({ createWindow, log }) {

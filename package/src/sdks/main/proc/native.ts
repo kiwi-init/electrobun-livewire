@@ -9,6 +9,7 @@ import {
 } from "../core/BrowserView";
 import { WGPUView } from "../core/WGPUView";
 import { NEW_WINDOW_POLICIES, type NewWindowPolicy } from "../core/newWindowPolicy";
+import { isBackgroundMode } from "../core/backgroundMode";
 import {
 	preloadScript,
 	preloadScriptSandboxed,
@@ -4224,6 +4225,7 @@ export const internalRpcHandlers = {
 		restoreWindowFocusAfterExternalDrop: (_params: unknown, senderId: number) => {
 			const windowId = BrowserView.getById(senderId)?.windowId;
 			if (windowId === undefined || !getWindowPtr(windowId)) return false;
+			if (isBackgroundMode()) return true;
 			core_.symbols.activateWindow(windowId);
 			return true;
 		},

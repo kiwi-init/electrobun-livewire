@@ -6,6 +6,7 @@ import { type Pointer } from "bun:ffi";
 import { BuildConfig } from "./BuildConfig";
 import { type RPCWithTransport } from "../../../shared/rpc.js";
 import { WGPUView } from "./WGPUView";
+import { allowsFullScreen, isBackgroundMode } from "./backgroundMode";
 import {
 	clampToDisplays,
 	loadWindowState,
@@ -338,7 +339,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 			titleBarStyle: titleBarStyle || "default",
 			transparent: transparent ?? false,
 			hidden: hidden ?? false,
-			activate: activate ?? true,
+			activate: (activate ?? true) && !isBackgroundMode(),
 			centered,
 			trafficLightOffset: this.trafficLightOffset,
 		});
@@ -425,6 +426,10 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	}
 
 	activate() {
+		if (isBackgroundMode()) {
+			if (this.isVisible()) ffi.request.showWindow({ winId: this.id, activate: false });
+			return;
+		}
 		return ffi.request.activateWindow({ winId: this.id });
 	}
 
@@ -436,7 +441,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	}
 
 	show() {
-		const result = ffi.request.showWindow({ winId: this.id, activate: true });
+		const result = ffi.request.showWindow({ winId: this.id, activate: !isBackgroundMode() });
 		this.applyPendingRestore();
 		return result;
 	}
@@ -480,6 +485,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	}
 
 	setFullScreen(fullScreen: boolean) {
+		if (!allowsFullScreen(fullScreen)) return;
 		return ffi.request.setWindowFullScreen({ winId: this.id, fullScreen });
 	}
 

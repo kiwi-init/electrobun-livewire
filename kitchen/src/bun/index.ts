@@ -1,6 +1,8 @@
 // Electrobun Kitchen Sink - Integration Test Runner
 // Run with: cd /electrobun/package && bun dev
 
+// First, so background mode is set before any window opens.
+import { isBackgroundMode } from "../test-framework/background-mode";
 import Electrobun, {
 	BrowserWindow,
 	BrowserView,
@@ -293,6 +295,12 @@ testRunnerWindow = new BrowserWindow({
 if (!process.env["AUTO_RUN"] && !process.env["AUTO_RUN_TEST_NAME"]) {
 	testRunnerWindow.setAlwaysOnTop(true);
 }
+
+console.log(
+	isBackgroundMode()
+		? "Background mode: windows won't take focus; foreground tests are skipped (KITCHEN_FOREGROUND=1 runs them)"
+		: "Foreground mode: all tests run",
+);
 
 // Send build config and update status to the UI when ready
 testRunnerWindow.webview.on("dom-ready", () => {
