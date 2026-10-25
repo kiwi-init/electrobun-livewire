@@ -13,6 +13,7 @@ import {
 } from "./Socket";
 import { randomBytes } from "crypto";
 import type { NewWindowPolicy } from "./newWindowPolicy";
+import { fileDragRefusal } from "./fileDrag";
 import { type Pointer } from "bun:ffi";
 
 const BrowserViewMap: {
@@ -79,6 +80,11 @@ export type BrowserViewOptions<T = undefined> = {
 	// Sent as the Content-Security-Policy header on this view's views:// and
 	// appdata:// responses (macOS, Linux). null sends none.
 	contentSecurityPolicy: string | null;
+	// Folders whose files and subfolders this view's pages may drag out to
+	// Finder with startFileDrag() from electrobun/view (macOS). Empty, the
+	// default, lets pages drag nothing; the app can still call
+	// BrowserView.startFileDrag() itself.
+	fileDragRoots: string[];
 	// Sandbox mode: when true, disables RPC and only allows event emission
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
 	// accessing internal APIs, creating OOPIFs, or communicating with Bun
@@ -163,6 +169,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	newWindow: NewWindowPolicy = "deny";
 	bridgeOrigins: string[] | null = null;
 	contentSecurityPolicy: string | null = null;
+	fileDragRoots: string[] = [];
 	// Sandbox mode disables RPC and only allows event emission (for untrusted content)
 	sandbox: boolean = false;
 	startTransparent: boolean = false;
@@ -207,6 +214,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		this.newWindow = options.newWindow ?? "deny";
 		this.bridgeOrigins = options.bridgeOrigins ?? null;
 		this.contentSecurityPolicy = assertHeaderSafePolicy(options.contentSecurityPolicy ?? null);
+		this.fileDragRoots = [...(options.fileDragRoots ?? [])];
 		this.renderer = options.renderer ?? defaultOptions.renderer ?? "native";
 		this.sandbox = options.sandbox ?? false;
 		this.startTransparent = options.startTransparent ?? false;
@@ -368,6 +376,34 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		return ffi.request.webviewTerminateRenderer({ id: this.id });
 	}
 
+	/**
+	 * Drags files or folders out of this view, e.g. to Finder, as the drag the
+	 * user is making right now: call it while the left mouse button is down
+	 * over the view, typically when the page reports a dragstart. Drops copy;
+	 * they never move the files. "file-drag-end" reports { operation: "copy" }
+	 * or { operation: "none" }. Returns false when no drag started: paths that
+	 * aren't absolute or don't exist, no button down, or unsupported (macOS
+	 * only so far). Pages can start one themselves within fileDragRoots.
+	 */
+	startFileDrag(paths: string | string[]): boolean {
+		const list = typeof paths === "string" ? [paths] : paths;
+		if (this.isRemoved || list.length === 0) return false;
+		return ffi.request.webviewStartFileDrag({ id: this.id, paths: list });
+	}
+
+	// A page's startFileDrag() from electrobun/view, after the fileDragRoots check.
+	startFileDragFromPage(paths: unknown): { started: boolean; reason?: string } {
+		const refusal = fileDragRefusal(paths, this.fileDragRoots);
+		if (refusal) return { started: false, reason: refusal };
+		if (this.startFileDrag(paths as string | string[])) return { started: true };
+		return {
+			started: false,
+			reason: process.platform === "darwin"
+				? "no drag started: call it while the left mouse button is down over the view, e.g. from dragstart"
+				: "dragging files out of a view isn't supported on this platform yet",
+		};
+	}
+
 	findInPage(
 		searchText: string,
 		options?: { forward?: boolean; matchCase?: boolean },
@@ -442,7 +478,8 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 			| "download-failed"
 			| "render-process-gone"
 			| "unresponsive"
-			| "responsive",
+			| "responsive"
+			| "file-drag-end",
 		handler: (event: unknown) => void,
 	) {
 		const specificName = `${name}-${this.id}`;

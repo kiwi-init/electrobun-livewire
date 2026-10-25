@@ -358,6 +358,20 @@ class Electroview<T extends RPCWithTransport> {
 	}
 }
 
+/**
+ * Drags files or folders out of this page's view, e.g. to Finder, as the drag
+ * the user is making: call it from a dragstart handler (after
+ * event.preventDefault(), so the page's own drag doesn't start). Every path
+ * must be inside the view's fileDragRoots, which the app sets; drops copy and
+ * never move. Resolves to { started: false, reason } when it's refused, the
+ * mouse button is already up, or the platform can't yet (macOS only so far).
+ */
+function startFileDrag(paths: string | string[]): Promise<{ started: boolean; reason?: string }> {
+	const start = window.__electrobun?.startFileDrag;
+	if (!start) return Promise.resolve({ started: false, reason: "this page has no Electrobun bridge" });
+	return start(paths) as Promise<{ started: boolean; reason?: string }>;
+}
+
 export {
 	type RPCSchema,
 	type RPCRequestOptions,
@@ -365,6 +379,7 @@ export {
 	type ElectrobunRPCConfig,
 	createRPC,
 	Electroview,
+	startFileDrag,
 	type WebviewTagElement,
 	type WebviewEventTypes,
 	type WgpuTagElement,

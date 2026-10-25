@@ -82,6 +82,7 @@ export interface WindowOptions {
   newWindow?: 'deny' | 'external' | 'popup';
   bridgeOrigins?: string[];
   contentSecurityPolicy?: string;
+  fileDragRoots?: string[];
 }
 
 export interface TestWindow {

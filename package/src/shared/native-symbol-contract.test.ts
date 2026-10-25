@@ -130,6 +130,7 @@ const expectedDirectWrapperDarwinSymbols = [
 	"uiRasterizeText",
 	"webviewProbeAnswered",
 	"webviewProbeNetwork",
+	"webviewStartFileDrag",
 	"wgpuViewSetAlphaBlending",
 ].sort();
 const expectedDirectWrapperWindowsSymbols = [

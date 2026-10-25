@@ -39,6 +39,7 @@ declare global {
 			receiveInternalMessageFromHost: (msg: unknown) => void;
 			receiveMessageFromBun: (msg: unknown) => void;
 			receiveInternalMessageFromBun: (msg: unknown) => void;
+			startFileDrag?: (paths: string | string[]) => Promise<unknown>;
 		};
 	}
 }

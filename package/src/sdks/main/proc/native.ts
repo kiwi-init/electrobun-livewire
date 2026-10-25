@@ -916,6 +916,10 @@ export const native = (() => {
 						args: [],
 						returns: FFIType.bool,
 					},
+					webviewStartFileDrag: {
+						args: [FFIType.ptr, FFIType.cstring],
+						returns: FFIType.bool,
+					},
 					requestScreenCaptureAccess: {
 						args: [],
 						returns: FFIType.bool,
@@ -1357,6 +1361,7 @@ type DarwinNativeWrapperSymbols = {
 	webviewProbeNetwork: (view: Pointer, port: number, nonce: CString) => boolean;
 	webviewProbeAnswered: (nonce: CString) => boolean;
 	getScreenCaptureAccess: () => boolean;
+	webviewStartFileDrag: (view: Pointer, pathsJson: CString) => boolean;
 	requestScreenCaptureAccess: () => boolean;
 	setWGPUPointerHandler: (handler: Pointer | null) => void;
 	setWGPUKeyHandler: (handler: Pointer | null) => void;
@@ -2175,6 +2180,12 @@ const _ffiImpl = {
 		},
 		webviewTerminateRenderer: (params: { id: number }) => {
 			return core_.symbols.webviewTerminateRenderer(params.id);
+		},
+		webviewStartFileDrag: (params: { id: number; paths: string[] }) => {
+			const start = getDarwinNativeWrapperSymbols().webviewStartFileDrag;
+			const ptr = normalizeFFIPointer(core_.symbols.getWebviewPointer(params.id));
+			if (!start || !ptr) return false;
+			return start(ptr, toCString(JSON.stringify(params.paths)));
 		},
 		// Has the page open a WebSocket to the core's /probe endpoint (macOS
 		// system webviews only); see core/wakeRecovery.ts.
@@ -3623,6 +3634,7 @@ const webviewEventHandler = (id: number, eventName: string, detail: string) => {
 		"load-committed": "loadCommitted",
 		"load-finished": "loadFinished",
 		"render-process-gone": "renderProcessGone",
+		"file-drag-end": "fileDragEnd",
 		unresponsive: "unresponsive",
 		responsive: "responsive",
 	};
@@ -3654,7 +3666,8 @@ const webviewEventHandler = (id: number, eventName: string, detail: string) => {
 		eventName === "download-progress" ||
 		eventName === "download-completed" ||
 		eventName === "download-failed" ||
-		eventName === "render-process-gone"
+		eventName === "render-process-gone" ||
+		eventName === "file-drag-end"
 	) {
 		try {
 			parsedDetail = JSON.parse(detail);
@@ -3779,22 +3792,24 @@ const internalBridgeHandler = new JSCallback(
 				const msgJson = JSON.parse(msgStr);
 
 				if (msgJson.type === "message") {
+					// `id` is the view the message came from, as the native side
+					// knows it; the payload is whatever the page sent.
 					const handler = (
 						internalRpcHandlers.message as Record<
 							string,
-							(params: unknown) => void
+							(params: unknown, senderId: number) => void
 						>
 					)[msgJson.id];
-					handler?.(msgJson.payload);
+					handler?.(msgJson.payload, id);
 				} else if (msgJson.type === "request") {
 					const handler = (
 						internalRpcHandlers.request as Record<
 							string,
-							(params: unknown) => unknown
+							(params: unknown, senderId: number) => unknown
 						>
 					)[msgJson.method];
 
-					const payload = handler?.(msgJson.params);
+					const payload = handler?.(msgJson.params, id);
 
 					const resultObj = {
 						type: "response",
@@ -3977,6 +3992,13 @@ type WgpuTagInitParams = {
 
 export const internalRpcHandlers = {
 	request: {
+		// startFileDrag() from electrobun/view. The view is the one the message
+		// came from, never one the page names.
+		startFileDrag: (params: { paths?: unknown } | null, senderId: number) => {
+			const view = BrowserView.getById(senderId);
+			if (!view) return { started: false, reason: "unknown view" };
+			return view.startFileDragFromPage(params?.paths);
+		},
 		// todo: this shouldn't be getting method, just params.
 		webviewTagInit: (params: WebviewTagInitParams) => {
 			const {
