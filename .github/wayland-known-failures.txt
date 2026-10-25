@@ -18,6 +18,7 @@ Window maximize/unmaximize
 Window focus and blur events (titleBarStyle: default)
 Window focus and blur events (titleBarStyle: hiddenInset)
 Window focus and blur events (titleBarStyle: hidden)
+Window state restore across launches
 
 # Screen.getAllDisplays returns no display on Wayland (T313).
 getAllDisplays
