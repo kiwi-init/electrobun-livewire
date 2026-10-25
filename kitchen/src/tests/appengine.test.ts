@@ -7,11 +7,15 @@ import { join } from "path";
 import { Utils } from "electrobun/main";
 import {
 	AppEngine,
+	EngineStore,
 	buildUipack,
+	storageCapabilities,
 	generateSigningKey,
 	signManifest,
 	uipackFileName,
 	type AppEngineEvent,
+	type EngineStorage,
+	type UiChannelEvent,
 	type UiManifest,
 } from "electrobun/main/appengine";
 import { defineTest, expect } from "../test-framework/types";
@@ -27,7 +31,15 @@ const UIS = {
 };
 
 // A static UI host plus an AppEngine with its own state and install root.
-function setup(createWindow: (options: any) => Promise<any>, testName: string, options: { probationMs?: number } = {}) {
+function setup(
+	createWindow: (options: any) => Promise<any>,
+	testName: string,
+	options: {
+		probationMs?: number;
+		storage?: EngineStorage;
+		capabilities?: Record<string, (args: unknown) => unknown>;
+	} = {},
+) {
 	const bundles = new Map<string, Uint8Array>();
 	let manifest: UiManifest | null = null;
 	let seq = 0;
@@ -64,6 +76,7 @@ function setup(createWindow: (options: any) => Promise<any>, testName: string, o
 		return manifest;
 	};
 	const events: AppEngineEvent[] = [];
+	const channelEvents: UiChannelEvent[] = [];
 	let engine: AppEngine | null = null;
 	const state = mkdtempSync(join(tmpdir(), "kitchen-appengine-"));
 	// Each test installs into its own folder, so engines running in parallel
@@ -72,6 +85,8 @@ function setup(createWindow: (options: any) => Promise<any>, testName: string, o
 	return {
 		publish,
 		events,
+		channelEvents,
+		stateDir: state,
 		stateFile: join(state, "engine.json"),
 		// Stops the engine and starts a new one on the same state: an app restart.
 		async restart() {
@@ -86,6 +101,8 @@ function setup(createWindow: (options: any) => Promise<any>, testName: string, o
 				readyTimeoutMs: 3000,
 				probationMs: options.probationMs ?? 1000,
 				stateFile: join(state, "engine.json"),
+				storage: options.storage,
+				capabilities: options.capabilities,
 				channel: {
 					manifestUrl: `http://127.0.0.1:${server.port}/manifest.json`,
 					trustedKeys: { [key.keyId]: key.publicKey },
@@ -95,6 +112,7 @@ function setup(createWindow: (options: any) => Promise<any>, testName: string, o
 				},
 			});
 			engine.on((event) => events.push(event));
+			engine.channel.on((event) => channelEvents.push(event));
 			await engine.start();
 			return engine;
 		},
@@ -291,6 +309,108 @@ export const appEngineTests = [
 				const v1 = t.publish(UIS.good("v1"));
 				const engine = await t.start();
 				await until(t.events, is("ready", v1));
+				expect(engine.showing?.sha256).toBe(v1.sha256);
+				log(t.events.map(describe).join(" → "));
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
+		name: "AppEngine hot-swaps to a new UI and hands it the old UI's state",
+		category: "AppEngine",
+		description: "The running UI's onBeforeSwap state reaches the next UI through session.takeHandoff (the spike's v1 to v2)",
+		timeout: 30000,
+		async run({ createWindow, log }) {
+			const reports: unknown[] = [];
+			const t = setup(createWindow, "handoff", { capabilities: { "test.report": (args) => reports.push(args) } });
+			try {
+				const v1 = t.publish(`<!doctype html><script>
+					window.engine.onBeforeSwap(({ toVersion }) => ({ draft: "half-written note", toVersion }));
+					window.engine.ready();
+				</script>`);
+				await t.start();
+				await until(t.events, is("ready", v1));
+				const v2 = t.publish(`<!doctype html><script>
+					window.engine.session.takeHandoff()
+						.then((state) => window.engine.invoke("test.report", state))
+						.then(() => window.engine.ready());
+				</script>`);
+				await t.check();
+				await until(t.events, is("ready", v2));
+				expect(reports).toEqual([{ draft: "half-written note", toVersion: v2.uiVersion }]);
+				log(t.events.map(describe).join(" → "));
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
+		name: "AppEngine restores storage when a UI's migration crashes",
+		category: "AppEngine",
+		description: "A new UI migrates the stored data and then throws before ready(): the snapshot comes back and the previous UI reads its data intact (the spike's v5b)",
+		timeout: 30000,
+		async run({ createWindow, log }) {
+			const reports: unknown[] = [];
+			const store = await EngineStore.open({ dir: join(mkdtempSync(join(tmpdir(), "kitchen-store-")), "storage") });
+			const t = setup(createWindow, "migration", {
+				storage: store,
+				capabilities: { ...storageCapabilities(store), "test.report": (args) => reports.push(args) },
+			});
+			try {
+				// v1 reads (and on first run writes) notes, schema 1.
+				const v1 = t.publish(`<!doctype html><script>
+					(async () => {
+						let notes = await window.engine.invoke("storage.get", { key: "notes" });
+						if (!notes) { notes = ["a", "b", "c"]; await window.engine.invoke("storage.set", { key: "notes", value: notes }); }
+						await window.engine.invoke("test.report", { notes, notebook: await window.engine.invoke("storage.get", { key: "notebook" }) });
+						window.engine.ready();
+					})();
+				</script>`);
+				await t.start();
+				await until(t.events, is("promoted", v1));
+				// v2 migrates to schema 2, then crashes before ready().
+				const v2 = t.publish(`<!doctype html><script>
+					(async () => {
+						const notes = await window.engine.invoke("storage.get", { key: "notes" });
+						await window.engine.invoke("storage.batch", { ops: [
+							{ op: "set", key: "notebook", value: { schema: 2, notes } },
+							{ op: "delete", key: "notes" },
+						] });
+						throw new Error("migration bug");
+					})();
+				</script>`, 2);
+				await t.check();
+				const failed = await until(t.events, is("failed", v2));
+				await until(t.events, (e) => e.type === "ready" && e.manifest.sha256 === v1.sha256 && t.events.indexOf(e) > t.events.indexOf(failed));
+				expect(store.get("notes")).toEqual(["a", "b", "c"]);
+				expect(store.get("notebook")).toBe(null);
+				// v1 booted again after the rollback and read the restored notes.
+				expect(reports.at(-1)).toEqual({ notes: ["a", "b", "c"], notebook: null });
+				log(t.events.map(describe).join(" → "));
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
+		name: "AppEngine refuses a UI older than the app's data after a migration",
+		category: "AppEngine",
+		description: "Once a UI on data schema 2 has booted, a UI on schema 1 is refused before download (the spike's v5 then v2)",
+		timeout: 30000,
+		async run({ createWindow, log }) {
+			const t = setup(createWindow, "schema");
+			try {
+				const v1 = t.publish(UIS.good("schema 2"), 2);
+				const engine = await t.start();
+				await until(t.events, is("promoted", v1));
+				t.publish(UIS.good("schema 1"), 1);
+				const result = await t.check();
+				expect(result.result).toBe("refused");
+				expect(result.result === "refused" && result.reason).toContain("data schema 1 is older than the 2");
 				expect(engine.showing?.sha256).toBe(v1.sha256);
 				log(t.events.map(describe).join(" → "));
 			} finally {
