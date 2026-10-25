@@ -1,5 +1,8 @@
 export { AppEngine } from "../appengine/engine";
 export type { AppEngineEvent, AppEngineOptions, EngineStorage } from "../appengine/engine";
+export { contractRangeError, contractRefusal } from "../appengine/contract";
+export type { CapabilityHandler } from "../appengine/contract";
+export type { EngineContract } from "../../../shared/appengine-protocol";
 export { UiChannel } from "../appengine/channel";
 export type {
 	UiChannelEvent,

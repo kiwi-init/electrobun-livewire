@@ -5,7 +5,16 @@
 // underneath. Every check lives in AppEngine's handlers.
 
 import { Electroview } from "../index";
-import type { AppEngineRPC } from "../../shared/appengine-protocol";
+import { ENGINE_CONTRACT_GLOBAL, type AppEngineRPC, type EngineContract } from "../../shared/appengine-protocol";
+
+// AppEngine runs a line that sets the contract right before this script. Take
+// it off the global so page code finds it only on window.engine.
+const globals = globalThis as unknown as Record<string, EngineContract | undefined>;
+const contract: EngineContract = Object.freeze({
+	version: globals[ENGINE_CONTRACT_GLOBAL]?.version ?? "0.0.0",
+	capabilities: Object.freeze([...(globals[ENGINE_CONTRACT_GLOBAL]?.capabilities ?? [])]),
+});
+delete globals[ENGINE_CONTRACT_GLOBAL];
 
 type SwapHandler = (info: { toVersion: string }) => unknown | Promise<unknown>;
 
@@ -55,6 +64,10 @@ window.addEventListener("unhandledrejection", (event) => report(describe(event.r
 
 const engine = Object.freeze({
 	invoke,
+	// The contract this engine implements: its semver version and the
+	// capabilities invoke() accepts. Feature-detect with has(cap).
+	contract,
+	has: (cap: string) => contract.capabilities.includes(cap),
 	// Tell the engine this UI booted. Call it once the UI can be used; until
 	// then a failure rolls back to the previous UI.
 	ready: (info?: unknown) => {

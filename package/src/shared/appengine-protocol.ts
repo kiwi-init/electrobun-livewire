@@ -8,6 +8,16 @@ export type EngineInvokeResult =
 	| { ok: true; value: unknown }
 	| { ok: false; code: string; message: string };
 
+// What an engine build promises its UIs: a semver version and the
+// capabilities `engine.invoke` accepts. A UI reads it as `window.engine.contract`.
+export type EngineContract = {
+	readonly version: string;
+	readonly capabilities: readonly string[];
+};
+
+// The engine sets this global ahead of the facade, which reads and deletes it.
+export const ENGINE_CONTRACT_GLOBAL = "__livewireEngineContract";
+
 export type AppEngineRPC = {
 	bun: RPCSchema<{
 		requests: {

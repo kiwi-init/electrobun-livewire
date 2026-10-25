@@ -10,6 +10,7 @@ import type { AppEngineRPC, EngineInvokeResult } from "../../../shared/appengine
 import { BrowserView } from "../core/BrowserView";
 import type { BrowserWindow } from "../core/BrowserWindow";
 import { UiChannel, type UiChannelOptions, type UiInstall } from "./channel";
+import { Capabilities, contractRefusal, type CapabilityHandler } from "./contract";
 import { manifestShapeError, type UiManifest } from "./format";
 import { writeAtomic } from "./storage";
 
@@ -39,8 +40,14 @@ export type AppEngineOptions = {
 	// The engine's own state. Defaults to userData/appengine/engine.json.
 	stateFile?: string;
 	storage?: EngineStorage;
-	// Handlers for engine.invoke(cap, args) beyond the built-in ones.
-	capabilities?: Record<string, (args: unknown) => unknown | Promise<unknown>>;
+	// The contract version this engine build implements (strict semver, e.g.
+	// "1.2.0"). UIs whose manifest requiresContract it doesn't satisfy are
+	// refused before download. Bump the minor version when you add
+	// capabilities, the major one when you remove or change them.
+	contractVersion: string;
+	// Handlers for engine.invoke(cap, args) beyond the built-in ones
+	// (engine.info, session.takeHandoff). Only these names can be invoked.
+	capabilities?: Record<string, CapabilityHandler>;
 };
 
 export type AppEngineEvent =
@@ -121,12 +128,25 @@ export class AppEngine {
 	private handoff: unknown = null;
 	private showingManifest: UiManifest | null = null;
 	private started = false;
+	private readonly capabilities: Capabilities;
 
 	constructor(options: AppEngineOptions) {
 		this.options = options;
 		this.readyTimeoutMs = options.readyTimeoutMs ?? 5_000;
 		this.probationMs = options.probationMs ?? 30_000;
 		this.keepGood = options.keepGood ?? 3;
+		this.capabilities = new Capabilities(
+			options.contractVersion,
+			{
+				"engine.info": () => ({
+					uiVersion: this.showingManifest?.uiVersion ?? null,
+					seq: this.showingManifest?.seq ?? null,
+					contract: this.capabilities.contract,
+				}),
+				"session.takeHandoff": () => this.handoff,
+			},
+			options.capabilities,
+		);
 		const appAccept = options.channel.accept;
 		this.channel = new UiChannel({
 			...options.channel,
@@ -180,6 +200,8 @@ export class AppEngine {
 
 	// Refuses bundles the engine knows it can't run, before they're downloaded.
 	private accept(manifest: UiManifest): string | null {
+		const refusal = contractRefusal(this.capabilities.contract.version, manifest);
+		if (refusal) return refusal;
 		const failure = this.state.bad[manifest.sha256];
 		if (failure) return `failed before: ${failure}`;
 		if (manifest.dataSchema < this.state.dataSchemaHighWater) {
@@ -200,7 +222,7 @@ export class AppEngine {
 			// Ephemeral: nothing the page stores outlives the view, so UI data
 			// lives in engine storage, which the engine can snapshot and guard.
 			partition: `appengine-${++this.generation}`,
-			preload: appEnginePageScript,
+			preload: this.capabilities.pagePrelude() + appEnginePageScript,
 			rpc,
 			allowedProtocols: { views: true, appData: true },
 			navigationRules: JSON.stringify(["^*", "appdata://ui/*", `${stripQuery(this.options.safeModeUrl)}*`]),
@@ -408,18 +430,13 @@ export class AppEngine {
 
 	// ---------------------------------------------------------------- invoke
 
-	async invoke(cap: string, args: unknown): Promise<EngineInvokeResult> {
-		try {
-			if (cap === "engine.info") {
-				return { ok: true, value: { uiVersion: this.showingManifest?.uiVersion ?? null, seq: this.showingManifest?.seq ?? null } };
-			}
-			if (cap === "session.takeHandoff") return { ok: true, value: this.handoff };
-			const handler = this.options.capabilities?.[cap];
-			if (!handler) return { ok: false, code: "E_NO_CAPABILITY", message: `no capability "${cap}"` };
-			return { ok: true, value: await handler(args) };
-		} catch (error) {
-			return { ok: false, code: "E_FAILED", message: error instanceof Error ? error.message : String(error) };
-		}
+	// The contract this engine implements, as UIs see it.
+	get contract() {
+		return this.capabilities.contract;
+	}
+
+	invoke(cap: string, args: unknown): Promise<EngineInvokeResult> {
+		return this.capabilities.invoke(cap, args);
 	}
 
 	// ---------------------------------------------------------------- state
