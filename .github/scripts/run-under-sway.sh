@@ -3,15 +3,19 @@
 # so GTK can only open a native Wayland display: anything that still needs
 # X11 fails here instead of passing through XWayland.
 #
-#   run-under-sway.sh [--scale S] -- command args...
+#   run-under-sway.sh [--scale S] [--screenshots DIR] -- command args...
 #
-# Exits with the command's status. Sway's log is printed when it fails.
+# --screenshots DIR saves a grim screenshot of the session every 2 seconds
+# while the command runs. Exits with the command's status. Sway's log is
+# printed when it fails.
 set -euo pipefail
 
 scale=1
+screenshots=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --scale) scale="$2"; shift 2 ;;
+    --screenshots) screenshots="$2"; shift 2 ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -21,7 +25,7 @@ if [[ ! "$scale" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
   exit 2
 fi
 if [[ $# -eq 0 ]]; then
-  echo "usage: $0 [--scale S] -- command args..." >&2
+  echo "usage: $0 [--scale S] [--screenshots DIR] -- command args..." >&2
   exit 2
 fi
 
@@ -44,7 +48,9 @@ unset DISPLAY WAYLAND_DISPLAY
 
 sway --config "$config" > "$sway_log" 2>&1 &
 sway_pid=$!
+shooter_pid=""
 cleanup() {
+  [[ -n "$shooter_pid" ]] && kill "$shooter_pid" 2> /dev/null || true
   kill "$sway_pid" 2> /dev/null || true
   wait "$sway_pid" 2> /dev/null || true
 }
@@ -71,6 +77,18 @@ export WAYLAND_DISPLAY="$socket"
 export GDK_BACKEND=wayland
 echo "sway ready on $WAYLAND_DISPLAY (scale $scale, XWayland off)"
 swaymsg -t get_outputs -r | jq -c '.[] | {name, current_mode, scale}' || true
+
+if [[ -n "$screenshots" ]]; then
+  mkdir -p "$screenshots"
+  (
+    n=0
+    while sleep 2; do
+      n=$((n + 1))
+      grim "$screenshots/$(printf '%04d' "$n").png" 2> /dev/null || true
+    done
+  ) &
+  shooter_pid=$!
+fi
 
 status=0
 "$@" || status=$?

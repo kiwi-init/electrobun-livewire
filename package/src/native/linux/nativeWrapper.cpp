@@ -8,6 +8,9 @@
 #include <libayatana-appindicator/app-indicator.h>
 #endif
 #include <gdk/gdkx.h>
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/gdkwayland.h>
+#endif
 #include <X11/Xlib.h>
 #include <X11/extensions/shape.h>
 #include <X11/Xatom.h>
@@ -7629,6 +7632,47 @@ void* createX11Window(uint32_t windowId, double x, double y, double width, doubl
     return result;
 }
 
+// Wayland compositors that negotiate server-side decorations but draw none.
+// GTK3 then draws none either, so a framed window has no title or close
+// button. Each entry is a name from XDG_CURRENT_DESKTOP and an env var the
+// compositor sets for its clients.
+struct DecorationlessCompositor {
+    const char* desktop;
+    const char* env;
+};
+static const DecorationlessCompositor kDecorationlessCompositors[] = {
+    // Hyprland answers KDE server-decoration with mode SERVER and xdg-decoration
+    // with SERVER_SIDE, whatever the client asks (src/protocols/
+    // ServerDecorationKDE.cpp, XDGDecoration.cpp), and draws only a border.
+    {"Hyprland", "HYPRLAND_INSTANCE_SIGNATURE"},
+};
+
+// Whether framed GTK windows draw their own header bar. ELECTROBUN_WAYLAND_CSD=1
+// forces it on any Wayland compositor and =0 turns it off.
+static bool shouldDrawClientDecorations() {
+#ifdef GDK_WINDOWING_WAYLAND
+    if (!GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default())) {
+        return false;
+    }
+    const char* override = g_getenv("ELECTROBUN_WAYLAND_CSD");
+    if (override && *override) {
+        return strcmp(override, "0") != 0;
+    }
+    const char* desktop = g_getenv("XDG_CURRENT_DESKTOP");
+    for (const auto& compositor : kDecorationlessCompositors) {
+        if (g_getenv(compositor.env)) {
+            return true;
+        }
+        if (desktop && strstr(desktop, compositor.desktop)) {
+            return true;
+        }
+    }
+    return false;
+#else
+    return false;
+#endif
+}
+
 ELECTROBUN_EXPORT void* createGTKWindow(uint32_t windowId, double x, double y, double width, double height, const char* title,
                    WindowCloseCallback closeCallback, WindowMoveCallback moveCallback, WindowResizeCallback resizeCallback, WindowFocusCallback focusCallback, WindowBlurCallback blurCallback, WindowKeyHandler keyCallback, WindowShouldCloseHandler shouldCloseCallback,
                    const char* titleBarStyle = nullptr, bool transparent = false) {
@@ -7664,6 +7708,15 @@ ELECTROBUN_EXPORT void* createGTKWindow(uint32_t windowId, double x, double y, d
             // using hidden must not need a style change to become resizable.
             gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
             attachGtkWindowResizeHandles(window);
+        } else if (shouldDrawClientDecorations()) {
+            // GtkWindow keeps a header bar titlebar's title in sync with
+            // gtk_window_set_title, and gtk_window_get_size leaves it out,
+            // so frames still mean content size.
+            GtkWidget* headerBar = gtk_header_bar_new();
+            gtk_header_bar_set_title(GTK_HEADER_BAR(headerBar), title);
+            gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(headerBar), TRUE);
+            gtk_widget_show(headerBar);
+            gtk_window_set_titlebar(GTK_WINDOW(window), headerBar);
         }
         
         // Handle transparency
