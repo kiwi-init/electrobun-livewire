@@ -5957,16 +5957,22 @@ public:
                              : RESPONSE_FILTER_NEED_MORE_DATA;
     }
 
-    // Inject on the first chunk. A short document without <head> can arrive
-    // in one piece, and waiting for more data before falling back meant it
-    // never got the preload at all.
-    if (!buffer_.empty()) {
+    // Inject once a whole tag has arrived, so a page streamed in tiny chunks
+    // (a first chunk of just "<!doc") doesn't get the script in front of its
+    // doctype and drop into quirks mode. Until then hold the bytes, but never
+    // past 1 KB or the end of the input.
+    if (!buffer_.empty() &&
+        (buffer_.find('>') != std::string::npos || buffer_.size() >= 1024 ||
+         data_in_size == 0)) {
       std::string scripts = "<script>\n" + electrobun_script_.code + "\n</script>\n";
       if (!custom_script_.code.empty()) {
         scripts += "<script>\n" + custom_script_.code + "\n</script>\n";
       }
       electrobun::injectPreloadScripts(buffer_, scripts);
       injected_ = true;
+    } else if (!injected_) {
+      data_out_written = 0;
+      return RESPONSE_FILTER_NEED_MORE_DATA;
     }
 
     // Copy data from our buffer to the output
