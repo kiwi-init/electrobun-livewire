@@ -183,9 +183,14 @@ const WebviewState = struct {
     event_bridge_handler: ?WebviewPostMessageHandler,
     internal_bridge_handler: ?WebviewPostMessageHandler,
     secret_key: WebviewSecretKey,
+    // Prefixed by the preload to every host/internal bridge message; see
+    // stripBridgeToken.
+    bridge_token: BridgeToken,
     socket_handle: ?std.posix.socket_t,
     transport_ready: bool,
 };
+
+const BridgeToken = [32]u8;
 
 const WgpuViewState = struct {
     ptr: WgpuViewPtr,
@@ -350,6 +355,7 @@ const HostMessageWakeupState = struct {
 const HostTransportDebugState = struct {
     connections: u64 = 0,
     unauthenticated_connections: u64 = 0,
+    unauthenticated_bridge_messages: u64 = 0,
     frames_read: u64 = 0,
     frames_dispatched: u64 = 0,
     decrypt_ok: u64 = 0,
@@ -596,6 +602,28 @@ fn hostBridgeQueueTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.
     enqueuePendingHostMessage(webview_id, message);
 }
 
+// Host and internal bridge messages must start with the view's bridge token.
+// Only the preload on the view's own allowed top-level page knows it (it's in
+// a closure inside the bridge wrappers), so messages posted straight to the
+// native bridges by subframes, pages outside bridgeOrigins or popups sharing
+// the content manager are dropped. Returns the message without the token.
+fn stripBridgeToken(webview_id: u32, message: [*:0]const u8) ?[*:0]const u8 {
+    const state = lookupWebviewState(webview_id) orelse return null;
+    const text = std.mem.span(message);
+    if (text.len < state.bridge_token.len or
+        !std.mem.eql(u8, text[0..state.bridge_token.len], &state.bridge_token))
+    {
+        incrementHostTransportDebug("unauthenticated_bridge_messages");
+        return null;
+    }
+    return message + state.bridge_token.len;
+}
+
+fn hostBridgeCoreTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.c) void {
+    const payload = stripBridgeToken(webview_id, message) orelse return;
+    hostBridgeQueueTrampoline(webview_id, payload);
+}
+
 fn compactPendingHostMessagesLocked() void {
     if (pending_host_messages_head == 0) {
         return;
@@ -812,6 +840,7 @@ export fn getHostTransportDebugJSON() ?[*:0]u8 {
     const json = std.json.Stringify.valueAlloc(allocator, .{
         .connections = debug.connections,
         .unauthenticatedConnections = debug.unauthenticated_connections,
+        .unauthenticatedBridgeMessages = debug.unauthenticated_bridge_messages,
         .framesRead = debug.frames_read,
         .framesDispatched = debug.frames_dispatched,
         .decryptOk = debug.decrypt_ok,
@@ -1710,6 +1739,7 @@ fn buildElectrobunPreload(
     secret_key: [*:0]const u8,
     sandbox: bool,
     bridge_origins_json: [:0]const u8,
+    bridge_token: *const BridgeToken,
 ) ?[:0]u8 {
     if (!ensureWebviewRuntimeConfigured()) {
         return null;
@@ -1762,6 +1792,17 @@ fn buildElectrobunPreload(
         \\window.__electrobunInternalBridge = window.__electrobunInternalBridge || window.webkit?.messageHandlers?.internalBridge || window.internalBridge || window.chrome?.webview?.hostObjects?.internalBridge;
         \\window.__electrobunHostBridge = window.__electrobunHostBridge || window.__electrobunBunBridge || window.webkit?.messageHandlers?.hostBridge || window.webkit?.messageHandlers?.bunBridge || window.hostBridge || window.bunBridge || window.chrome?.webview?.hostObjects?.hostBridge || window.chrome?.webview?.hostObjects?.bunBridge;
         \\window.__electrobunBunBridge = window.__electrobunBunBridge || window.webkit?.messageHandlers?.bunBridge || window.bunBridge || window.chrome?.webview?.hostObjects?.bunBridge;
+        \\(function (token) {{
+        \\  function sign(bridge) {{
+        \\    if (!bridge || bridge.__electrobunSigned) return bridge;
+        \\    var signed = {{ postMessage: function (message) {{ bridge.postMessage(token + message); }} }};
+        \\    Object.defineProperty(signed, "__electrobunSigned", {{ value: true }});
+        \\    return signed;
+        \\  }}
+        \\  window.__electrobunInternalBridge = sign(window.__electrobunInternalBridge);
+        \\  window.__electrobunHostBridge = sign(window.__electrobunHostBridge);
+        \\  window.__electrobunBunBridge = sign(window.__electrobunBunBridge);
+        \\}})("{s}");
         \\{s}
         \\}} else {{
         \\{s}
@@ -1775,6 +1816,7 @@ fn buildElectrobunPreload(
             webview_runtime_state.rpc_port,
             webview_runtime_state.rpc_port,
             std.mem.span(secret_key),
+            bridge_token,
             preload_script,
             sandboxed_preload_script,
         },
@@ -2653,8 +2695,9 @@ fn processInternalBridgeBatch(source_webview_id: u32, message_json: []const u8) 
 }
 
 fn internalBridgeCoreTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.c) void {
+    const payload = stripBridgeToken(webview_id, message) orelse return;
     const state = lookupWebviewState(webview_id) orelse return;
-    const message_slice = std.mem.span(message);
+    const message_slice = std.mem.span(payload);
     if (state.internal_bridge_handler) |handler| {
         dispatchRuntimePostMessage(handler, webview_id, message_slice);
         return;
@@ -3338,6 +3381,9 @@ export fn createWebview(
     const set_next_webview_flags = lookupNativeSymbol(SetNextWebviewFlagsFn, "setNextWebviewFlags") orelse return 0;
     const init_webview = lookupNativeSymbol(InitWebviewFn, "initWebview") orelse return 0;
     const parsed_secret_key = parseWebviewSecretKey(secret_key) orelse return 0;
+    var bridge_token_bytes: [16]u8 = undefined;
+    coreIo().random(&bridge_token_bytes);
+    const bridge_token: BridgeToken = std.fmt.bytesToHex(bridge_token_bytes, .lower);
 
     webview_registry_mutex.lockUncancelable(coreIo());
     const start_id = next_webview_id;
@@ -3369,6 +3415,7 @@ export fn createWebview(
         .event_bridge_handler = event_bridge_handler,
         .internal_bridge_handler = _internal_bridge_handler,
         .secret_key = parsed_secret_key,
+        .bridge_token = bridge_token,
         .socket_handle = null,
         .transport_ready = false,
     }) catch |err| {
@@ -3397,6 +3444,7 @@ export fn createWebview(
         secret_key,
         sandbox,
         bridge_origins_json,
+        &bridge_token,
     ) orelse {
         webview_registry_mutex.lockUncancelable(coreIo());
         _ = webview_registry.remove(webview_id);
@@ -3421,7 +3469,7 @@ export fn createWebview(
         navigation_callback,
         webview_event_handler,
         if (event_bridge_handler != null) eventBridgeCoreTrampoline else null,
-        hostBridgeQueueTrampoline,
+        hostBridgeCoreTrampoline,
         internalBridgeCoreTrampoline,
         electrobun_preload_script.ptr,
         custom_preload_script,

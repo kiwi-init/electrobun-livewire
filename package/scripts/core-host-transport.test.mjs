@@ -76,6 +76,7 @@ export fn testInstallTransportWebview(webview_id: u32, key_byte: u8) bool {
         .event_bridge_handler = null,
         .internal_bridge_handler = null,
         .secret_key = @splat(key_byte),
+        .bridge_token = @splat('0'),
         .socket_handle = null,
         .transport_ready = false,
     }) catch return false;
