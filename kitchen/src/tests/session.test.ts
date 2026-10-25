@@ -36,6 +36,60 @@ export const sessionTests = [
   }),
 
   defineTest({
+    name: "cookies set back to back all reach a page loaded right after (stress)",
+    category: "Session",
+    description: "Repeats set, set, load with fresh partitions; every load must carry both cookies",
+    timeout: 120000,
+    requires: { platform: ["darwin", "linux"] },
+    async run({ createWindow, log }) {
+      const reports: { round: number; header: string; documentCookie: string }[] = [];
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch(request) {
+          const url = new URL(request.url);
+          if (url.pathname === "/report") {
+            reports.push({
+              round: Number(url.searchParams.get("round")),
+              header: request.headers.get("cookie") ?? "",
+              documentCookie: url.searchParams.get("cookie") ?? "",
+            });
+            return new Response("ok");
+          }
+          const round = url.searchParams.get("round");
+          return new Response(
+            `<script>fetch("/report?round=${round}&cookie=" + encodeURIComponent(document.cookie))</script>`,
+            { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } },
+          );
+        },
+      });
+      const host = await createWindow({ url: "views://test-harness/index.html", title: "Cookie Stress", renderer: "native" });
+      const missing: string[] = [];
+      try {
+        for (let round = 0; round < 12; round++) {
+          const partition = `persist:cookie-stress-${Date.now()}-${round}`;
+          const session = Session.fromPartition(partition);
+          const setToken = session.cookies.set({ name: "token", value: "secret", domain: "127.0.0.1", path: "/", httpOnly: true, sameSite: "strict" });
+          const setTheme = session.cookies.set({ name: "theme", value: "dark", domain: "127.0.0.1", path: "/", sameSite: "lax" });
+          const view = new BrowserView({ windowId: host.window.id, renderer: "native", partition, url: `http://127.0.0.1:${server.port}/?round=${round}`, frame: { x: 0, y: 0, width: 200, height: 150 } });
+          const deadline = Date.now() + 8000;
+          while (!reports.some((r) => r.round === round) && Date.now() < deadline) await sleep(100);
+          const report = reports.find((r) => r.round === round);
+          const header = report?.header ?? "<no request>";
+          const ok = header.includes("token=secret") && header.includes("theme=dark");
+          log(`round ${round}: set=${setToken}/${setTheme} header="${header}" document.cookie="${report?.documentCookie ?? ""}"`);
+          if (!ok) missing.push(`round ${round}: ${header}`);
+          view.remove();
+          session.cookies.clear();
+        }
+      } finally {
+        server.stop(true);
+      }
+      expect(missing).toEqual([]);
+    },
+  }),
+
+  defineTest({
     name: "an httpOnly cookie reaches the server but not document.cookie",
     category: "Session",
     description: "A page in the cookie's partition sends the httpOnly cookie to its server, but its script can't read it",

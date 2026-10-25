@@ -165,6 +165,7 @@ static void onSetCookieFinished(GObject* source, GAsyncResult* result, gpointer 
     *(data->done) = true;
 
     if (error) {
+        fprintf(stderr, "Session: cookie not stored: %s\n", error->message);
         g_error_free(error);
     }
 
@@ -301,6 +302,9 @@ ELECTROBUN_EXPORT bool sessionSetCookie(const char* partitionIdentifier, const c
         g_source_destroy(timeout);
         g_source_unref(timeout);
         g_main_loop_unref(callbackData.loop);
+        if (!done) {
+            fprintf(stderr, "Session: cookie %s not confirmed within 5 s\n", name.c_str());
+        }
 
         soup_cookie_free(cookie);
 
