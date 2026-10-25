@@ -250,6 +250,48 @@ export const rpcTests = [
   }),
 
   defineTest({
+    name: "rpc socket keeps the page connection and hides the key",
+    category: "RPC",
+    description: "Test that a connection without the webview's key can't displace the page's RPC socket, and that page scripts can't read the raw key",
+    timeout: 20000,
+    async run({ createWindow, log }) {
+      const rpc = createTestHarnessRPC(3000);
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        title: "RPC Socket Test",
+      });
+      await sleep(2000);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+
+      const keyType = await rpc.request.evaluateJavascriptWithResponse({
+        script: "return typeof window.__electrobunSecretKeyBytes",
+      });
+      expect(keyType).toBe("undefined");
+
+      const before = await rpc.request.getHostSocketStressState();
+      expect(before.readyState).toBe(1);
+
+      log("Opening a connection without the key for the same webview");
+      const rogue = new WebSocket(
+        `ws://127.0.0.1:${before.hostSocketPort}/socket?webviewId=${win.webview.id}`,
+      );
+      await new Promise<void>((resolve) => {
+        rogue.addEventListener("open", () => resolve());
+        rogue.addEventListener("error", () => resolve());
+        setTimeout(resolve, 2000);
+      });
+      if (rogue.readyState === WebSocket.OPEN) rogue.send("not encrypted");
+      await sleep(1000);
+      rogue.close();
+
+      const after = await rpc.request.getHostSocketStressState();
+      expect(after.readyState).toBe(1);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+    },
+  }),
+
+  defineTest({
     name: "webview to bun: request with response",
     category: "RPC",
     description: "Test that webview can make RPC requests to bun and receive responses",

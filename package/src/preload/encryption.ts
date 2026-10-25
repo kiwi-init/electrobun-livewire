@@ -37,15 +37,19 @@ async function generateKeyFromBytes(rawKey: Uint8Array): Promise<CryptoKey> {
 		"raw",
 		toArrayBuffer(rawKey),
 		{ name: "AES-GCM" },
-		true,
+		false,
 		["encrypt", "decrypt"],
 	);
 }
 
 export async function initEncryption(): Promise<void> {
-	const secretKey = await generateKeyFromBytes(
-		new Uint8Array(window.__electrobunSecretKeyBytes),
-	);
+	// Take the raw key off the page before any page script runs and keep only a
+	// non-extractable CryptoKey: pages can still encrypt through
+	// __electrobun_encrypt, but can't copy the key out.
+	const rawKey = new Uint8Array(window.__electrobunSecretKeyBytes);
+	delete (window as { __electrobunSecretKeyBytes?: number[] })
+		.__electrobunSecretKeyBytes;
+	const secretKey = await generateKeyFromBytes(rawKey);
 
 	const encryptString = async (
 		plaintext: string,

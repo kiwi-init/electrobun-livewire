@@ -350,6 +350,7 @@ const HostMessageWakeupState = struct {
 
 const HostTransportDebugState = struct {
     connections: u64 = 0,
+    unauthenticated_connections: u64 = 0,
     frames_read: u64 = 0,
     frames_dispatched: u64 = 0,
     decrypt_ok: u64 = 0,
@@ -809,6 +810,7 @@ export fn getHostTransportDebugJSON() ?[*:0]u8 {
 
     const json = std.json.Stringify.valueAlloc(allocator, .{
         .connections = debug.connections,
+        .unauthenticatedConnections = debug.unauthenticated_connections,
         .framesRead = debug.frames_read,
         .framesDispatched = debug.frames_dispatched,
         .decryptOk = debug.decrypt_ok,
@@ -1440,6 +1442,17 @@ fn dispatchHostTransportMessage(webview_id: u32, encrypted_packet: []const u8) v
     enqueueHostTransportPlaintext(webview_id, context, plaintext);
 }
 
+// True when the packet decrypts with the webview's key (or is a valid plaintext
+// packet while plaintext transport is on).
+fn hostTransportPacketAuthenticates(webview_id: u32, packet: []const u8) bool {
+    const context = lookupWebviewTransportContext(webview_id) orelse return false;
+    const plaintext = decryptHostTransportPacket(packet, context.secret_key) catch {
+        return context.plaintext_transport and isPlaintextHostTransportPacket(packet);
+    };
+    allocator.free(plaintext);
+    return true;
+}
+
 fn handleHostTransportConnection(stream: std.Io.net.Stream) void {
     const io = coreIo();
     incrementHostTransportDebug("connections");
@@ -1470,9 +1483,10 @@ fn handleHostTransportConnection(stream: std.Io.net.Stream) void {
 
     writeWebSocketHandshake(out, websocket_key) catch return;
 
-    if (!attachWebviewSocketHandle(webview_id, stream.socket.handle)) {
-        return;
-    }
+    // The connection replaces the webview's current socket only once its first
+    // message proves it holds the webview's key. Until then it can't displace
+    // the page's own connection.
+    var attached = false;
 
     // Any bytes the client sent after the HTTP head remain buffered in `in`,
     // so WebSocket frames are read from the same reader.
@@ -1485,7 +1499,17 @@ fn handleHostTransportConnection(stream: std.Io.net.Stream) void {
         defer allocator.free(frame.payload);
 
         switch (frame.opcode) {
-            0x1 => dispatchHostTransportMessage(webview_id, frame.payload),
+            0x1 => {
+                if (!attached) {
+                    if (!hostTransportPacketAuthenticates(webview_id, frame.payload)) {
+                        incrementHostTransportDebug("unauthenticated_connections");
+                        break;
+                    }
+                    if (!attachWebviewSocketHandle(webview_id, stream.socket.handle)) break;
+                    attached = true;
+                }
+                dispatchHostTransportMessage(webview_id, frame.payload);
+            },
             0x8 => {
                 writeWebSocketFrameSerialized(stream, 0x8, "") catch {};
                 break;
@@ -1495,7 +1519,9 @@ fn handleHostTransportConnection(stream: std.Io.net.Stream) void {
         }
     }
 
-    clearWebviewSocketHandleIfCurrent(webview_id, stream.socket.handle);
+    if (attached) {
+        clearWebviewSocketHandleIfCurrent(webview_id, stream.socket.handle);
+    }
 }
 
 fn listenHostTransport(address: std.Io.net.IpAddress) HostTransportListenError!std.Io.net.Server {
