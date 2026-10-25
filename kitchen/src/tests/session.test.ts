@@ -26,8 +26,8 @@ export const sessionTests = [
         expect(byName("token")?.sameSite).toBe("strict");
         expect(byName("theme")?.httpOnly).toBe(false);
         expect(byName("theme")?.sameSite).toBe("lax");
-        // A secure cookie isn't sent to http://, so look for it unfiltered.
-        const open = session.cookies.get().find((cookie) => cookie.name === "open");
+        // A secure cookie only matches an https:// URL.
+        const open = session.cookies.get({ url: "https://127.0.0.1" }).find((cookie) => cookie.name === "open");
         expect(open?.sameSite).toBe("no_restriction");
       } finally {
         session.cookies.clear();
