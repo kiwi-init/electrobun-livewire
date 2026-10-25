@@ -83,6 +83,42 @@ function definesNativeFunction(source: string, symbol: string): boolean {
 	return functionDefinition.test(source);
 }
 
+// Argument count of each descriptor in a bun:ffi dlopen table: its `args`
+// entries, with comments stripped.
+function descriptorArity(table: string): Map<string, number> {
+	const arity = new Map<string, number>();
+	const descriptor = /^\t{3}([A-Za-z_$][\w$]*): \{$([\s\S]*?)^\t{3}\},?$/gm;
+	for (const [, name, body] of table.matchAll(descriptor)) {
+		const args = /args:\s*\[([\s\S]*?)\]/.exec(body!.replace(/\/\/.*$/gm, ""));
+		if (args) arity.set(name!, (args[1]!.match(/FFIType\.\w+/g) ?? []).length);
+	}
+	return arity;
+}
+
+// Parameter count of each `export fn` in a Zig source. Parameter types can
+// hold parentheses of their own (function pointers), so only commas at the
+// top level of the list separate parameters.
+function zigExportArity(source: string): Map<string, number> {
+	const arity = new Map<string, number>();
+	for (const match of source.matchAll(/^export fn ([A-Za-z_$][\w$]*)\s*\(/gm)) {
+		let depth = 1;
+		let index = match.index! + match[0].length;
+		let parameters = "";
+		for (; index < source.length && depth > 0; index++) {
+			const char = source[index]!;
+			if (char === "(") depth++;
+			else if (char === ")") depth--;
+			if (depth > 0) parameters += depth === 1 && char === "," ? "\u0000" : char;
+		}
+		const count = parameters
+			.replace(/\/\/.*$/gm, "")
+			.split("\u0000")
+			.filter((parameter) => parameter.trim() !== "").length;
+		arity.set(match[1]!, count);
+	}
+	return arity;
+}
+
 const typescriptCoreTable = sourceSection(
 	sources.typescript,
 	"return tryDlopenCandidates(coreFileName, {",
@@ -342,6 +378,18 @@ describe("SDK to ElectrobunCore ABI", () => {
 		for (const symbols of Object.values(eagerCoreDemands)) {
 			expect(symbols).toContain("captureScreenRegion");
 		}
+	});
+
+	test("every TypeScript descriptor takes as many arguments as its ElectrobunCore export", () => {
+		// bun:ffi passes exactly the declared arguments: a missing one reaches
+		// the core as whatever its register held.
+		const declared = descriptorArity(typescriptCoreTable);
+		const exported = zigExportArity(sources.core);
+		expect(declared.size).toBeGreaterThan(100);
+		const mismatches = [...declared]
+			.filter(([name, count]) => exported.has(name) && exported.get(name) !== count)
+			.map(([name, count]) => `${name}: TypeScript ${count}, core ${exported.get(name)}`);
+		expect(mismatches).toEqual([]);
 	});
 
 	test.each(Object.entries(eagerCoreDemands))(
