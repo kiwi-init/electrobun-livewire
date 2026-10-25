@@ -11954,16 +11954,23 @@ ELECTROBUN_EXPORT void setWindowPosition(void* window, double x, double y) {
     });
 }
 
+// Wayland has no primary monitor (GDK returns none there), so the first
+// monitor stands in, as it does on X11 without a primary set.
+static GdkMonitor* primaryOrFirstMonitor(GdkDisplay* display) {
+    GdkMonitor* monitor = gdk_display_get_primary_monitor(display);
+    if (!monitor && gdk_display_get_n_monitors(display) > 0) {
+        monitor = gdk_display_get_monitor(display, 0);
+    }
+    return monitor;
+}
+
 ELECTROBUN_EXPORT void centerWindow(void* window) {
     if (!window) return;
 
     dispatch_sync_main_void([=]() {
         GdkDisplay* gdkDisplay = gdk_display_get_default();
         if (!gdkDisplay) return;
-        GdkMonitor* monitor = gdk_display_get_primary_monitor(gdkDisplay);
-        if (!monitor && gdk_display_get_n_monitors(gdkDisplay) > 0) {
-            monitor = gdk_display_get_monitor(gdkDisplay, 0);
-        }
+        GdkMonitor* monitor = primaryOrFirstMonitor(gdkDisplay);
         if (!monitor) return;
 
         GdkRectangle workarea{};
@@ -12687,7 +12694,7 @@ ELECTROBUN_EXPORT const char* getAllDisplays() {
         }
 
         int numMonitors = gdk_display_get_n_monitors(display);
-        GdkMonitor* primaryMonitor = gdk_display_get_primary_monitor(display);
+        GdkMonitor* primaryMonitor = primaryOrFirstMonitor(display);
 
         std::ostringstream result;
         result << "[";
@@ -12746,15 +12753,9 @@ ELECTROBUN_EXPORT const char* getPrimaryDisplay() {
             return strdup("{}");
         }
 
-        GdkMonitor* monitor = gdk_display_get_primary_monitor(display);
+        GdkMonitor* monitor = primaryOrFirstMonitor(display);
         if (!monitor) {
-            // Fallback to first monitor if no primary is set
-            if (gdk_display_get_n_monitors(display) > 0) {
-                monitor = gdk_display_get_monitor(display, 0);
-            }
-            if (!monitor) {
-                return strdup("{}");
-            }
+            return strdup("{}");
         }
 
         // Get geometry (full bounds)
