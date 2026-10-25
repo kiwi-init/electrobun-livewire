@@ -1380,6 +1380,79 @@ NSMenu *createMenuFromConfig(NSArray *menuConfig, StatusItemTarget *target) {
   return menu;
 }
 
+static NSDictionary *defaultMenuRoleItem(NSString *role, NSString *label,
+                                         NSString *accelerator) {
+  NSMutableDictionary *item =
+      [@{@"role" : role, @"label" : label, @"enabled" : @YES} mutableCopy];
+  if (accelerator) {
+    item[@"accelerator"] = accelerator;
+  }
+  return item;
+}
+
+// The menu bar an app has until it calls setApplicationMenu. Without it there
+// is no Edit menu, so Cmd+C/V/X/A/Z never reach the webview, and Cmd+Q, Cmd+W
+// and Cmd+M do nothing.
+static void installDefaultApplicationMenu() {
+  NSString *appName =
+      [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"]
+          ?: [[NSProcessInfo processInfo] processName];
+  NSDictionary *divider = @{@"type" : @"divider"};
+  NSArray *config = @[
+    @{
+      @"label" : appName,
+      @"enabled" : @YES,
+      @"submenu" : @[
+        defaultMenuRoleItem(
+            @"about", [@"About " stringByAppendingString:appName], nil),
+        divider,
+        defaultMenuRoleItem(@"hide", [@"Hide " stringByAppendingString:appName],
+                            @"Command+H"),
+        defaultMenuRoleItem(@"hideOthers", @"Hide Others", @"Command+Alt+H"),
+        defaultMenuRoleItem(@"showAll", @"Show All", nil),
+        divider,
+        defaultMenuRoleItem(@"quit", [@"Quit " stringByAppendingString:appName],
+                            @"Command+Q"),
+      ]
+    },
+    @{
+      @"label" : @"File",
+      @"enabled" : @YES,
+      @"submenu" : @[ defaultMenuRoleItem(@"close", @"Close Window",
+                                          @"Command+W") ]
+    },
+    @{
+      @"label" : @"Edit",
+      @"enabled" : @YES,
+      @"submenu" : @[
+        defaultMenuRoleItem(@"undo", @"Undo", nil),
+        defaultMenuRoleItem(@"redo", @"Redo", nil),
+        divider,
+        defaultMenuRoleItem(@"cut", @"Cut", nil),
+        defaultMenuRoleItem(@"copy", @"Copy", nil),
+        defaultMenuRoleItem(@"paste", @"Paste", nil),
+        defaultMenuRoleItem(@"pasteAndMatchStyle", @"Paste and Match Style",
+                            nil),
+        defaultMenuRoleItem(@"selectAll", @"Select All", nil),
+      ]
+    },
+    @{
+      @"label" : @"Window",
+      @"enabled" : @YES,
+      @"submenu" : @[
+        defaultMenuRoleItem(@"minimize", @"Minimize", @"Command+M"),
+        defaultMenuRoleItem(@"zoom", @"Zoom", nil),
+        divider,
+        defaultMenuRoleItem(@"bringAllToFront", @"Bring All to Front", nil),
+      ]
+    },
+  ];
+  NSMenu *menu = createMenuFromConfig(config, nil);
+  [NSApp setMainMenu:menu];
+  // Lets AppKit add the window list and its standard Window menu items.
+  [NSApp setWindowsMenu:[[menu itemWithTitle:@"Window"] submenu]];
+}
+
 /*
  * =============================================================================
  * 5. OBJECTIVE-C @IMPLEMENTATIONS
@@ -8016,6 +8089,15 @@ CreateRequestContextForPartition(const char *partitionIdentifier,
 // ----------------------- AppDelegate & WindowDelegate -----------------------
 
 @implementation AppDelegate
+- (void)applicationWillFinishLaunching:(NSNotification *)notification {
+  // An app's setApplicationMenu is queued to the main thread from Bun, so it
+  // normally lands after this and replaces the default. If it got here first,
+  // the check keeps it.
+  if (![NSApp mainMenu]) {
+    installDefaultApplicationMenu();
+  }
+}
+
 - (NSApplicationTerminateReply)applicationShouldTerminate:
     (NSApplication *)sender {
   // If we're already in shutdown sequence (stopEventLoop was called), allow
