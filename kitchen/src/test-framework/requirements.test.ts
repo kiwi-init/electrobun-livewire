@@ -105,3 +105,25 @@ describe("Kitchen background mode", () => {
     expect(useBackgroundMode({ ELECTROBUN_BACKGROUND: "0" })).toBe(false);
   });
 });
+
+describe("Kitchen display requirements", () => {
+  const waylandTest = defineTest({
+    name: "Wayland clipboard",
+    category: "contract",
+    requires: { platform: "linux", display: "wayland" },
+    run: noOpRun,
+  });
+
+  test("runs on Linux with a Wayland display", () => {
+    expect(getTestSkipReason(waylandTest, ["native"], "linux", false, { WAYLAND_DISPLAY: "wayland-1" })).toBeUndefined();
+  });
+
+  test("skips on X11 and on other platforms", () => {
+    expect(getTestSkipReason(waylandTest, ["native"], "linux", false, { DISPLAY: ":0" })).toBe(
+      "requires a Wayland session (Linux with WAYLAND_DISPLAY set)",
+    );
+    expect(getTestSkipReason(waylandTest, ["native"], "darwin", false, { WAYLAND_DISPLAY: "wayland-1" })).toBe(
+      "requires linux, running on darwin",
+    );
+  });
+});

@@ -42,6 +42,11 @@ export interface TestRequirements {
    * runs); runs on CI.
    */
   foreground?: boolean;
+  /**
+   * The app must be running on a native Wayland display (Linux with
+   * WAYLAND_DISPLAY set), for behavior only Wayland has.
+   */
+  display?: 'wayland';
 }
 
 export interface TestSuiteDefinition {

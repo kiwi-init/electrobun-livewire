@@ -28,6 +28,35 @@ export const utilsTests = [
   }),
 
   defineTest({
+    name: "Clipboard is shared with other Wayland clients",
+    category: "Utils",
+    description: "Text the app copies is what wl-paste reads, and text wl-copy sets is what the app reads",
+    requires: { platform: "linux", display: "wayland" },
+    timeout: 15000,
+    async run({ log }) {
+      const wlCopy = Bun.which("wl-copy");
+      const wlPaste = Bun.which("wl-paste");
+      if (!wlCopy || !wlPaste) {
+        throw new Error("wl-copy and wl-paste are needed (install wl-clipboard)");
+      }
+
+      const fromApp = `from Electrobun ${Date.now()}`;
+      Utils.clipboardWriteText(fromApp);
+      await sleep(200);
+      const pasted = Bun.spawnSync([wlPaste, "--no-newline"], { timeout: 5000 });
+      expect(pasted.stdout.toString()).toBe(fromApp);
+      log(`wl-paste read the app's text: "${fromApp}"`);
+
+      const fromOther = `from wl-copy ${Date.now()}`;
+      const copied = Bun.spawnSync([wlCopy, fromOther], { timeout: 5000 });
+      expect(copied.exitCode).toBe(0);
+      await sleep(300);
+      expect(Utils.clipboardReadText()).toBe(fromOther);
+      log(`The app read wl-copy's text: "${fromOther}"`);
+    },
+  }),
+
+  defineTest({
     name: "clipboardAvailableFormats",
     category: "Utils",
     description: "Test getting available clipboard formats",
