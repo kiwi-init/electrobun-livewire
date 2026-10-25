@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileDragRefusal } from "./fileDrag";
+import { realpathSync } from "node:fs";
+import { resolveFileDrag } from "./fileDrag";
+
+const fileDragRefusal = (paths: unknown, roots: string[]) => {
+	const checked = resolveFileDrag(paths, roots);
+	return "refusal" in checked ? checked.refusal : null;
+};
 
 function fixture() {
 	const dir = mkdtempSync(join(tmpdir(), "file-drag-"));
@@ -20,7 +26,16 @@ function fixture() {
 	return { dir, root, outside };
 }
 
-describe("fileDragRefusal", () => {
+describe("resolveFileDrag", () => {
+	test("drags the resolved paths, not the ones the page sent", () => {
+		const { root } = fixture();
+		symlinkSync(join(root, "report.pdf"), join(root, "shortcut.pdf"));
+		expect(resolveFileDrag([join(root, "shortcut.pdf"), `${root}/album/../report.pdf`], [root])).toEqual({
+			paths: [realpathSync(join(root, "report.pdf")), realpathSync(join(root, "report.pdf"))],
+		});
+	});
+
+
 	test("allows files and folders inside a root", () => {
 		const { root } = fixture();
 		expect(fileDragRefusal(join(root, "report.pdf"), [root])).toBe(null);
