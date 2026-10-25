@@ -2,6 +2,7 @@ import { ffi } from "../proc/native";
 import electrobunEventEmitter from "../events/eventEmitter";
 import { type Pointer } from "bun:ffi";
 import { WGPUView } from "./WGPUView";
+import { allowsFullScreen, isBackgroundMode } from "./backgroundMode";
 import { BuildConfig } from "./BuildConfig";
 
 export type GpuWindowOptionsType = {
@@ -142,7 +143,7 @@ export class GpuWindow {
 			},
 			titleBarStyle: titleBarStyle || "default",
 			transparent: transparent ?? false,
-			activate: activate ?? true,
+			activate: (activate ?? true) && !isBackgroundMode(),
 			centered,
 			trafficLightOffset: this.trafficLightOffset,
 		});
@@ -204,6 +205,10 @@ export class GpuWindow {
 	}
 
 	activate() {
+		if (isBackgroundMode()) {
+			if (ffi.request.isWindowVisible({ winId: this.id })) ffi.request.showWindow({ winId: this.id, activate: false });
+			return;
+		}
 		return ffi.request.activateWindow({ winId: this.id });
 	}
 
@@ -218,7 +223,7 @@ export class GpuWindow {
 
 	show() {
 		this.visible = true;
-		return ffi.request.showWindow({ winId: this.id, activate: true });
+		return ffi.request.showWindow({ winId: this.id, activate: !isBackgroundMode() });
 	}
 
 	showInactive() {
@@ -260,6 +265,7 @@ export class GpuWindow {
 	}
 
 	setFullScreen(fullScreen: boolean) {
+		if (!allowsFullScreen(fullScreen)) return;
 		return ffi.request.setWindowFullScreen({ winId: this.id, fullScreen });
 	}
 

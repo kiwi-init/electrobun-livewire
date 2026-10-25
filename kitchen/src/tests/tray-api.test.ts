@@ -56,6 +56,7 @@ export const trayApiTests = [
 
   defineTest({
     name: "Dock icon visibility contract",
+    requires: { foreground: true },
     category: "Utils",
     description: "Test Utils.setDockIconVisible and Utils.isDockIconVisible",
     timeout: 12000,

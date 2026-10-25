@@ -36,6 +36,12 @@ export interface TestRequirements {
    * "cef" in renderer-neutral tests so no-CEF builds exercise system fallback.
    */
   renderer?: WindowRenderer;
+  /**
+   * The test needs the app in the foreground: keyboard focus, focus/blur
+   * events, app activation or full screen. Skipped in background mode (local
+   * runs); runs on CI.
+   */
+  foreground?: boolean;
 }
 
 export interface TestSuiteDefinition {

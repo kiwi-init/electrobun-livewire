@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getTestSkipReason } from "./requirements";
+import { useBackgroundMode } from "./background-mode";
 import { defineTest } from "./types";
 
 const noOpRun = async () => {};
@@ -72,5 +73,35 @@ describe("Kitchen native platform requirements", () => {
     const both = { ...windowsTest, requires: { platform: "win32" as const, renderer: "cef" as const } };
     expect(getTestSkipReason(both, ["native"], "win32")).toContain("requires the CEF renderer");
     expect(getTestSkipReason(both, ["native", "cef"], "win32")).toBeUndefined();
+  });
+});
+
+describe("Kitchen background mode", () => {
+  const focusTest = defineTest({
+    name: "Needs focus",
+    category: "contract",
+    requires: { foreground: true },
+    run: noOpRun,
+  });
+  const plainTest = defineTest({ name: "Plain", category: "contract", run: noOpRun });
+
+  test("skips a foreground test in background mode and runs it otherwise", () => {
+    expect(getTestSkipReason(focusTest, ["native"], "darwin", true)).toContain("needs the foreground");
+    expect(getTestSkipReason(focusTest, ["native"], "darwin", false)).toBeUndefined();
+    expect(getTestSkipReason(plainTest, ["native"], "darwin", true)).toBeUndefined();
+  });
+
+  test("local runs default to background; CI and KITCHEN_FOREGROUND=1 to foreground", () => {
+    const local: Record<string, string | undefined> = {};
+    expect(useBackgroundMode(local)).toBe(true);
+    expect(local["ELECTROBUN_BACKGROUND"]).toBe("1");
+
+    expect(useBackgroundMode({ CI: "true" })).toBe(false);
+    expect(useBackgroundMode({ KITCHEN_FOREGROUND: "1" })).toBe(false);
+  });
+
+  test("an explicit ELECTROBUN_BACKGROUND wins", () => {
+    expect(useBackgroundMode({ CI: "true", ELECTROBUN_BACKGROUND: "1" })).toBe(true);
+    expect(useBackgroundMode({ ELECTROBUN_BACKGROUND: "0" })).toBe(false);
   });
 });

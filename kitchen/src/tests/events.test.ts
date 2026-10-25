@@ -43,6 +43,7 @@ export const eventsTests = [
 
   defineTest({
     name: "Multiple event handlers",
+    requires: { foreground: true },
     category: "Events",
     description: "Test that multiple handlers can listen to same event",
     async run({ createWindow, log }) {
@@ -150,6 +151,7 @@ export const eventsTests = [
 
   defineTest({
     name: "Window-specific vs global events",
+    requires: { foreground: true },
     category: "Events",
     description: "Test that window-specific events don't fire for other windows",
     async run({ createWindow, log }) {
