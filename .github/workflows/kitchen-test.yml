@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: Kitchen test name, as given to defineTest
+        description: Kitchen test name, as given to defineTest, or "all" for every automated test
         type: string
         required: true
       runner:
@@ -15,17 +15,29 @@ on:
           - ubuntu-24.04
           - ubuntu-24.04-arm
           - macos-14
+      display:
+        description: Linux display server (ignored on macOS)
+        type: choice
+        default: x11
+        options:
+          - x11
+          - wayland
+      scale:
+        description: Output scale for the Wayland session (e.g. 1, 1.5, 2)
+        type: string
+        default: '1'
 
 permissions:
   contents: read
 
 jobs:
   kitchen:
-    name: ${{ inputs.test }} (${{ inputs.runner }})
+    name: ${{ inputs.test }} (${{ inputs.runner }}${{ startsWith(inputs.runner, 'ubuntu') && format(', {0}', inputs.display) || '' }})
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 45
     env:
-      AUTO_RUN_TEST_NAME: ${{ inputs.test }}
+      AUTO_RUN: ${{ inputs.test == 'all' && '1' || '' }}
+      AUTO_RUN_TEST_NAME: ${{ inputs.test != 'all' && inputs.test || '' }}
       ELECTROBUN_KITCHEN_MAIN_PROCESS: bun
       ELECTROBUN_KITCHEN_RENDERER: native
     steps:
@@ -39,6 +51,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libpipewire-0.3-dev build-essential cmake pkg-config xvfb xauth openbox dbus-x11
+      - name: Install sway (headless Wayland)
+        if: runner.os == 'Linux' && inputs.display == 'wayland'
+        run: sudo apt-get install -y sway jq
       - name: Build the devkit
         working-directory: package
         run: |
@@ -48,7 +63,7 @@ jobs:
         working-directory: kitchen
         run: hutch run install
       - name: Run the test (Linux, Xvfb + openbox)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && inputs.display == 'x11'
         working-directory: kitchen
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -56,6 +71,16 @@ jobs:
         run: |
           export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
           dbus-run-session -- xvfb-run -a -s '-screen 0 1920x1080x24' bash -e -c 'openbox > /dev/null 2>&1 & hutch electrobun dev'
+      - name: Run the test (Linux, headless sway)
+        if: runner.os == 'Linux' && inputs.display == 'wayland'
+        working-directory: kitchen
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          SCALE: ${{ inputs.scale }}
+        run: |
+          export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
+          dbus-run-session -- "$GITHUB_WORKSPACE/.github/scripts/run-under-sway.sh" --scale "$SCALE" -- hutch electrobun dev
       - name: Run the test (macOS)
         if: runner.os == 'macOS'
         working-directory: kitchen
