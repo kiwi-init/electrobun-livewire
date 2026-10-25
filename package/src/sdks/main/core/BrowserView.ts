@@ -124,6 +124,8 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	secretKey!: Uint8Array;
 	rpc?: T;
 	rpcHandler?: (msg: unknown) => void;
+	// False once another view installs its transport on the same rpc instance.
+	private ownsRpcTransport = false;
 	hostMessageSendQueue: QueuedWebviewMessage[] = [];
 	hostResponseSendQueue: QueuedWebviewMessage[] = [];
 	flushingHostMessageSendQueue: boolean = false;
@@ -385,6 +387,11 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 					return;
 				}
 				that.rpcHandler = handler;
+				that.ownsRpcTransport = true;
+			},
+			// The rpc calls this when another view's transport replaces this one.
+			unregisterHandler() {
+				that.ownsRpcTransport = false;
 			},
 		};
 	};
@@ -551,11 +558,15 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		// Drop JS-side references first so late callbacks cannot target a stale view.
 		delete BrowserViewMap[this.id];
 		removeSocketForWebview(this.id);
-		this.rpc?.setTransport({
-			send() {},
-			registerHandler() {},
-			unregisterHandler() {},
-		});
+		// An rpc instance shared with a newer view now talks to that view;
+		// resetting it here would cut the newer view off.
+		if (this.ownsRpcTransport) {
+			this.rpc?.setTransport({
+				send() {},
+				registerHandler() {},
+				unregisterHandler() {},
+			});
+		}
 		this.rpcHandler = undefined;
 		try {
 			ffi.request.webviewRemove({ id: this.id });
@@ -613,6 +624,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		view.secretKey = new Uint8Array(0);
 		view.rpc = options.rpc;
 		view.rpcHandler = undefined;
+		view.ownsRpcTransport = false;
 		view.hostMessageSendQueue = [];
 		view.hostResponseSendQueue = [];
 		view.flushingHostMessageSendQueue = false;

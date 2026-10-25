@@ -220,6 +220,36 @@ export const rpcTests = [
   }),
 
   defineTest({
+    name: "shared rpc survives closing the older window",
+    category: "RPC",
+    description: "Test that an rpc instance handed to a newer window keeps working after the older window closes",
+    timeout: 15000,
+    async run({ createWindow, log }) {
+      const rpc = createTestHarnessRPC();
+      const older = await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        title: "Shared RPC (older)",
+      });
+      await sleep(1000);
+      await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        title: "Shared RPC (newer)",
+      });
+      await sleep(2000);
+
+      log("Closing the older window");
+      older.close();
+      await sleep(500);
+
+      log("Calling multiply on the newer window through the shared rpc");
+      const result = await rpc.request.multiply({ a: 6, b: 7 });
+      expect(result).toBe(42);
+    },
+  }),
+
+  defineTest({
     name: "webview to bun: request with response",
     category: "RPC",
     description: "Test that webview can make RPC requests to bun and receive responses",
