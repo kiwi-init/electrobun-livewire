@@ -15,6 +15,20 @@ on:
           - ubuntu-24.04
           - ubuntu-24.04-arm
           - macos-14
+      appearance:
+        description: System appearance (macOS)
+        type: choice
+        default: light
+        options:
+          - light
+          - dark
+      reduce_transparency:
+        description: Reduce transparency (macOS); GitHub's images turn it on, which draws vibrancy as a flat color
+        type: choice
+        default: keep
+        options:
+          - keep
+          - "off"
       display:
         description: Linux display server (ignored on macOS)
         type: choice
@@ -95,6 +109,25 @@ jobs:
           name: wayland-screenshots
           path: ${{ runner.temp }}/screenshots
           if-no-files-found: ignore
+      - name: Appearance (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPEARANCE: ${{ inputs.appearance }}
+          REDUCE_TRANSPARENCY: ${{ inputs.reduce_transparency }}
+        run: |
+          if [ "$REDUCE_TRANSPARENCY" = off ]; then
+            defaults write com.apple.universalaccess reduceTransparency -bool false \
+              || sudo defaults write "$HOME/Library/Preferences/com.apple.universalaccess" reduceTransparency -bool false \
+              || true
+          fi
+          if [ "$APPEARANCE" = dark ]; then
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' \
+              || defaults write -g AppleInterfaceStyle Dark
+          fi
+          echo "AppleInterfaceStyle: $(defaults read -g AppleInterfaceStyle 2>/dev/null || echo Light)"
+          echo "dark mode (System Events): $(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode' 2>&1)"
+          echo "reduceTransparency: $(defaults read com.apple.universalaccess reduceTransparency 2>&1)"
+          system_profiler SPDisplaysDataType | grep -E "Chipset|Metal|Resolution" || true
       - name: Run the test (macOS)
         if: runner.os == 'macOS'
         working-directory: kitchen

@@ -291,6 +291,10 @@ const core = (() => {
 				args: [FFIType.u32],
 				returns: FFIType.bool,
 			},
+			setWindowVibrancy: {
+				args: [FFIType.u32, FFIType.cstring, FFIType.u32, FFIType.u32],
+				returns: FFIType.bool,
+			},
 			setWindowVisibleOnAllWorkspaces: {
 				args: [FFIType.u32, FFIType.bool],
 				returns: FFIType.void,
@@ -1871,6 +1875,26 @@ const _ffiImpl = {
 			}
 
 			core_.symbols.setWindowAlwaysOnTop(winId, alwaysOnTop);
+		},
+
+		// False when the material is unknown or the platform has no vibrancy
+		// (only macOS does).
+		setWindowVibrancy: (params: {
+			winId: number;
+			material: string;
+			blending: "behind-window" | "within-window";
+			state: "follow-window" | "active" | "inactive";
+		}): boolean => {
+			const { winId, material, blending, state } = params;
+			if (!getWindowPtr(winId)) {
+				return false;
+			}
+			return core_.symbols.setWindowVibrancy(
+				winId,
+				toCString(material),
+				blending === "within-window" ? 1 : 0,
+				state === "active" ? 1 : state === "inactive" ? 2 : 0,
+			);
 		},
 
 		isWindowAlwaysOnTop: (params: { winId: number }): boolean => {

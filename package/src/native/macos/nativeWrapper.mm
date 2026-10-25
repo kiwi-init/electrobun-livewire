@@ -9566,6 +9566,88 @@ extern "C" bool isWindowAlwaysOnTop(NSWindow *window) {
   });
 }
 
+// Window vibrancy: an NSVisualEffectView filling the content view, below the
+// webviews, so a page with a transparent background shows the material. It
+// never takes mouse events; clicks go to the views above it.
+@interface ElectrobunVibrancyView : NSVisualEffectView
+@end
+
+@implementation ElectrobunVibrancyView
+- (NSView *)hitTest:(NSPoint)point {
+  return nil;
+}
+@end
+
+static const void *kVibrancyViewKey = &kVibrancyViewKey;
+
+static bool vibrancyMaterialNamed(NSString *name,
+                                  NSVisualEffectMaterial *material) {
+  static NSDictionary<NSString *, NSNumber *> *materials;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    materials = @{
+      @"titlebar" : @(NSVisualEffectMaterialTitlebar),
+      @"selection" : @(NSVisualEffectMaterialSelection),
+      @"menu" : @(NSVisualEffectMaterialMenu),
+      @"popover" : @(NSVisualEffectMaterialPopover),
+      @"sidebar" : @(NSVisualEffectMaterialSidebar),
+      @"header-view" : @(NSVisualEffectMaterialHeaderView),
+      @"sheet" : @(NSVisualEffectMaterialSheet),
+      @"window-background" : @(NSVisualEffectMaterialWindowBackground),
+      @"hud" : @(NSVisualEffectMaterialHUDWindow),
+      @"fullscreen-ui" : @(NSVisualEffectMaterialFullScreenUI),
+      @"tooltip" : @(NSVisualEffectMaterialToolTip),
+      @"content-background" : @(NSVisualEffectMaterialContentBackground),
+      @"under-window" : @(NSVisualEffectMaterialUnderWindowBackground),
+      @"under-page" : @(NSVisualEffectMaterialUnderPageBackground),
+    };
+  });
+  NSNumber *value = materials[name];
+  if (!value)
+    return false;
+  *material = (NSVisualEffectMaterial)value.integerValue;
+  return true;
+}
+
+// material: a name above, or "none" (or empty) to remove the vibrancy.
+// blending: 0 behind the window, 1 within it. state: 0 follows whether the
+// window is active, 1 always active, 2 always inactive. False for an unknown
+// material.
+extern "C" bool setWindowVibrancy(NSWindow *window, const char *material,
+                                  uint32_t blending, uint32_t state) {
+  NSString *name = material ? [NSString stringWithUTF8String:material] : @"";
+  return runOnMainThreadSyncBool(^bool {
+    if (!window)
+      return false;
+    ElectrobunVibrancyView *view =
+        objc_getAssociatedObject(window, kVibrancyViewKey);
+    if (name.length == 0 || [name isEqualToString:@"none"]) {
+      [view removeFromSuperview];
+      objc_setAssociatedObject(window, kVibrancyViewKey, nil,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      return true;
+    }
+    NSVisualEffectMaterial effectMaterial;
+    if (!vibrancyMaterialNamed(name, &effectMaterial))
+      return false;
+    if (!view) {
+      NSView *contentView = window.contentView;
+      view = [[ElectrobunVibrancyView alloc] initWithFrame:contentView.bounds];
+      view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+      [contentView addSubview:view positioned:NSWindowBelow relativeTo:nil];
+      objc_setAssociatedObject(window, kVibrancyViewKey, view,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    view.material = effectMaterial;
+    view.blendingMode = blending == 1 ? NSVisualEffectBlendingModeWithinWindow
+                                      : NSVisualEffectBlendingModeBehindWindow;
+    view.state = state == 1   ? NSVisualEffectStateActive
+                 : state == 2 ? NSVisualEffectStateInactive
+                              : NSVisualEffectStateFollowsWindowActiveState;
+    return true;
+  });
+}
+
 // A window frame in the API is the window's top-left corner, in top-left
 // coordinates relative to the primary screen, plus its content size: the same
 // meaning as createWindow's frame and the resize event, so a window recreated
