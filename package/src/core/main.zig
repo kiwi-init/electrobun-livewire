@@ -196,6 +196,8 @@ const BridgeToken = [32]u8;
 const WgpuViewState = struct {
     ptr: WgpuViewPtr,
     window_id: u32,
+    // The webview whose <electrobun-wgpu> tag created it, if one did.
+    host_webview_id: ?u32 = null,
 };
 
 const WebviewRuntimeState = struct {
@@ -2097,6 +2099,30 @@ fn lookupWgpuViewState(wgpu_view_id: u32) ?WgpuViewState {
     return wgpu_view_registry.get(wgpu_view_id);
 }
 
+fn setWgpuViewHost(wgpu_view_id: u32, host_webview_id: u32) void {
+    wgpu_view_registry_mutex.lockUncancelable(coreIo());
+    defer wgpu_view_registry_mutex.unlock(coreIo());
+    if (wgpu_view_registry.getPtr(wgpu_view_id)) |state| state.host_webview_id = host_webview_id;
+}
+
+// Internal bridge packets carry whatever ids the page wrote. A page may act
+// only on itself, its own window, and the webview and wgpu tags it created.
+fn ownsWebviewTag(source_webview_id: u32, webview_id: u32) bool {
+    const host = lookupWebviewHostId(webview_id) orelse return false;
+    return host == source_webview_id;
+}
+
+fn ownsWgpuTag(source_webview_id: u32, wgpu_view_id: u32) bool {
+    const state = lookupWgpuViewState(wgpu_view_id) orelse return false;
+    const host = state.host_webview_id orelse return false;
+    return host == source_webview_id;
+}
+
+fn sourceWindowId(source_webview_id: u32) ?u32 {
+    const state = lookupWebviewState(source_webview_id) orelse return null;
+    return state.window_id;
+}
+
 fn lookupWgpuViewPtr(wgpu_view_id: u32) WgpuViewPtr {
     const state = lookupWgpuViewState(wgpu_view_id) orelse return null;
     return state.ptr;
@@ -2311,7 +2337,9 @@ fn dispatchStoredWebviewEvent(source_webview_id: u32, payload: std.json.Value) v
     handler(webview_id, event_name_z.ptr, detail_z.ptr);
 }
 
-fn createManagedWebviewFromInternalRequest(params: std.json.Value) ?u32 {
+// The tag belongs to the page that asked, in that page's window, whatever
+// hostWebviewId and windowId it put in params.
+fn createManagedWebviewFromInternalRequest(source_webview_id: u32, params: std.json.Value) ?u32 {
     if (params != .object) {
         return null;
     }
@@ -2322,8 +2350,8 @@ fn createManagedWebviewFromInternalRequest(params: std.json.Value) ?u32 {
     }
 
     const params_object = params.object;
-    const host_webview_id = jsonU32(params_object.get("hostWebviewId") orelse return null) orelse return null;
-    const window_id = jsonU32(params_object.get("windowId") orelse return null) orelse return null;
+    const host_webview_id = source_webview_id;
+    const window_id = sourceWindowId(source_webview_id) orelse return null;
     const renderer = jsonString(params_object.get("renderer") orelse return null) orelse return null;
     const partition = jsonString(params_object.get("partition") orelse return null) orelse "persist:default";
     const frame = parseInternalRect(params_object.get("frame") orelse return null) orelse return null;
@@ -2418,13 +2446,13 @@ fn createManagedWebviewFromInternalRequest(params: std.json.Value) ?u32 {
     return webview_id;
 }
 
-fn createManagedWgpuViewFromInternalRequest(params: std.json.Value) ?u32 {
+fn createManagedWgpuViewFromInternalRequest(source_webview_id: u32, params: std.json.Value) ?u32 {
     if (params != .object) {
         return null;
     }
 
     const params_object = params.object;
-    const window_id = jsonU32(params_object.get("windowId") orelse return null) orelse return null;
+    const window_id = sourceWindowId(source_webview_id) orelse return null;
     const frame = parseInternalRect(params_object.get("frame") orelse return null) orelse return null;
     const transparent = jsonBool(params_object.get("transparent") orelse .{ .bool = false }) orelse false;
     const passthrough = jsonBool(params_object.get("passthrough") orelse .{ .bool = false }) orelse false;
@@ -2442,17 +2470,19 @@ fn createManagedWgpuViewFromInternalRequest(params: std.json.Value) ?u32 {
     if (wgpu_view_id == 0) {
         return null;
     }
+    setWgpuViewHost(wgpu_view_id, source_webview_id);
     return wgpu_view_id;
 }
 
-fn handleInternalRequest(request_object: std.json.ObjectMap) void {
+fn handleInternalRequest(source_webview_id: u32, request_object: std.json.ObjectMap) void {
     const method = jsonString(request_object.get("method") orelse return) orelse return;
     const request_id = jsonString(request_object.get("id") orelse return) orelse return;
-    const host_webview_id = jsonU32(request_object.get("hostWebviewId") orelse return) orelse return;
+    // Responses go to the view that asked, not a hostWebviewId the page wrote.
+    const host_webview_id = source_webview_id;
     const params = request_object.get("params") orelse .null;
 
     if (std.mem.eql(u8, method, "webviewTagInit")) {
-        const webview_id = createManagedWebviewFromInternalRequest(params) orelse {
+        const webview_id = createManagedWebviewFromInternalRequest(source_webview_id, params) orelse {
             sendInternalBridgeResponse(host_webview_id, request_id, false, "Failed to create webview tag");
             return;
         };
@@ -2461,7 +2491,7 @@ fn handleInternalRequest(request_object: std.json.ObjectMap) void {
     }
 
     if (std.mem.eql(u8, method, "wgpuTagInit")) {
-        const wgpu_view_id = createManagedWgpuViewFromInternalRequest(params) orelse {
+        const wgpu_view_id = createManagedWgpuViewFromInternalRequest(source_webview_id, params) orelse {
             sendInternalBridgeResponse(host_webview_id, request_id, false, "Failed to create WGPU view");
             return;
         };
@@ -2472,6 +2502,10 @@ fn handleInternalRequest(request_object: std.json.ObjectMap) void {
     if (std.mem.eql(u8, method, "webviewTagCanGoBack")) {
         if (params != .object) return;
         const webview_id = jsonU32(params.object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) {
+            sendInternalBridgeResponse(host_webview_id, request_id, false, "Not a tag of this view");
+            return;
+        }
         sendInternalBridgeResponse(host_webview_id, request_id, true, webviewCanGoBack(webview_id));
         return;
     }
@@ -2479,6 +2513,10 @@ fn handleInternalRequest(request_object: std.json.ObjectMap) void {
     if (std.mem.eql(u8, method, "webviewTagCanGoForward")) {
         if (params != .object) return;
         const webview_id = jsonU32(params.object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) {
+            sendInternalBridgeResponse(host_webview_id, request_id, false, "Not a tag of this view");
+            return;
+        }
         sendInternalBridgeResponse(host_webview_id, request_id, true, webviewCanGoForward(webview_id));
         return;
     }
@@ -2486,6 +2524,10 @@ fn handleInternalRequest(request_object: std.json.ObjectMap) void {
     if (std.mem.eql(u8, method, "webviewTagSetSpellCheck")) {
         if (params != .object) return;
         const webview_id = jsonU32(params.object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) {
+            sendInternalBridgeResponse(host_webview_id, request_id, false, "Not a tag of this view");
+            return;
+        }
         const enabled = jsonBool(params.object.get("enabled") orelse return) orelse return;
         sendInternalBridgeResponse(
             host_webview_id,
@@ -2497,8 +2539,7 @@ fn handleInternalRequest(request_object: std.json.ObjectMap) void {
     }
 
     if (std.mem.eql(u8, method, "restoreWindowFocusAfterExternalDrop")) {
-        if (params != .object) return;
-        const window_id = jsonU32(params.object.get("windowId") orelse return) orelse return;
+        const window_id = sourceWindowId(source_webview_id) orelse return;
         activateWindow(window_id);
         sendInternalBridgeResponse(host_webview_id, request_id, true, true);
         return;
@@ -2521,6 +2562,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagResize")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const frame = parseInternalRect(payload_object.get("frame") orelse return) orelse return;
         const masks = if (payload_object.get("masks")) |value| jsonString(value) orelse "[]" else "[]";
         const masks_z = duplicateSentinelString(masks) orelse return;
@@ -2531,6 +2573,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "wgpuTagResize")) {
         const wgpu_view_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWgpuTag(source_webview_id, wgpu_view_id)) return;
         const frame = parseInternalRect(payload_object.get("frame") orelse return) orelse return;
         const masks = if (payload_object.get("masks")) |value| jsonString(value) orelse "[]" else "[]";
         const masks_z = duplicateSentinelString(masks) orelse return;
@@ -2541,6 +2584,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagUpdateSrc")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const url = jsonString(payload_object.get("url") orelse return) orelse return;
         const url_z = duplicateSentinelString(url) orelse return;
         defer allocator.free(url_z);
@@ -2550,6 +2594,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagUpdateHtml")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const html = jsonString(payload_object.get("html") orelse return) orelse return;
         const html_z = duplicateSentinelString(html) orelse return;
         defer allocator.free(html_z);
@@ -2559,6 +2604,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagUpdatePreload")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const preload = jsonString(payload_object.get("preload") orelse return) orelse return;
         const preload_z = duplicateSentinelString(preload) orelse return;
         defer allocator.free(preload_z);
@@ -2568,30 +2614,34 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagGoBack")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewGoBack(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagGoForward")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewGoForward(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagReload")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewReload(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagRemove")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewRemove(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "startWindowMove")) {
-        const window_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        const window_id = sourceWindowId(source_webview_id) orelse return;
         beginWindowMove(window_id);
         return;
     }
@@ -2603,6 +2653,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagSetTransparent")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const transparent = jsonBool(payload_object.get("transparent") orelse return) orelse return;
         webviewSetTransparent(webview_id, transparent);
         return;
@@ -2610,6 +2661,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "wgpuTagSetTransparent")) {
         const wgpu_view_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWgpuTag(source_webview_id, wgpu_view_id)) return;
         const transparent = jsonBool(payload_object.get("transparent") orelse return) orelse return;
         setWGPUViewTransparent(wgpu_view_id, transparent);
         return;
@@ -2617,6 +2669,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagSetPassthrough")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const passthrough = jsonBool(payload_object.get("enablePassthrough") orelse return) orelse return;
         webviewSetPassthrough(webview_id, passthrough);
         return;
@@ -2624,6 +2677,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "wgpuTagSetPassthrough")) {
         const wgpu_view_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWgpuTag(source_webview_id, wgpu_view_id)) return;
         const passthrough = jsonBool(payload_object.get("passthrough") orelse return) orelse return;
         setWGPUViewPassthrough(wgpu_view_id, passthrough);
         return;
@@ -2631,6 +2685,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagSetHidden")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const hidden = jsonBool(payload_object.get("hidden") orelse return) orelse return;
         webviewSetHidden(webview_id, hidden);
         return;
@@ -2638,6 +2693,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "wgpuTagSetHidden")) {
         const wgpu_view_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWgpuTag(source_webview_id, wgpu_view_id)) return;
         const hidden = jsonBool(payload_object.get("hidden") orelse return) orelse return;
         setWGPUViewHidden(wgpu_view_id, hidden);
         return;
@@ -2645,18 +2701,21 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "wgpuTagRemove")) {
         const wgpu_view_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWgpuTag(source_webview_id, wgpu_view_id)) return;
         removeWGPUView(wgpu_view_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "wgpuTagRunTest")) {
         const wgpu_view_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWgpuTag(source_webview_id, wgpu_view_id)) return;
         runWGPUViewTest(wgpu_view_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagSetNavigationRules")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const rules_value = payload_object.get("rules") orelse return;
         const rules_json = std.json.Stringify.valueAlloc(allocator, rules_value, .{}) catch return;
         defer allocator.free(rules_json);
@@ -2668,6 +2727,7 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagFindInPage")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const search_text = jsonString(payload_object.get("searchText") orelse return) orelse return;
         const forward = jsonBool(payload_object.get("forward") orelse return) orelse return;
         const match_case = jsonBool(payload_object.get("matchCase") orelse return) orelse return;
@@ -2679,30 +2739,35 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
 
     if (std.mem.eql(u8, message_id, "webviewTagStopFind")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewStopFind(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagOpenDevTools")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewOpenDevTools(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagCloseDevTools")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewCloseDevTools(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagToggleDevTools")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         webviewToggleDevTools(webview_id);
         return;
     }
 
     if (std.mem.eql(u8, message_id, "webviewTagExecuteJavascript")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
+        if (!ownsWebviewTag(source_webview_id, webview_id)) return;
         const js = jsonString(payload_object.get("js") orelse return) orelse return;
         const js_z = duplicateSentinelString(js) orelse return;
         defer allocator.free(js_z);
@@ -2720,7 +2785,7 @@ fn handleInternalBridgePacket(source_webview_id: u32, packet: std.json.Value) vo
     const packet_type = jsonString(object.get("type") orelse return) orelse return;
 
     if (std.mem.eql(u8, packet_type, "request")) {
-        handleInternalRequest(object);
+        handleInternalRequest(source_webview_id, object);
         return;
     }
 
@@ -4824,6 +4889,54 @@ test "event bridge requires the native sender identity" {
         17,
         "{\"id\":\"webviewEvent\",\"type\":\"message\",\"payload\":{\"id\":17,\"eventName\":42,\"detail\":\"invalid\"}}",
     ));
+}
+
+fn testWebviewState(window_id: u32, host_webview_id: ?u32) WebviewState {
+    return .{
+        .ptr = null,
+        .window_id = window_id,
+        .host_webview_id = host_webview_id,
+        .renderer = .native,
+        .webview_event_handler = null,
+        .event_bridge_handler = null,
+        .internal_bridge_handler = null,
+        .secret_key = std.mem.zeroes(WebviewSecretKey),
+        .bridge_token = std.mem.zeroes(BridgeToken),
+        .socket_handle = null,
+        .transport_ready = false,
+    };
+}
+
+test "internal bridge packets act only on the sender's own tags and window" {
+    // View 9101 (window 1) owns webview tag 9103 and wgpu tag 9201; view 9102
+    // is another window's page.
+    try webview_registry.put(9101, testWebviewState(1, null));
+    try webview_registry.put(9102, testWebviewState(2, null));
+    try webview_registry.put(9103, testWebviewState(1, 9101));
+    try wgpu_view_registry.put(9201, .{ .ptr = null, .window_id = 1 });
+    setWgpuViewHost(9201, 9101);
+    defer {
+        _ = webview_registry.remove(9101);
+        _ = webview_registry.remove(9102);
+        _ = webview_registry.remove(9103);
+        _ = wgpu_view_registry.remove(9201);
+    }
+
+    try std.testing.expect(ownsWebviewTag(9101, 9103));
+    try std.testing.expect(!ownsWebviewTag(9102, 9103));
+    try std.testing.expect(!ownsWebviewTag(9101, 9102));
+    try std.testing.expect(!ownsWebviewTag(9101, 9101));
+    try std.testing.expect(!ownsWebviewTag(9101, 4242));
+    try std.testing.expect(ownsWgpuTag(9101, 9201));
+    try std.testing.expect(!ownsWgpuTag(9102, 9201));
+    try std.testing.expect(sourceWindowId(9102).? == 2);
+
+    // The other page names 9101's tag: nothing happens to it.
+    processInternalBridgeBatch(9102, "[\"{\\\"type\\\":\\\"message\\\",\\\"id\\\":\\\"webviewTagRemove\\\",\\\"payload\\\":{\\\"id\\\":9103}}\"]");
+    try std.testing.expect(webview_registry.contains(9103));
+    // Its own page can remove it.
+    processInternalBridgeBatch(9101, "[\"{\\\"type\\\":\\\"message\\\",\\\"id\\\":\\\"webviewTagRemove\\\",\\\"payload\\\":{\\\"id\\\":9103}}\"]");
+    try std.testing.expect(!webview_registry.contains(9103));
 }
 
 test "host webview JSON events encode detail as data" {
