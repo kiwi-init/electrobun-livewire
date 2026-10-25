@@ -3383,6 +3383,14 @@ export fn webviewCanGoBack(webview_id: u32) bool {
     return webview_can_go_back(webview);
 }
 
+export fn webviewTerminateRenderer(webview_id: u32) bool {
+    clearLastError();
+    const WebviewTerminateRendererFn = *const fn (WebviewPtr) callconv(.c) bool;
+    const webview = lookupWebviewPtr(webview_id) orelse return false;
+    const webview_terminate_renderer = lookupNativeSymbol(WebviewTerminateRendererFn, "webviewTerminateRenderer") orelse return false;
+    return webview_terminate_renderer(webview);
+}
+
 export fn webviewCanGoForward(webview_id: u32) bool {
     clearLastError();
     const WebviewCanGoForwardFn = *const fn (WebviewPtr) callconv(.c) bool;

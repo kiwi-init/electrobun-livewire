@@ -2820,6 +2820,8 @@ public:
     virtual void remove() = 0;
     virtual bool canGoBack() = 0;
     virtual bool canGoForward() = 0;
+    // Kill the renderer process; false where the renderer can't be killed.
+    virtual bool terminateRenderer() { return false; }
     virtual void evaluateJavaScriptWithNoCompletion(const char* jsString) = 0;
     virtual void callAsyncJavascript(const char* messageId, const char* jsString, uint32_t webviewId, uint32_t hostWebviewId, void* completionHandler) = 0;
     virtual void addPreloadScriptToWebView(const char* jsString) = 0;
@@ -3401,6 +3403,16 @@ public:
         if (webview) {
             return webkit_web_view_can_go_back(WEBKIT_WEB_VIEW(webview));
         }
+        return false;
+    }
+
+    bool terminateRenderer() override {
+#if WEBKIT_CHECK_VERSION(2, 34, 0)
+        if (webview) {
+            webkit_web_view_terminate_web_process(WEBKIT_WEB_VIEW(webview));
+            return true;
+        }
+#endif
         return false;
     }
     
@@ -9621,6 +9633,15 @@ ELECTROBUN_EXPORT bool webviewCanGoBack(AbstractView* abstractView) {
         return abstractView->canGoBack();
     }
     return false;
+}
+
+ELECTROBUN_EXPORT bool webviewTerminateRenderer(AbstractView* abstractView) {
+    if (!abstractView) {
+        return false;
+    }
+    return dispatch_sync_main([&]() -> bool {
+        return abstractView->terminateRenderer();
+    });
 }
 
 ELECTROBUN_EXPORT bool webviewCanGoForward(AbstractView* abstractView) {

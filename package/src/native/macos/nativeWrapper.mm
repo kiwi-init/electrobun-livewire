@@ -969,6 +969,7 @@ void releaseObjCObject(id objcObject) {
 
 - (BOOL)canGoBack;
 - (BOOL)canGoForward;
+- (BOOL)terminateRenderer;
 
 - (void)evaluateJavaScriptWithNoCompletion:(const char *)jsString;
 - (void)callAsyncJavascript:(const char *)messageId
@@ -1535,6 +1536,10 @@ NSArray<NSValue *> *addOverlapRects(NSArray<NSDictionary *> *rectsArray,
 }
 - (BOOL)canGoForward {
   [self doesNotRecognizeSelector:_cmd];
+  return NO;
+}
+// Views without a killable renderer process report it as unsupported.
+- (BOOL)terminateRenderer {
   return NO;
 }
 
@@ -3499,6 +3504,36 @@ static void schedulePendingResizeDrain() {
 }
 - (BOOL)canGoForward {
   return [self.webView canGoForward];
+}
+// WebKit has no public API to kill a WebContent process, and a hung one is
+// never shut down when its WKWebView goes away. Ask WebKit to drop the process
+// (SPI, guarded at runtime like _inspector above) so the next load starts a
+// fresh one, and SIGKILL it ourselves: WebKit's own kill can leave it running.
+- (BOOL)terminateRenderer {
+  if (!self.webView) {
+    return NO;
+  }
+  pid_t pid = 0;
+  if ([self.webView
+          respondsToSelector:NSSelectorFromString(@"_webProcessIdentifier")]) {
+    pid = [[self.webView valueForKey:@"_webProcessIdentifier"] intValue];
+  }
+  SEL resetSelector =
+      NSSelectorFromString(@"_killWebContentProcessAndResetState");
+  SEL killSelector = NSSelectorFromString(@"_killWebContentProcess");
+  BOOL askedWebKit = NO;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+  if ([self.webView respondsToSelector:resetSelector]) {
+    [self.webView performSelector:resetSelector];
+    askedWebKit = YES;
+  } else if ([self.webView respondsToSelector:killSelector]) {
+    [self.webView performSelector:killSelector];
+    askedWebKit = YES;
+  }
+#pragma clang diagnostic pop
+  BOOL killed = pid > 0 && kill(pid, SIGKILL) == 0;
+  return askedWebKit || killed;
 }
 
 - (void)evaluateJavaScriptWithNoCompletion:(const char *)jsString {
@@ -8830,6 +8865,17 @@ extern "C" BOOL webviewCanGoBack(AbstractView *abstractView) {
   }
 
   return [abstractView canGoBack];
+}
+
+extern "C" bool webviewTerminateRenderer(AbstractView *abstractView) {
+  if (!abstractView || !globalAbstractViews[@(abstractView.webviewId)]) {
+    return false;
+  }
+  __block BOOL terminated = NO;
+  runOnMainThreadSyncVoid(^{
+    terminated = [abstractView terminateRenderer];
+  });
+  return terminated;
 }
 
 extern "C" BOOL webviewCanGoForward(AbstractView *abstractView) {

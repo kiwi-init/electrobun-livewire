@@ -390,6 +390,10 @@ const core = (() => {
 				args: [FFIType.u32],
 				returns: FFIType.bool,
 			},
+			webviewTerminateRenderer: {
+				args: [FFIType.u32],
+				returns: FFIType.bool,
+			},
 			webviewGoBack: {
 				args: [FFIType.u32],
 				returns: FFIType.void,
@@ -2081,6 +2085,9 @@ const _ffiImpl = {
 		},
 		webviewCanGoForward: (params: { id: number }) => {
 			return core_.symbols.webviewCanGoForward(params.id);
+		},
+		webviewTerminateRenderer: (params: { id: number }) => {
+			return core_.symbols.webviewTerminateRenderer(params.id);
 		},
 		webviewGoBack: (params: { id: number }) => {
 			core_.symbols.webviewGoBack(params.id);
