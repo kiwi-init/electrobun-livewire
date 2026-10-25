@@ -75,7 +75,7 @@ import {
 	type Pointer,
 } from "bun:ffi";
 import { parseWebviewEventBridgeMessage } from "./eventBridge";
-import { settleAgentEval } from "../agent/evalResults";
+import { settleAgentEval, settleAgentEvalNoBridge } from "../agent/evalResults";
 import { ffiCStringToString } from "./ffiCString";
 import { rasterizeNativeText } from "./nativeTextBitmap";
 
@@ -3490,6 +3490,10 @@ const webviewDecideNavigation = new JSCallback(
 );
 
 const webviewEventHandler = (id: number, eventName: string, detail: string) => {
+	if (eventName === "agent-eval-no-bridge") {
+		settleAgentEvalNoBridge(detail);
+		return;
+	}
 	BrowserView.ensureWrapped(id);
 
 	core_.symbols.dispatchHostWebviewEvent(

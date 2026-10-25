@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { toolList } from "./cli";
-import { settleAgentEval, waitForAgentEval } from "./evalResults";
+import { settleAgentEval, settleAgentEvalNoBridge, waitForAgentEval } from "./evalResults";
 import {
 	clickScript,
 	consoleScript,
@@ -87,6 +87,29 @@ describe("page scripts", () => {
 	test("an evaluation that never answers times out", async () => {
 		const outcome = await waitForAgentEval("tok-never", 20);
 		expect(outcome.ok).toBe(false);
+	});
+
+	test("a page without the internal bridge says so over the event bridge", async () => {
+		const posted: string[] = [];
+		const page = {
+			__electrobunWebviewId: 7,
+			__electrobunEventBridge: { postMessage: (message: string) => posted.push(message) },
+		};
+		const pending = waitForAgentEval("tok-nb", 1_000);
+		new Function("window", "location", wrapEval("document.title", "tok-nb"))(page, { href: "https://other.example/x" });
+		await Promise.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(posted).toHaveLength(1);
+		const message = JSON.parse(posted[0]!);
+		expect(message).toMatchObject({ id: "webviewEvent", type: "message", payload: { id: 7, eventName: "agent-eval-no-bridge" } });
+		// The host side: native.ts routes this event to settleAgentEvalNoBridge.
+		settleAgentEvalNoBridge(message.payload.detail);
+		const outcome = await pending;
+		expect(outcome.ok).toBe(false);
+		expect(!outcome.ok && outcome.error).toContain("https://other.example/x");
+		expect(!outcome.ok && outcome.error).toContain("bridgeOrigins");
+		// Only failures travel this way: a forged "value" isn't accepted.
+		expect(() => settleAgentEvalNoBridge("not json")).not.toThrow();
 	});
 
 	test("results for unknown tokens are ignored", () => {
