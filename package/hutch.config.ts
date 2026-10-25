@@ -68,6 +68,7 @@ export default {
 		"test:macos-inspector-layout": "scripts/test-macos-inspector-layout.sh",
 		"test:signing": "node scripts/run-bun-test.js scripts/verify-macho-code-signing.test.ts",
 		"test:deployment-target": "node scripts/run-bun-test.js scripts/verify-macho-deployment-target.test.ts",
+		"test:linux-xdg-portal": "scripts/test-linux-xdg-portal.sh",
 		"test:linux-abi": "node scripts/run-bun-test.js scripts/verify-linux-elf-abi.test.ts",
 		"test:linux-extractor": "node scripts/test-linux-adjacent-extractor.mjs",
 		"test:macos-uninstaller": "node scripts/test-macos-uninstaller.mjs",
