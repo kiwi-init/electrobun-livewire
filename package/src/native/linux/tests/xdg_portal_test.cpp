@@ -144,10 +144,9 @@ int main() {
     if (!client) return 1;
     CHECK(portal::requestPath(client, "tok").find("/org/freedesktop/portal/desktop/request/") == 0);
 
-    // Before the mock exists there's no portal: nothing is enabled.
-    CHECK(portal::interfaceVersion(portal::kGlobalShortcutsInterface, 300) == 0);
-
-    // The mock portal, on its own connection.
+    // The mock portal, on its own connection. It must own the portal name
+    // before anything calls it, or D-Bus would start a real portal installed
+    // on the machine.
     Mock mock;
     GError* error = nullptr;
     gchar* address = g_dbus_address_get_for_bus_sync(G_BUS_TYPE_SESSION, nullptr, &error);
@@ -168,8 +167,15 @@ int main() {
         mock.bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName",
         g_variant_new("(su)", portal::kBusName, 4u), G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr,
         &error);
-    CHECK(owned != nullptr);
-    if (owned) g_variant_unref(owned);
+    guint32 ownership = 0;
+    if (owned) {
+        g_variant_get(owned, "(u)", &ownership);
+        g_variant_unref(owned);
+    }
+    if (ownership != 1) {  // DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER
+        fprintf(stderr, "mock portal didn't get %s (reply %u)\n", portal::kBusName, ownership);
+        return 1;
+    }
 
     // interfaceVersion is a blocking call the mock answers from this thread's
     // main context, so run it on another thread.
@@ -187,7 +193,7 @@ int main() {
     };
     CHECK(versionOf(portal::kGlobalShortcutsInterface) == 1);
     CHECK(versionOf(portal::kFileChooserInterface) == 1);
-    CHECK(versionOf(portal::kNotificationInterface) == 0);
+    CHECK(versionOf(portal::kNotificationInterface) == 0);  // not implemented by the mock
 
     // GlobalShortcuts: shortcuts set before the session is ready are bound once
     // it is, changes rebind the full set, and Activated reaches the callback.
@@ -203,7 +209,7 @@ int main() {
 
     shortcuts.remove("Alt+F5");
     CHECK(runUntil([&] { return mock.bound.size() == 1; }));
-    CHECK(mock.bound.at(0).first == "CommandOrControl+Shift+Space");
+    CHECK(!mock.bound.empty() && mock.bound.front().first == "CommandOrControl+Shift+Space");
 
     const char* clientName = g_dbus_connection_get_unique_name(client);
     auto activate = [&](const std::string& session, const char* id) {
