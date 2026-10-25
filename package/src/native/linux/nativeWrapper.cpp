@@ -184,5 +184,6 @@ using electrobun::OperationGuard;
 #include "wrapper/gtk3/clipboard.inc"
 #include "wrapper/tray_and_menu_exports.inc"
 #include "wrapper/lifecycle_and_window_state.inc"
+#include "wrapper/gtk3/window_state.inc"
 #include "wrapper/shortcuts_and_displays.inc"
 #include "wrapper/sessions_and_misc.inc"

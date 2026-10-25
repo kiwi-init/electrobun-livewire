@@ -230,35 +230,7 @@ ELECTROBUN_EXPORT void closeWindow(void* window) {
     dispatch_sync_main_void([&]() {
         // Check if it's a GTK window first
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            
-            // Find the container for this window to get the windowId and callback.
-            // Hold a shared_ptr so the ContainerView stays alive through gtk_widget_destroy
-            // (the "destroy" signal handler accesses it via raw pointer).
-            uint32_t windowId = 0;
-            WindowCloseCallback closeCallback = nullptr;
-            std::shared_ptr<ContainerView> containerRef;
-            {
-                std::lock_guard<std::mutex> lock(g_containersMutex);
-                for (auto& [id, container] : g_containers) {
-                    if (container->window == gtkWindow) {
-                        windowId = id;
-                        closeCallback = container->closeCallback;
-                        containerRef = container; // keep alive
-                        break;
-                    }
-                }
-            }
-            
-            // Call the close callback before destroying the widget.
-            if (closeCallback && windowId > 0) {
-                closeCallback(windowId);
-            }
-            
-            // gtk_widget_destroy fires the "destroy" signal synchronously.
-            // containerRef keeps the ContainerView alive so the signal handler's
-            // raw ContainerView* user_data is valid for the duration of the call.
-            gtk_widget_destroy(gtkWindow);
+            toolkit::closeWindow(window);
         } else {
             // It's an X11 window
             X11Window* x11win = static_cast<X11Window*>(window);
@@ -328,7 +300,7 @@ ELECTROBUN_EXPORT void requestWindowClose(void* window) {
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            gtk_window_close(GTK_WINDOW(window));
+            toolkit::requestWindowClose(window);
             return;
         }
 
@@ -354,13 +326,7 @@ ELECTROBUN_EXPORT void minimizeWindow(void* window) {
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_iconify(GTK_WINDOW(gtkWindow));
-                if (isWaylandWindow(gtkWindow)) {
-                    setMinimizeRequested(gtkWindow, true);
-                }
-            }
+            toolkit::minimizeWindow(window);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -376,12 +342,7 @@ ELECTROBUN_EXPORT void restoreWindow(void* window) {
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_deiconify(GTK_WINDOW(gtkWindow));
-                gtk_window_present(GTK_WINDOW(gtkWindow));
-                setMinimizeRequested(gtkWindow, false);
-            }
+            toolkit::restoreWindow(window);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -447,17 +408,7 @@ ELECTROBUN_EXPORT bool isWindowMinimized(void* window) {
     bool result = false;
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                GdkWindow* gdkWindow = gtk_widget_get_window(gtkWindow);
-                if (gdkWindow) {
-                    GdkWindowState state = gdk_window_get_state(gdkWindow);
-                    result = (state & GDK_WINDOW_STATE_ICONIFIED) != 0;
-                }
-                if (!result && isWaylandWindow(gtkWindow)) {
-                    result = minimizeRequested(gtkWindow);
-                }
-            }
+            toolkit::isWindowMinimized(window, result);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -515,10 +466,7 @@ ELECTROBUN_EXPORT void maximizeWindow(void* window) {
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_maximize(GTK_WINDOW(gtkWindow));
-            }
+            toolkit::maximizeWindow(window);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -549,10 +497,7 @@ ELECTROBUN_EXPORT void unmaximizeWindow(void* window) {
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_unmaximize(GTK_WINDOW(gtkWindow));
-            }
+            toolkit::unmaximizeWindow(window);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -584,10 +529,7 @@ ELECTROBUN_EXPORT bool isWindowMaximized(void* window) {
     bool result = false;
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                result = gtk_window_is_maximized(GTK_WINDOW(gtkWindow));
-            }
+            toolkit::isWindowMaximized(window, result);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -623,14 +565,7 @@ ELECTROBUN_EXPORT void setWindowFullScreen(void* window, bool fullScreen) {
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                if (fullScreen) {
-                    gtk_window_fullscreen(GTK_WINDOW(gtkWindow));
-                } else {
-                    gtk_window_unfullscreen(GTK_WINDOW(gtkWindow));
-                }
-            }
+            toolkit::setWindowFullScreen(window, fullScreen);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -661,14 +596,7 @@ ELECTROBUN_EXPORT bool isWindowFullScreen(void* window) {
     bool result = false;
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                GdkWindow* gdkWindow = gtk_widget_get_window(gtkWindow);
-                if (gdkWindow) {
-                    GdkWindowState state = gdk_window_get_state(gdkWindow);
-                    result = (state & GDK_WINDOW_STATE_FULLSCREEN) != 0;
-                }
-            }
+            toolkit::isWindowFullScreen(window, result);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -703,14 +631,7 @@ ELECTROBUN_EXPORT void setWindowAlwaysOnTop(void* window, bool alwaysOnTop) {
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_set_keep_above(GTK_WINDOW(gtkWindow), alwaysOnTop ? TRUE : FALSE);
-                // Focus the window when setting always on top to ensure visibility
-                if (alwaysOnTop) {
-                    gtk_window_present(GTK_WINDOW(gtkWindow));
-                }
-            }
+            toolkit::setWindowAlwaysOnTop(window, alwaysOnTop);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -741,14 +662,7 @@ ELECTROBUN_EXPORT bool isWindowAlwaysOnTop(void* window) {
     bool result = false;
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                GdkWindow* gdkWindow = gtk_widget_get_window(gtkWindow);
-                if (gdkWindow) {
-                    GdkWindowState state = gdk_window_get_state(gdkWindow);
-                    result = (state & GDK_WINDOW_STATE_ABOVE) != 0;
-                }
-            }
+            toolkit::isWindowAlwaysOnTop(window, result);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -792,10 +706,7 @@ ELECTROBUN_EXPORT void setWindowPosition(void* window, double x, double y) {
 
     dispatch_sync_main_void([=]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_move(GTK_WINDOW(gtkWindow), (int)x, (int)y);
-            }
+            toolkit::setWindowPosition(window, x, y);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -854,12 +765,7 @@ ELECTROBUN_EXPORT void centerWindow(void* window) {
         }
 
         if (GTK_IS_WINDOW(window)) {
-            int width = 0;
-            int height = 0;
-            gtk_window_get_size(GTK_WINDOW(window), &width, &height);
-            const int x = workarea.x + std::max(0, (workarea.width - width) / 2);
-            const int y = workarea.y + std::max(0, (workarea.height - height) / 2);
-            gtk_window_move(GTK_WINDOW(window), x, y);
+            toolkit::centerWindow(window, workarea);
         }
     });
 }
@@ -882,10 +788,7 @@ ELECTROBUN_EXPORT void setWindowSize(void* window, double width, double height) 
 
     dispatch_sync_main_void([=]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_resize(GTK_WINDOW(gtkWindow), (int)width, (int)height);
-            }
+            toolkit::setWindowSize(window, width, height);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -902,11 +805,7 @@ ELECTROBUN_EXPORT void setWindowFrame(void* window, double x, double y, double w
 
     dispatch_sync_main_void([=]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gtk_window_move(GTK_WINDOW(gtkWindow), (int)x, (int)y);
-                gtk_window_resize(GTK_WINDOW(gtkWindow), (int)width, (int)height);
-            }
+            toolkit::setWindowFrame(window, x, y, width, height);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -930,16 +829,7 @@ ELECTROBUN_EXPORT void getWindowFrame(void* window, double* outX, double* outY, 
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (GTK_IS_WINDOW(gtkWindow)) {
-                gint wx, wy, ww, wh;
-                gtk_window_get_position(GTK_WINDOW(gtkWindow), &wx, &wy);
-                gtk_window_get_size(GTK_WINDOW(gtkWindow), &ww, &wh);
-                *outX = (double)wx;
-                *outY = (double)wy;
-                *outWidth = (double)ww;
-                *outHeight = (double)wh;
-            }
+            toolkit::getWindowFrame(window, outX, outY, outWidth, outHeight);
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
             if (x11win && x11win->display && x11win->window) {
@@ -1012,26 +902,7 @@ ELECTROBUN_EXPORT void getWindowContentOrigin(void* window, double* outX, double
 
     dispatch_sync_main_void([&]() {
         if (GTK_IS_WIDGET(window)) {
-            GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
-            if (!GTK_IS_WINDOW(gtkWindow)) return;
-
-            GdkWindow* contentWindow = gtk_widget_get_window(gtkWindow);
-            if (contentWindow) {
-                gint contentX = 0;
-                gint contentY = 0;
-                gdk_window_get_origin(contentWindow, &contentX, &contentY);
-                *outX = static_cast<double>(contentX);
-                *outY = static_cast<double>(contentY);
-                return;
-            }
-
-            // A not-yet-realized GTK window has no client GdkWindow. Preserve
-            // the best available position until it is realized.
-            gint windowX = 0;
-            gint windowY = 0;
-            gtk_window_get_position(GTK_WINDOW(gtkWindow), &windowX, &windowY);
-            *outX = static_cast<double>(windowX);
-            *outY = static_cast<double>(windowY);
+            toolkit::getWindowContentOrigin(window, outX, outY);
             return;
         }
 
@@ -1101,7 +972,7 @@ ELECTROBUN_EXPORT void setWindowIcon(void* window, const char* iconPath) {
                             g_object_ref(pixbuf); // Keep a reference
                             
                             if (GTK_IS_WIDGET(window)) {
-                                gtk_window_set_icon(GTK_WINDOW(window), pixbuf);
+                                toolkit::setWindowIcon(window, pixbuf);
                             } else {
                                 // Handle X11 window icon setting (moved to separate function)
                                 setX11WindowIcon(static_cast<X11Window*>(window), pixbuf);
@@ -1136,7 +1007,7 @@ ELECTROBUN_EXPORT void setWindowIcon(void* window, const char* iconPath) {
                 // Load icon from file
                 GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file(actualPath.c_str(), &error);
                 if (pixbuf) {
-                    gtk_window_set_icon(GTK_WINDOW(gtkWindow), pixbuf);
+                    toolkit::setWindowIcon(gtkWindow, pixbuf);
                     g_object_unref(pixbuf);
                 } else {
                     fprintf(stderr, "Failed to load icon from %s: %s\n", actualPath.c_str(), 
