@@ -49,6 +49,7 @@ import type {
 } from "./proc/native";
 import { BuildConfig, type BuildConfigType } from "./core/BuildConfig";
 import { bridge, hasFFI } from "./proc/native";
+import { AgentControl, autoStartAgentControl, type AgentAction } from "./agent";
 
 // Carrot boot state — populated from __bunnyCarrotBootstrap injected by Bunny Ears
 let _carrotManifest: Record<string, unknown> | null = null;
@@ -218,6 +219,8 @@ export const app = {
 	},
 };
 
+if (hasFFI) autoStartAgentControl();
+
 // Named Exports
 export {
 	type RPCSchema,
@@ -247,6 +250,7 @@ export {
 	type UpdateStatusType,
 	type UpdateStatusEntry,
 	type UpdateStatusDetails,
+	type AgentAction,
 	createRPC,
 	defineElectrobunRPC,
 	BrowserWindow,
@@ -266,6 +270,7 @@ export {
 	Screen,
 	Session,
 	WGPUBridge,
+	AgentControl,
 
 	BuildConfig,
 };
@@ -286,6 +291,7 @@ const Electrobun = {
 	Screen,
 	Session,
 	WGPUBridge,
+	AgentControl,
 
 	BuildConfig,
 	events: electobunEventEmmitter,

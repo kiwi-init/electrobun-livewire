@@ -26,6 +26,17 @@ These rules win over `CLAUDE.md`, which is upstream's.
 
 - Someone other than the author reviews (`kiwi task review T23`). The lead merges, with a squash, so each fix lands as one commit on `main`.
 
+## Driving a running app
+
+Start any Livewire app with `ELECTROBUN_AGENT_CONTROL=1` (or `runtime.agentControl: true` in its config) and agents can see and use it: list windows, read text, find controls, click, type, evaluate JS, tail the console, take screenshots (macOS today), run app-registered actions. It listens on a unix socket only your user can open (macOS and Linux).
+
+```sh
+claude mcp add livewire -- bun <repo>/package/src/sdks/main/agent/cli.ts mcp   # tools for Claude Code
+bun package/src/sdks/main/agent/cli.ts eval "document.title"                    # or from a shell
+```
+
+Apps expose their own capabilities with `AgentControl.registerAction(name, { description, params, handler })` from `electrobun/bun`.
+
 ## Upstream
 
 Livewire is a hard fork. We don't track or sync upstream, and we never open pull requests there.
