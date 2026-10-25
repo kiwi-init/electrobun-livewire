@@ -36,6 +36,33 @@ export const sessionTests = [
   }),
 
   defineTest({
+    name: "cookies.clear removes every cookie in the partition",
+    category: "Session",
+    description: "After clear(), get() returns nothing for the partition, and other partitions keep theirs",
+    timeout: 10000,
+    requires: { platform: ["darwin", "linux"] },
+    async run({ log }) {
+      const cleared = Session.fromPartition(`persist:cookie-clear-${Date.now()}`);
+      const kept = Session.fromPartition(`persist:cookie-keep-${Date.now()}`);
+      try {
+        cleared.cookies.set({ name: "a", value: "1", domain: "127.0.0.1", path: "/" });
+        cleared.cookies.set({ name: "b", value: "2", domain: "127.0.0.1", path: "/" });
+        kept.cookies.set({ name: "c", value: "3", domain: "127.0.0.1", path: "/" });
+        expect(cleared.cookies.get().length).toBe(2);
+
+        cleared.cookies.clear();
+
+        expect(cleared.cookies.get().length).toBe(0);
+        expect(kept.cookies.get().map((cookie) => cookie.name)).toEqual(["c"]);
+        log("clear() emptied its partition and left the other alone");
+      } finally {
+        cleared.cookies.clear();
+        kept.cookies.clear();
+      }
+    },
+  }),
+
+  defineTest({
     name: "cookies set back to back all reach a page loaded right after (stress)",
     category: "Session",
     description: "Repeats set, set, load with fresh partitions; every load must carry both cookies",

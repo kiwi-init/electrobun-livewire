@@ -18,6 +18,13 @@ static WebKitWebsiteDataManager* getDataManagerForPartition(const char* partitio
 }
 
 
+// ELECTROBUN_COOKIE_DEBUG=1 logs cookies that WebKit didn't store or didn't
+// confirm in time (T1199: a cookie once went missing under load on CI).
+static bool cookieDebug() {
+    static const bool enabled = g_getenv("ELECTROBUN_COOKIE_DEBUG") != nullptr;
+    return enabled;
+}
+
 // Helper struct for async cookie operations
 struct CookieCallbackData {
     std::string* result;
@@ -165,7 +172,9 @@ static void onSetCookieFinished(GObject* source, GAsyncResult* result, gpointer 
     *(data->done) = true;
 
     if (error) {
-        fprintf(stderr, "Session: cookie not stored: %s\n", error->message);
+        if (cookieDebug()) {
+            fprintf(stderr, "Session: cookie not stored: %s\n", error->message);
+        }
         g_error_free(error);
     }
 
@@ -302,7 +311,7 @@ ELECTROBUN_EXPORT bool sessionSetCookie(const char* partitionIdentifier, const c
         g_source_destroy(timeout);
         g_source_unref(timeout);
         g_main_loop_unref(callbackData.loop);
-        if (!done) {
+        if (!done && cookieDebug()) {
             fprintf(stderr, "Session: cookie %s not confirmed within 5 s\n", name.c_str());
         }
 
@@ -439,12 +448,11 @@ ELECTROBUN_EXPORT bool sessionRemoveCookie(const char* partitionIdentifier, cons
 
 // Clear all cookies (WebKit2GTK)
 // Clear all cookies (WebKit2GTK) - STUB implementation to prevent crashes
+ELECTROBUN_EXPORT void sessionClearStorageData(const char* partitionIdentifier, const char* storageTypesJson);
+
+// Remove every cookie in the partition, and wait until WebKit has.
 ELECTROBUN_EXPORT void sessionClearCookies(const char* partitionIdentifier) {
-    // Stub implementation: do nothing and return immediately
-    // This prevents crashes from complex WebKit async patterns during tests
-    // while maintaining API compatibility
-    (void)partitionIdentifier; // Suppress unused parameter warning
-    return;
+    sessionClearStorageData(partitionIdentifier, "[\"cookies\"]");
 }
 
 // Clear storage data (WebKit2GTK)
