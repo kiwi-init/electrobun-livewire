@@ -540,6 +540,84 @@ export const windowTests = [
   }),
 
   defineTest({
+    name: "Window state restore across launches",
+    category: "BrowserWindow",
+    description: "A window with windowState reopens with its last frame, maximized and full-screen state",
+    timeout: 40000,
+    async run({ log }) {
+      const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const dir = mkdtempSync(join(tmpdir(), "kitchen-window-state-"));
+      const windowState = { id: "kitchen", file: join(dir, "window-state.json") };
+      const open = () =>
+        new BrowserWindow({
+          url: "views://test-harness/index.html",
+          title: "Window State Test",
+          frame: { x: 100, y: 120, width: 400, height: 300 },
+          windowState,
+        });
+      const closeAndWait = async (win: BrowserWindow) => {
+        let closed = false;
+        win.on("close", () => (closed = true));
+        win.close();
+        const started = performance.now();
+        while (!closed && performance.now() - started < 3000) await sleep(25);
+        expect(closed).toBe(true);
+      };
+      const saved = () => JSON.parse(readFileSync(windowState.file, "utf8"))["kitchen"];
+
+      try {
+        log("First launch: move and resize, then close");
+        const first = open();
+        await sleep(500);
+        first.setFrame(220, 180, 520, 360);
+        await sleep(800);
+        const moved = first.getFrame();
+        await closeAndWait(first);
+        expect(saved().frame).toEqual(moved);
+        expect(saved().maximized).toBe(false);
+
+        log("Second launch: reopens at the saved frame; maximize, then close");
+        const second = open();
+        await sleep(500);
+        expect(second.getFrame()).toEqual(moved);
+        second.maximize();
+        await sleep(1500);
+        expect(second.isMaximized()).toBe(true);
+        await closeAndWait(second);
+        expect(saved()).toEqual({ frame: moved, maximized: true, fullScreen: false });
+
+        log("Third launch: reopens maximized; unmaximize goes back to the saved frame");
+        const third = open();
+        await sleep(1500);
+        expect(third.isMaximized()).toBe(true);
+        third.unmaximize();
+        await sleep(1500);
+        expect(third.getFrame()).toEqual(moved);
+        third.setFullScreen(true);
+        await waitForFullscreen(third, true, log);
+        await sleep(500);
+        await closeAndWait(third);
+        expect(saved()).toEqual({ frame: moved, maximized: false, fullScreen: true });
+
+        log("Fourth launch: reopens full screen");
+        const fourth = open();
+        await waitForFullscreen(fourth, true, log);
+        expect(fourth.isFullScreen()).toBe(true);
+        fourth.setFullScreen(false);
+        await waitForFullscreen(fourth, false, log);
+        await sleep(500);
+        expect(fourth.getFrame()).toEqual(moved);
+        await closeAndWait(fourth);
+        log(`Saved state: ${JSON.stringify(saved())}`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  }),
+
+  defineTest({
     name: "Window close event",
     category: "BrowserWindow",
     description: "Test that close event fires when window is closed",
