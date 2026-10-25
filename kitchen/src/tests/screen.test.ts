@@ -43,6 +43,13 @@ function contrast(a: number[], b: number[]) {
   return (hi! + 0.05) / (lo! + 0.05);
 }
 
+// With Reduce transparency on (as on GitHub's macOS images), macOS draws
+// materials as a flat color instead of blurring what's behind.
+function reducesTransparency() {
+  const result = Bun.spawnSync(["defaults", "read", "com.apple.universalaccess", "reduceTransparency"]);
+  return result.stdout.toString().trim() === "1";
+}
+
 function appearance() {
   const result = Bun.spawnSync(["defaults", "read", "-g", "AppleInterfaceStyle"]);
   return result.stdout.toString().trim() === "Dark" ? "dark" : "light";
@@ -217,7 +224,8 @@ export const screenTests = [
     timeout: 40000,
     async run({ log }) {
       const frame = { x: 320, y: 320, width: 300, height: 200 };
-      log(`System appearance: ${appearance()}`);
+      const flat = reducesTransparency();
+      log(`System appearance: ${appearance()}, reduce transparency: ${flat ? "on" : "off"}`);
       const backdrop = new BrowserWindow({ html: RED_PAGE, frame, titleBarStyle: "hidden", renderer: "native", url: null });
       await sleep(800);
 
@@ -239,7 +247,14 @@ export const screenTests = [
       };
       // The red behind shows through, but blurred and mixed with the
       // material: red leads, and it isn't the pure red of the window behind.
-      const expectTinted = (label: string, [r, g, b]: number[]) => {
+      // With Reduce transparency on, the material is a flat color of its
+      // own: different from the plain window, with nothing showing through.
+      const expectTinted = (label: string, [r, g, b]: number[], plain: number[]) => {
+        if (flat) {
+          if (Math.abs(r! - g!) > 15) throw new Error(`${label}: the window behind shows through with Reduce transparency on: rgb(${r},${g},${b})`);
+          if (Math.abs(r! - plain[0]!) < 4) throw new Error(`${label}: no material drawn: rgb(${r},${g},${b}), same as without vibrancy`);
+          return;
+        }
         if (!(r! - g! > 15 && r! - b! > 15)) throw new Error(`${label}: the window behind doesn't show through: rgb(${r},${g},${b})`);
         if (!(g! > 25 || b! > 25)) throw new Error(`${label}: looks like plain see-through, not a material: rgb(${r},${g},${b})`);
       };
@@ -254,9 +269,9 @@ export const screenTests = [
           transparent: true,
           vibrancy: { material: "under-window", state: "active" },
         });
-        expectTinted("vibrancy sidebar", sidebar.background);
+        expectTinted("vibrancy sidebar", sidebar.background, opaque.background);
         expect(contrast(sidebar.ink, sidebar.background) >= 4.5).toBe(true);
-        expectTinted("vibrancy under-window, transparent", transparent.background);
+        expectTinted("vibrancy under-window, transparent", transparent.background, opaque.background);
         expect(contrast(transparent.ink, transparent.background) >= 4.5).toBe(true);
 
         log("setVibrancy: unknown material is refused, null removes it");
