@@ -1,6 +1,8 @@
 import ElectrobunEvent from "./event";
 
 type DetailData = { detail: string };
+type RenderProcessGoneReason = "crashed" | "killed" | "oom";
+type RenderProcessGoneData = { detail: { reason: RenderProcessGoneReason } };
 type NewWindowOpenData = {
 	detail:
 		| string
@@ -36,4 +38,10 @@ export default {
 		new ElectrobunEvent<DetailData, {}>("download-completed", data),
 	downloadFailed: (data: DetailData) =>
 		new ElectrobunEvent<DetailData, {}>("download-failed", data),
+	renderProcessGone: (data: RenderProcessGoneData) =>
+		new ElectrobunEvent<RenderProcessGoneData, {}>("render-process-gone", data),
+	unresponsive: (data: DetailData) =>
+		new ElectrobunEvent<DetailData, {}>("unresponsive", data),
+	responsive: (data: DetailData) =>
+		new ElectrobunEvent<DetailData, {}>("responsive", data),
 };

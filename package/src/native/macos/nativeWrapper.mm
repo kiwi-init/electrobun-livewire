@@ -2798,6 +2798,49 @@ static void schedulePendingResizeDrain() {
     }
   }
 }
+
+- (void)emitRenderProcessGone:(NSString *)reason {
+  if (self.zigEventHandler) {
+    NSString *eventData =
+        [NSString stringWithFormat:@"{\"reason\":\"%@\"}", reason];
+    self.zigEventHandler(self.webviewId, strdup("render-process-gone"),
+                         strdup(eventData.UTF8String));
+  }
+}
+
+// WebKit calls only one of these two: the SPI one, which carries
+// _WKProcessTerminationReason, when the delegate implements it.
+- (void)_webView:(WKWebView *)webView
+    webContentProcessDidTerminateWithReason:(NSInteger)reason {
+  switch (reason) {
+  case 0:
+    [self emitRenderProcessGone:@"oom"];
+    break;
+  case 1:
+  case 2:
+    [self emitRenderProcessGone:@"killed"];
+    break;
+  default:
+    [self emitRenderProcessGone:@"crashed"];
+    break;
+  }
+}
+
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+  [self emitRenderProcessGone:@"crashed"];
+}
+
+- (void)_webViewWebProcessDidBecomeUnresponsive:(WKWebView *)webView {
+  if (self.zigEventHandler) {
+    self.zigEventHandler(self.webviewId, strdup("unresponsive"), strdup(""));
+  }
+}
+
+- (void)_webViewWebProcessDidBecomeResponsive:(WKWebView *)webView {
+  if (self.zigEventHandler) {
+    self.zigEventHandler(self.webviewId, strdup("responsive"), strdup(""));
+  }
+}
 @end
 
 @implementation MyWebViewUIDelegate

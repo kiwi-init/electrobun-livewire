@@ -3469,6 +3469,9 @@ const webviewEventHandler = (id: number, eventName: string, detail: string) => {
 		"load-started": "loadStarted",
 		"load-committed": "loadCommitted",
 		"load-finished": "loadFinished",
+		"render-process-gone": "renderProcessGone",
+		unresponsive: "unresponsive",
+		responsive: "responsive",
 	};
 
 	const mappedName = eventMap[eventName];
@@ -3497,7 +3500,8 @@ const webviewEventHandler = (id: number, eventName: string, detail: string) => {
 		eventName === "download-started" ||
 		eventName === "download-progress" ||
 		eventName === "download-completed" ||
-		eventName === "download-failed"
+		eventName === "download-failed" ||
+		eventName === "render-process-gone"
 	) {
 		try {
 			parsedDetail = JSON.parse(detail);

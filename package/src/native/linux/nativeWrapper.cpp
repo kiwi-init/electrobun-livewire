@@ -3234,6 +3234,10 @@ public:
         if (eventHandler) {
             g_signal_connect(webview, "load-changed", G_CALLBACK(onLoadChanged), this);
             g_signal_connect(webview, "load-failed", G_CALLBACK(onLoadFailed), this);
+            g_signal_connect(webview, "web-process-terminated", G_CALLBACK(onWebProcessTerminated), this);
+#if WEBKIT_CHECK_VERSION(2, 34, 0)
+            g_signal_connect(webview, "notify::is-web-process-responsive", G_CALLBACK(onWebProcessResponsiveChanged), this);
+#endif
         }
         
         // Enable context menu (right-click menu)
@@ -3742,6 +3746,37 @@ public:
         return FALSE;
     }
     
+    static void onWebProcessTerminated(WebKitWebView* webview, WebKitWebProcessTerminationReason reason, gpointer user_data) {
+        (void)webview;
+        WebKitWebViewImpl* impl = static_cast<WebKitWebViewImpl*>(user_data);
+        if (!impl->eventHandler || impl->isRemoved) {
+            return;
+        }
+        const char* name = "crashed";
+        if (reason == WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT) {
+            name = "oom";
+        }
+#if WEBKIT_CHECK_VERSION(2, 34, 0)
+        if (reason == WEBKIT_WEB_PROCESS_TERMINATED_BY_API) {
+            name = "killed";
+        }
+#endif
+        std::string detail = std::string("{\"reason\":\"") + name + "\"}";
+        impl->eventHandler(impl->webviewId, strdup("render-process-gone"), strdup(detail.c_str()));
+    }
+
+#if WEBKIT_CHECK_VERSION(2, 34, 0)
+    static void onWebProcessResponsiveChanged(GObject* object, GParamSpec* pspec, gpointer user_data) {
+        (void)pspec;
+        WebKitWebViewImpl* impl = static_cast<WebKitWebViewImpl*>(user_data);
+        if (!impl->eventHandler || impl->isRemoved) {
+            return;
+        }
+        bool responsive = webkit_web_view_get_is_web_process_responsive(WEBKIT_WEB_VIEW(object));
+        impl->eventHandler(impl->webviewId, strdup(responsive ? "responsive" : "unresponsive"), strdup(""));
+    }
+#endif
+
     static void onLoadChanged(WebKitWebView* webview, WebKitLoadEvent event, gpointer user_data) {
         WebKitWebViewImpl* impl = static_cast<WebKitWebViewImpl*>(user_data);
         if (impl->eventHandler) {

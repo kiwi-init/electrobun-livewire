@@ -573,4 +573,86 @@ export const navigationTests = [
       expect(result).toBe(42);
     },
   }),
+
+  defineTest({
+    name: "render-process-gone fires when the renderer dies",
+    category: "Navigation",
+    description: "Killing the renderer emits render-process-gone with a reason, and the same view loads again",
+    timeout: 30000,
+    requires: { platform: ["darwin", "linux"], renderer: "native" },
+    async run({ createWindow, log }) {
+      const rpc = createTestHarnessRPC(2000);
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        renderer: "native",
+        title: "Render Process Gone Test",
+      });
+      await sleep(1500);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+
+      const gone: { reason: string }[] = [];
+      win.webview.on("render-process-gone", (e: any) => gone.push(e.data.detail));
+      expect(win.webview.terminateRenderer()).toBe(true);
+      await waitFor(() => gone.length > 0, 5000);
+      log(`render-process-gone: ${JSON.stringify(gone)}`);
+      expect(gone).toHaveLength(1);
+      expect(["killed", "crashed"]).toContain(gone[0]!.reason);
+
+      win.webview.loadURL("views://test-harness/index.html");
+      expect(await answerWithin(rpc, 10000)).toBe(42);
+    },
+  }),
+
+  defineTest({
+    name: "unresponsive fires for a hung page",
+    category: "Navigation",
+    description: "A page stuck in a loop emits unresponsive once the engine's request to it goes unanswered",
+    timeout: 30000,
+    requires: { platform: ["darwin", "linux"], renderer: "native" },
+    async run({ createWindow, log }) {
+      const rpc = createTestHarnessRPC(2000);
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        renderer: "native",
+        title: "Unresponsive Test",
+      });
+      await sleep(1500);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+
+      const events: string[] = [];
+      win.webview.on("unresponsive", () => events.push("unresponsive"));
+      win.webview.on("responsive", () => events.push("responsive"));
+      win.webview.executeJavascript("setTimeout(() => { for (;;) {} }, 0)");
+      await sleep(500);
+      const started = Date.now();
+      win.webview.loadURL("views://test-harness/index.html");
+      await waitFor(() => events.includes("unresponsive"), 15000);
+      log(`after ${Date.now() - started} ms: ${events.join(", ")}`);
+      expect(events).toContain("unresponsive");
+
+      expect(win.webview.terminateRenderer()).toBe(true);
+      win.webview.loadURL("views://test-harness/index.html");
+      expect(await answerWithin(rpc, 10000)).toBe(42);
+      log(`after recovery: ${events.join(", ")}`);
+    },
+  }),
 ];
+
+async function waitFor(condition: () => boolean, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await sleep(100);
+  }
+}
+
+async function answerWithin(rpc: ReturnType<typeof createTestHarnessRPC>, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  let result: number | undefined;
+  while (result === undefined && Date.now() < deadline) {
+    await sleep(500);
+    result = await rpc.request.multiply({ a: 6, b: 7 }).catch(() => undefined);
+  }
+  return result;
+}
