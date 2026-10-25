@@ -1,27 +1,28 @@
-# Kitchen tests that fail under headless sway (native Wayland, XWayland off)
-# and pass under Xvfb. wayland-tests.yml fails a PR only on a failure that
-# is not listed here, and asks for a line to be removed once its test passes.
-# One test name per line, exactly as defineTest names it.
+# Kitchen tests that fail under headless sway (native Wayland, no X11
+# display) and pass under Xvfb. wayland-tests.yml fails a PR only on a failure
+# that is not listed here, and asks for a line to be removed once its test
+# passes. One test name per line, exactly as defineTest names it.
 
-# Wayland clients can't place themselves or read their position: x/y stay 0
-# and the compositor tiles the window, so frames and sizes differ (T313).
+# Wayland clients can't place themselves or read their position (x/y stay 0),
+# and sway tiles windows, so frames and sizes differ from what was asked
+# (T313). labwc, which stacks windows, passes the size ones.
 Window setPosition
 Window recreated from getFrame keeps its place and size
 Window native renderer can shrink below its initial size
 Window setFrame
 Window getFrame
 Window getSize
+Window state restore across launches
 
 # sway has no maximized state: it ignores xdg-shell maximize requests.
 Window maximize/unmaximize
 
-# Focus/blur now follow the compositor's activated state (T964), but on
-# headless sway window.focus() can't move focus between windows: there's no
-# input device, so no activation serial. Follow-up: a stacking compositor on CI.
+# Focus/blur follow the compositor's activated state (T964), but a headless
+# compositor has no input device, so there's no activation serial and
+# window.focus() can't move focus between windows.
 Window focus and blur events (titleBarStyle: default)
 Window focus and blur events (titleBarStyle: hiddenInset)
 Window focus and blur events (titleBarStyle: hidden)
-Window state restore across launches
 
 # WGPU surfaces are X11 child windows; there is no Wayland surface yet.
 UIWindow mounts, lays out, and disposes
