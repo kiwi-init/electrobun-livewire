@@ -70,6 +70,7 @@
 #include "../shared/cache_migration.h"
 #include "../shared/console_forwarding.h"
 #include "native_file_dialog.h"
+#include "xdg_portal.h"
 #include "../shared/dialog_paths.h"
 #include "../shared/cef_find_session.h"
 #include "../shared/linux_dpi.h"
@@ -6643,6 +6644,10 @@ void initializeGTK() {
                 setenv("GDK_BACKEND", "x11", 1);
             }
 
+            // File dialogs go through the desktop's FileChooser portal when
+            // one exists (GTK's own dialog stays the fallback).
+            electrobun::xdg_portal::preferPortalFileChooser();
+
             // Disable setlocale before gtk_init to prevent CEF conflicts
             gtk_disable_setlocale();
             gtk_init(nullptr, nullptr);
@@ -10304,7 +10309,8 @@ ELECTROBUN_EXPORT bool openPath(const char* pathString) {
     return result == TRUE;
 }
 
-// Show a native desktop notification using notify-send
+// Show a native desktop notification: the Notification portal in a sandbox,
+// else org.freedesktop.Notifications, else notify-send.
 void showNotification(const char* title, const char* body, const char* subtitle, bool silent) {
     if (!title) {
         fprintf(stderr, "ERROR: NULL title passed to showNotification\n");
@@ -10354,7 +10360,16 @@ void showNotification(const char* title, const char* body, const char* subtitle,
     }
 
     // Execute asynchronously to not block
-    std::thread([command]() {
+    std::thread([command, titleStr, bodyStr, silent]() {
+        namespace portal = electrobun::xdg_portal;
+        if (portal::sandboxed() && portal::interfaceVersion(portal::kNotificationInterface) > 0 &&
+            portal::addNotification(portal::newToken(), titleStr, bodyStr, silent)) {
+            return;
+        }
+        const char* appName = g_get_application_name();
+        if (portal::notifyFreedesktop(appName ? appName : "Electrobun", titleStr, bodyStr, silent)) {
+            return;
+        }
         int result = system(command.c_str());
         if (result != 0) {
             fprintf(stderr, "Warning: notify-send failed (is libnotify-bin installed?)\n");
@@ -12106,6 +12121,15 @@ static Display* g_shortcutDisplay = nullptr;
 static std::thread g_shortcutThread;
 static bool g_shortcutThreadRunning = false;
 
+// On Wayland, shortcuts go through the GlobalShortcuts portal when a backend
+// provides it; X11 key grabs (which under XWayland only see X11 windows) are
+// the fallback. g_portalShortcuts lives on the GLib main context; the id set
+// answers register/isRegistered from the caller's thread.
+static bool g_shortcutsUsePortal = false;
+static electrobun::xdg_portal::GlobalShortcuts* g_portalShortcuts = nullptr;
+static std::mutex g_portalShortcutIdsMutex;
+static std::set<std::string> g_portalShortcutIds;
+
 // Helper to get X11 keysym from key string
 static KeySym getKeySym(const std::string& key) {
     std::string lowerKey = key;
@@ -12235,6 +12259,20 @@ ELECTROBUN_EXPORT void setGlobalShortcutCallback(GlobalShortcutCallback callback
     printf("GlobalShortcut: Setting callback (callback=%p)\n", callback);
     g_globalShortcutCallback = callback;
 
+    if (g_shortcutsUsePortal) return;
+    if (callback && !g_shortcutThreadRunning && g_getenv("WAYLAND_DISPLAY") &&
+        electrobun::xdg_portal::GlobalShortcuts::available()) {
+        g_shortcutsUsePortal = true;
+        printf("GlobalShortcut: using the xdg-desktop-portal GlobalShortcuts interface\n");
+        dispatch_async_main_void([]() {
+            g_portalShortcuts = new electrobun::xdg_portal::GlobalShortcuts();
+            g_portalShortcuts->start([](const std::string& id) {
+                if (g_globalShortcutCallback) g_globalShortcutCallback(id.c_str());
+            });
+        });
+        return;
+    }
+
     // Start the event loop thread if not running
     if (!g_shortcutThreadRunning && callback) {
         printf("GlobalShortcut: Starting event loop thread\n");
@@ -12254,6 +12292,32 @@ ELECTROBUN_EXPORT void setGlobalShortcutCallback(GlobalShortcutCallback callback
     }
 }
 
+// The portal binds shortcuts asynchronously (and may ask the user), so this
+// accepts any accelerator with a known key, like the X11 path does.
+static bool registerPortalShortcut(const std::string& accelerator) {
+    auto parts = electrobun::parseAccelerator(accelerator);
+    KeySym keysym = getKeySym(parts.key);
+    std::string trigger = electrobun::xdg_portal::shortcutTrigger(
+        parts, keysym == NoSymbol ? nullptr : XKeysymToString(keysym));
+    if (trigger.empty()) {
+        fprintf(stderr, "ERROR: Unknown key: %s\n", parts.key.c_str());
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_portalShortcutIdsMutex);
+        if (!g_portalShortcutIds.insert(accelerator).second) {
+            fprintf(stderr, "GlobalShortcut already registered: %s\n", accelerator.c_str());
+            return false;
+        }
+    }
+    dispatch_async_main_void([accelerator, trigger]() {
+        if (g_portalShortcuts) g_portalShortcuts->set(accelerator, accelerator, trigger);
+    });
+    printf("GlobalShortcut registered with the portal: %s (preferred trigger %s)\n",
+           accelerator.c_str(), trigger.c_str());
+    return true;
+}
+
 // Register a global keyboard shortcut
 ELECTROBUN_EXPORT bool registerGlobalShortcut(const char* accelerator) {
     printf("GlobalShortcut: registerGlobalShortcut called for '%s'\n", accelerator ? accelerator : "(null)");
@@ -12262,6 +12326,8 @@ ELECTROBUN_EXPORT bool registerGlobalShortcut(const char* accelerator) {
         fprintf(stderr, "ERROR: Cannot register shortcut - accelerator is null\n");
         return false;
     }
+
+    if (g_shortcutsUsePortal) return registerPortalShortcut(accelerator);
     
     if (!g_shortcutDisplay) {
         fprintf(stderr, "ERROR: Cannot register shortcut '%s' - display not ready (g_shortcutDisplay=%p)\n", 
@@ -12325,6 +12391,17 @@ ELECTROBUN_EXPORT bool registerGlobalShortcut(const char* accelerator) {
 
 // Unregister a global keyboard shortcut
 ELECTROBUN_EXPORT bool unregisterGlobalShortcut(const char* accelerator) {
+    if (accelerator && g_shortcutsUsePortal) {
+        std::string accelStr(accelerator);
+        {
+            std::lock_guard<std::mutex> lock(g_portalShortcutIdsMutex);
+            if (!g_portalShortcutIds.erase(accelStr)) return false;
+        }
+        dispatch_async_main_void([accelStr]() {
+            if (g_portalShortcuts) g_portalShortcuts->remove(accelStr);
+        });
+        return true;
+    }
     if (!accelerator || !g_shortcutDisplay) return false;
 
     std::string accelStr(accelerator);
@@ -12357,6 +12434,16 @@ ELECTROBUN_EXPORT bool unregisterGlobalShortcut(const char* accelerator) {
 
 // Unregister all global keyboard shortcuts
 ELECTROBUN_EXPORT void unregisterAllGlobalShortcuts() {
+    if (g_shortcutsUsePortal) {
+        {
+            std::lock_guard<std::mutex> lock(g_portalShortcutIdsMutex);
+            g_portalShortcutIds.clear();
+        }
+        dispatch_async_main_void([]() {
+            if (g_portalShortcuts) g_portalShortcuts->clear();
+        });
+        return;
+    }
     if (!g_shortcutDisplay) return;
 
     Window root = DefaultRootWindow(g_shortcutDisplay);
@@ -12385,6 +12472,10 @@ ELECTROBUN_EXPORT void unregisterAllGlobalShortcuts() {
 // Check if a shortcut is registered
 ELECTROBUN_EXPORT bool isGlobalShortcutRegistered(const char* accelerator) {
     if (!accelerator) return false;
+    if (g_shortcutsUsePortal) {
+        std::lock_guard<std::mutex> lock(g_portalShortcutIdsMutex);
+        return g_portalShortcutIds.count(accelerator) > 0;
+    }
     return g_globalShortcuts.find(std::string(accelerator)) != g_globalShortcuts.end();
 }
 
