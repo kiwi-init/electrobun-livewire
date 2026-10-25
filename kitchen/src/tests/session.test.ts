@@ -16,7 +16,8 @@ export const sessionTests = [
       try {
         expect(session.cookies.set({ name: "token", value: "secret", domain: "127.0.0.1", path: "/", httpOnly: true, sameSite: "strict" })).toBe(true);
         expect(session.cookies.set({ name: "theme", value: "dark", domain: "127.0.0.1", path: "/", sameSite: "lax" })).toBe(true);
-        expect(session.cookies.set({ name: "open", value: "1", domain: "127.0.0.1", path: "/", sameSite: "no_restriction" })).toBe(true);
+        // SameSite=None needs Secure (libsoup refuses it otherwise).
+        expect(session.cookies.set({ name: "open", value: "1", domain: "127.0.0.1", path: "/", secure: true, sameSite: "no_restriction" })).toBe(true);
 
         const stored = session.cookies.get({ url: origin });
         log(`cookies.get({ url }): ${JSON.stringify(stored)}`);
@@ -25,7 +26,9 @@ export const sessionTests = [
         expect(byName("token")?.sameSite).toBe("strict");
         expect(byName("theme")?.httpOnly).toBe(false);
         expect(byName("theme")?.sameSite).toBe("lax");
-        expect(byName("open")?.sameSite).toBe("no_restriction");
+        // A secure cookie isn't sent to http://, so look for it unfiltered.
+        const open = session.cookies.get().find((cookie) => cookie.name === "open");
+        expect(open?.sameSite).toBe("no_restriction");
       } finally {
         session.cookies.clear();
       }
