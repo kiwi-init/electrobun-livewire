@@ -9,6 +9,8 @@ on:
   push:
     tags:
       - 'v*'
+      # Livewire release candidates are published by livewire-rc.yml, never here.
+      - '!v*-livewire*'
   workflow_dispatch:
     inputs:
       tag:
