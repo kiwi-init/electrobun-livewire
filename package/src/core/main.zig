@@ -376,6 +376,8 @@ var native_wrapper_state: NativeWrapperState = undefined;
 var next_tray_id: u32 = 1;
 var next_window_id: u32 = 1;
 var next_webview_id: u32 = 1;
+// Set by setNextWebviewBridgeOrigins, consumed by the next createWebview.
+var next_webview_bridge_origins: ?[:0]u8 = null;
 var next_wgpu_view_id: u32 = 1;
 var tray_registry = std.AutoHashMap(u32, TrayState).init(allocator);
 var window_registry = std.AutoHashMap(u32, WindowState).init(allocator);
@@ -1677,11 +1679,37 @@ fn startHostTransportServer(requested_port: u32) bool {
     return false;
 }
 
+// Pages the RPC bridge is given to when the app doesn't say: views:// and
+// appdata:// pages, the http(s) origin the view starts on, and about:blank for
+// inline HTML (WebKit loads it there). JSON array of navigationRules-style globs.
+fn defaultBridgeOriginsJson(url: []const u8) ?[:0]u8 {
+    if (url.len == 0) {
+        return allocator.dupeSentinel(u8, "[\"views://*\",\"appdata://*\",\"about:blank\"]", 0) catch null;
+    }
+    if (httpOriginOf(url)) |origin| {
+        return allocPrintZ(allocator, "[\"views://*\",\"appdata://*\",\"{s}/*\"]", .{origin}) catch null;
+    }
+    return allocator.dupeSentinel(u8, "[\"views://*\",\"appdata://*\"]", 0) catch null;
+}
+
+// "http(s)://host[:port]" of an http(s) URL, without any userinfo.
+fn httpOriginOf(url: []const u8) ?[]const u8 {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return null;
+    const scheme = url[0..scheme_end];
+    if (!std.ascii.eqlIgnoreCase(scheme, "http") and !std.ascii.eqlIgnoreCase(scheme, "https")) return null;
+    const authority_start = scheme_end + 3;
+    const authority_end = std.mem.indexOfAnyPos(u8, url, authority_start, "/?#") orelse url.len;
+    const authority = url[authority_start..authority_end];
+    if (authority.len == 0 or std.mem.indexOfAny(u8, authority, "@\"\\ ") != null) return null;
+    return url[0..authority_end];
+}
+
 fn buildElectrobunPreload(
     webview_id: u32,
     window_id: u32,
     secret_key: [*:0]const u8,
     sandbox: bool,
+    bridge_origins_json: [:0]const u8,
 ) ?[:0]u8 {
     if (!ensureWebviewRuntimeConfigured()) {
         return null;
@@ -1708,15 +1736,26 @@ fn buildElectrobunPreload(
     const preload_script = webview_runtime_state.preload_script.?;
     const sandboxed_preload_script = webview_runtime_state.preload_script_sandboxed.?;
     // The RPC secrets and the host/internal bridges are for the view's own
-    // top-level page only. Subframes (iframes of any origin) get the event
-    // bridge and the sandboxed preload, like a sandboxed view.
+    // top-level page only, and only while it is on one of the bridge origins
+    // (same glob matching as navigationRules). Subframes and other pages get
+    // the event bridge and the sandboxed preload, like a sandboxed view.
     return allocPrintZ(
         allocator,
         \\window.__electrobunPlatform = "{s}";
         \\window.__electrobunWebviewId = {d};
         \\window.__electrobunWindowId = {d};
         \\window.__electrobunEventBridge = window.__electrobunEventBridge || window.webkit?.messageHandlers?.eventBridge || window.eventBridge || window.chrome?.webview?.hostObjects?.eventBridge;
-        \\if (window === window.top) {{
+        \\if (window === window.top && {s}.some(function (pattern) {{
+        \\  var p = pattern.toLowerCase(), t = location.href.toLowerCase(), i = 0, j = 0, star = -1, mark = 0;
+        \\  while (j < t.length) {{
+        \\    if (i < p.length && p[i] === t[j]) {{ i++; j++; }}
+        \\    else if (i < p.length && p[i] === "*") {{ star = i++; mark = j; }}
+        \\    else if (star !== -1) {{ i = star + 1; j = ++mark; }}
+        \\    else return false;
+        \\  }}
+        \\  while (i < p.length && p[i] === "*") i++;
+        \\  return i === p.length;
+        \\}})) {{
         \\window.__electrobunHostSocketPort = {d};
         \\window.__electrobunRpcSocketPort = {d};
         \\window.__electrobunSecretKeyBytes = [{s}];
@@ -1732,6 +1771,7 @@ fn buildElectrobunPreload(
             @tagName(builtin.os.tag),
             webview_id,
             window_id,
+            bridge_origins_json,
             webview_runtime_state.rpc_port,
             webview_runtime_state.rpc_port,
             std.mem.span(secret_key),
@@ -3338,11 +3378,25 @@ export fn createWebview(
     };
     webview_registry_mutex.unlock(coreIo());
 
+    webview_registry_mutex.lockUncancelable(coreIo());
+    const explicit_bridge_origins = next_webview_bridge_origins;
+    next_webview_bridge_origins = null;
+    webview_registry_mutex.unlock(coreIo());
+    const bridge_origins_json = explicit_bridge_origins orelse defaultBridgeOriginsJson(std.mem.span(url)) orelse {
+        webview_registry_mutex.lockUncancelable(coreIo());
+        _ = webview_registry.remove(webview_id);
+        webview_registry_mutex.unlock(coreIo());
+        setLastError("Failed to allocate bridge origins", .{});
+        return 0;
+    };
+    defer allocator.free(bridge_origins_json);
+
     const electrobun_preload_script = buildElectrobunPreload(
         webview_id,
         window_id,
         secret_key,
         sandbox,
+        bridge_origins_json,
     ) orelse {
         webview_registry_mutex.lockUncancelable(coreIo());
         _ = webview_registry.remove(webview_id);
@@ -3393,6 +3447,11 @@ export fn createWebview(
     state.ptr = webview_ptr;
     webview_registry_mutex.unlock(coreIo());
 
+    const SetWebviewBridgeOriginsFn = *const fn (WebviewPtr, [*:0]const u8) callconv(.c) void;
+    if (lookupNativeSymbol(SetWebviewBridgeOriginsFn, "setWebviewBridgeOrigins")) |set_bridge_origins| {
+        set_bridge_origins(webview_ptr, bridge_origins_json.ptr);
+    }
+
     // `false` preserves the renderer/platform default. An explicit runtime
     // setter can still be used to disable spell checking after enabling it.
     if (spell_check) {
@@ -3400,6 +3459,21 @@ export fn createWebview(
     }
 
     return webview_id;
+}
+
+// Bridge origins for the next createWebview: a JSON array of navigationRules-
+// style globs naming the pages that get the RPC bridge.
+export fn setNextWebviewBridgeOrigins(origins_json: [*:0]const u8) void {
+    clearLastError();
+    const copy = allocator.dupeSentinel(u8, std.mem.span(origins_json), 0) catch {
+        setLastError("Failed to store bridge origins", .{});
+        return;
+    };
+    webview_registry_mutex.lockUncancelable(coreIo());
+    const previous = next_webview_bridge_origins;
+    next_webview_bridge_origins = copy;
+    webview_registry_mutex.unlock(coreIo());
+    if (previous) |old| allocator.free(old);
 }
 
 export fn setNextWebviewAllowedProtocols(allow_views: bool, allow_app_data: bool) void {

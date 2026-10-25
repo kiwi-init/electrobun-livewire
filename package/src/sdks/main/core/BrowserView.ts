@@ -70,6 +70,11 @@ export type BrowserViewOptions<T = undefined> = {
 	// preload or bridge. On Linux "popup" acts as "deny" for now: WebKitGTK
 	// popups share the opener's content manager, so they'd get the bridge.
 	newWindow: NewWindowPolicy;
+	// Globs (navigationRules syntax) for the pages that get RPC. Defaults to
+	// views://*, appdata://*, the http(s) origin of `url`, and about:blank for
+	// inline `html`. Other pages, and every subframe, run as if sandboxed.
+	// ["*"] gives RPC to any top-level page the view shows.
+	bridgeOrigins: string[] | null;
 	// Sandbox mode: when true, disables RPC and only allows event emission
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
 	// accessing internal APIs, creating OOPIFs, or communicating with Bun
@@ -143,6 +148,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 	private hostMessagePeakQueuedCount = 0;
 	navigationRules: string | null = null;
 	newWindow: NewWindowPolicy = "deny";
+	bridgeOrigins: string[] | null = null;
 	// Sandbox mode disables RPC and only allows event emission (for untrusted content)
 	sandbox: boolean = false;
 	startTransparent: boolean = false;
@@ -182,6 +188,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		this.autoResize = options.autoResize === false ? false : true;
 		this.navigationRules = options.navigationRules || null;
 		this.newWindow = options.newWindow ?? "deny";
+		this.bridgeOrigins = options.bridgeOrigins ?? null;
 		this.renderer = options.renderer ?? defaultOptions.renderer ?? "native";
 		this.sandbox = options.sandbox ?? false;
 		this.startTransparent = options.startTransparent ?? false;
@@ -223,6 +230,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 			autoResize: this.autoResize,
 			navigationRules: this.navigationRules,
 			newWindow: this.newWindow,
+			bridgeOrigins: this.bridgeOrigins,
 			sandbox: this.sandbox,
 			startTransparent: this.startTransparent,
 			startPassthrough: this.startPassthrough,
@@ -675,6 +683,7 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		view.hostMessagePeakQueuedCount = 0;
 		view.autoResize = options.autoResize === false ? false : true;
 		view.navigationRules = options.navigationRules ?? null;
+		view.bridgeOrigins = options.bridgeOrigins ?? null;
 		view.sandbox = options.sandbox ?? false;
 		view.startTransparent = options.startTransparent ?? false;
 		view.startPassthrough = options.startPassthrough ?? false;

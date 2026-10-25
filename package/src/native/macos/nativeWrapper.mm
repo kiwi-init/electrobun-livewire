@@ -953,6 +953,8 @@ void releaseObjCObject(id objcObject) {
 @property(nonatomic, assign) BOOL pendingSpellCheckEnabled;
 @property(nonatomic, strong) CALayer *storedLayerMask;
 @property(nonatomic, strong) NSArray<NSString *> *navigationRules;
+// Globs for the pages that may use the RPC bridges; nil until the core sets it.
+@property(nonatomic, strong) NSArray<NSString *> *bridgeOrigins;
 @property(atomic, assign) uint32_t resizeGeneration;
 
 - (void)loadURL:(const char *)urlString;
@@ -988,6 +990,8 @@ void releaseObjCObject(id objcObject) {
 - (void)resizeWithFrame:(NSRect)frame parsedMasks:(NSArray *)parsedMasks;
 
 - (void)setNavigationRulesFromJSON:(const char *)rulesJson;
+- (void)setBridgeOriginsFromJSON:(const char *)originsJson;
+- (BOOL)bridgeAllowsURL:(NSString *)url;
 - (BOOL)shouldAllowNavigationToURL:(NSString *)url;
 
 - (void)findInPage:(const char *)searchText
@@ -1768,6 +1772,33 @@ NSArray<NSValue *> *addOverlapRects(NSArray<NSDictionary *> *rectsArray,
   }
 
   self.navigationRules = rulesArray;
+}
+
+- (void)setBridgeOriginsFromJSON:(const char *)originsJson {
+  NSData *jsonData =
+      originsJson ? [NSData dataWithBytes:originsJson length:strlen(originsJson)]
+                  : nil;
+  NSArray *origins =
+      jsonData ? [NSJSONSerialization JSONObjectWithData:jsonData
+                                                 options:0
+                                                   error:nil]
+               : nil;
+  // Unparseable input allows nothing rather than everything.
+  self.bridgeOrigins = [origins isKindOfClass:[NSArray class]] ? origins : @[];
+}
+
+- (BOOL)bridgeAllowsURL:(NSString *)url {
+  if (!self.bridgeOrigins) {
+    return YES;
+  }
+  std::string urlStr = [url UTF8String] ?: "";
+  for (id origin in self.bridgeOrigins) {
+    if ([origin isKindOfClass:[NSString class]] &&
+        electrobun::globMatch([(NSString *)origin UTF8String] ?: "", urlStr)) {
+      return YES;
+    }
+  }
+  return NO;
 }
 
 - (BOOL)shouldAllowNavigationToURL:(NSString *)url {
@@ -3173,8 +3204,14 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
       didReceiveScriptMessage:(WKScriptMessage *)message {
   if (!self.zigCallback || ![message.body isKindOfClass:[NSString class]])
     return;
-  if (self.mainFrameOnly && !message.frameInfo.isMainFrame)
-    return;
+  if (self.mainFrameOnly) {
+    if (!message.frameInfo.isMainFrame)
+      return;
+    AbstractView *view = globalAbstractViews[@(self.webviewId)];
+    if (view &&
+        ![view bridgeAllowsURL:message.frameInfo.request.URL.absoluteString])
+      return;
+  }
   const char *body = [(NSString *)message.body UTF8String];
   if (body)
     self.zigCallback(self.webviewId, body);
@@ -6697,6 +6734,18 @@ public:
     }
   }
 
+  // The renderer sends bridge messages from the main frame, so its URL is the
+  // page that called the bridge.
+  bool bridgeAllowsFrame(CefRefPtr<CefFrame> frame) {
+    AbstractView *view = globalAbstractViews[@(webview_id_)];
+    if (!view || !frame) {
+      return true;
+    }
+    NSString *url =
+        [NSString stringWithUTF8String:frame->GetURL().ToString().c_str()];
+    return [view bridgeAllowsURL:url ?: @""];
+  }
+
   virtual bool
   OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
                            CefRefPtr<CefFrame> frame,
@@ -6716,8 +6765,8 @@ public:
       result = true;
     }
     // bunBridge and internalBridge - RPC bridges (only for non-sandboxed
-    // webviews)
-    else if (!is_sandboxed_) {
+    // webviews, and only while the page is on one of the bridge origins)
+    else if (!is_sandboxed_ && bridgeAllowsFrame(frame)) {
       if (messageName == "BunBridgeMessage") {
         bun_bridge_handler_(webview_id_, messageContent.c_str());
         result = true;
@@ -9146,6 +9195,17 @@ extern "C" bool webviewSetSpellCheck(AbstractView *abstractView, bool enabled) {
   }
   return runOnMainThreadSyncBool(^bool {
     return [abstractView setSpellCheck:enabled ? YES : NO] == YES;
+  });
+}
+
+extern "C" void setWebviewBridgeOrigins(AbstractView *abstractView,
+                                        const char *originsJson) {
+  char *originsJsonCopy = originsJson ? strdup(originsJson) : nullptr;
+  runOnMainThreadAsyncVoid(^{
+    [abstractView setBridgeOriginsFromJSON:originsJsonCopy];
+    if (originsJsonCopy) {
+      free(originsJsonCopy);
+    }
   });
 }
 

@@ -221,6 +221,132 @@ function iframeBridgeTest(name: string, renderer: "native" | "cef") {
   });
 }
 
+// Posts an RPC message straight to every bridge the current page might have.
+function postToBridges(id: number) {
+  return `(() => {
+    const packet = JSON.stringify({ type: "message", id: "stressMessageToBun", payload: { id: ${id} } });
+    try { window.webkit.messageHandlers.hostBridge.postMessage(packet); } catch (e) {}
+    try { window.__electrobunHostBridge.postMessage(packet); } catch (e) {}
+  })()`;
+}
+
+function bridgeOriginsTest(name: string, renderer: "native" | "cef") {
+  return defineTest({
+    name,
+    category: "RPC",
+    description: `Test that a page outside bridgeOrigins can't reach RPC and an allowed page can (${renderer} renderer)`,
+    timeout: 30000,
+    async run({ createWindow, log }) {
+      const received: number[] = [];
+      const rpc = createTestHarnessRPC(3000, {
+        bunStressMessages: { record: (id: number) => received.push(id) } as any,
+      });
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        rpc,
+        renderer,
+        bridgeOrigins: ["views://test-harness/*"],
+        title: `bridgeOrigins (${renderer})`,
+      });
+      await sleep(2000);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+
+      log("Navigating to a page outside bridgeOrigins");
+      win.webview.loadURL("views://test-runner/index.html");
+      await sleep(2500);
+      win.webview.executeJavascript(postToBridges(888));
+      await sleep(1000);
+
+      // That page can't answer RPC, so it reports what it saw by navigating
+      // back to the allowed harness with the result in the query string.
+      log("Navigating back to an allowed page with the probe result");
+      win.webview.executeJavascript(
+        `location.href = "views://test-harness/index.html?probe=" + [typeof window.__electrobunSecretKeyBytes, typeof window.__electrobunRpcSocketPort].join(",")`,
+      );
+      await sleep(2500);
+      const search = await rpc.request.evaluateJavascriptWithResponse({ script: "return location.search" });
+      expect(search).toBe("?probe=undefined,undefined");
+      win.webview.executeJavascript(postToBridges(2));
+      await sleep(1000);
+
+      log(`Bun received: ${JSON.stringify(received)}`);
+      expect(received.includes(2)).toBe(true);
+      expect(received.includes(888)).toBe(false);
+    },
+  });
+}
+
+function defaultBridgeOriginTest(name: string, renderer: "native" | "cef") {
+  return defineTest({
+    name,
+    category: "RPC",
+    description: `Test that by default a view keeps RPC on the http origin it starts on and loses it on another origin (${renderer} renderer)`,
+    timeout: 30000,
+    async run({ createWindow, log }) {
+      const page = () =>
+        new Response("<!doctype html><html><body>served</body></html>", {
+          headers: { "content-type": "text/html" },
+        });
+      const first = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: page });
+      const second = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: page });
+      try {
+        const received: number[] = [];
+        const rpc = createTestHarnessRPC(3000, {
+          bunStressMessages: { record: (id: number) => received.push(id) } as any,
+        });
+        const win = await createWindow({
+          url: `http://127.0.0.1:${first.port}/`,
+          rpc,
+          renderer,
+          title: `Default bridge origin (${renderer})`,
+        });
+        await sleep(2000);
+        win.webview.executeJavascript(postToBridges(4));
+        await sleep(1000);
+
+        log(`Navigating to another origin (port ${second.port})`);
+        win.webview.loadURL(`http://127.0.0.1:${second.port}/`);
+        await sleep(2500);
+        win.webview.executeJavascript(postToBridges(890));
+        await sleep(1000);
+
+        log(`Bun received: ${JSON.stringify(received)}`);
+        expect(received.includes(4)).toBe(true);
+        expect(received.includes(890)).toBe(false);
+      } finally {
+        first.stop(true);
+        second.stop(true);
+      }
+    },
+  });
+}
+
+function inlineHtmlBridgeTest(name: string, renderer: "native" | "cef") {
+  return defineTest({
+    name,
+    category: "RPC",
+    description: `Test that a view created with inline html keeps its RPC bridge by default (${renderer} renderer)`,
+    timeout: 20000,
+    async run({ createWindow, log }) {
+      const received: number[] = [];
+      const rpc = createTestHarnessRPC(3000, {
+        bunStressMessages: { record: (id: number) => received.push(id) } as any,
+      });
+      const win = await createWindow({
+        html: "<!doctype html><html><body>inline</body></html>",
+        rpc,
+        renderer,
+        title: `Inline html bridge (${renderer})`,
+      });
+      await sleep(2000);
+      win.webview.executeJavascript(postToBridges(3));
+      await sleep(1000);
+      log(`Bun received: ${JSON.stringify(received)}`);
+      expect(received.includes(3)).toBe(true);
+    },
+  });
+}
+
 export const rpcTests = [
 	defineTest({
 		name: "Webview tag BrowserView created event",
@@ -360,6 +486,12 @@ export const rpcTests = [
 
   iframeBridgeTest("cross-origin iframe can't reach RPC (system webview)", "native"),
   iframeBridgeTest("cross-origin iframe can't reach RPC (CEF)", "cef"),
+  bridgeOriginsTest("bridgeOrigins keeps RPC off other pages (system webview)", "native"),
+  bridgeOriginsTest("bridgeOrigins keeps RPC off other pages (CEF)", "cef"),
+  defaultBridgeOriginTest("default bridge origin is the starting http origin (system webview)", "native"),
+  defaultBridgeOriginTest("default bridge origin is the starting http origin (CEF)", "cef"),
+  inlineHtmlBridgeTest("inline html views keep their bridge (system webview)", "native"),
+  inlineHtmlBridgeTest("inline html views keep their bridge (CEF)", "cef"),
 
   defineTest({
     name: "rpc socket closes connections that never authenticate",
