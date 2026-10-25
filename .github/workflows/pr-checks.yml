@@ -28,6 +28,11 @@ jobs:
       - name: Typecheck
         working-directory: package
         run: hutch typecheck
+      # Every symbol each platform's wrapper is bound with must exist in that
+      # wrapper: one missing symbol makes bun:ffi reject the whole library (#94).
+      - name: Native symbol contract
+        working-directory: package
+        run: hutch test:native-symbol-contract
       - name: Build (dev)
         working-directory: package
         run: hutch build:dev
