@@ -73,4 +73,80 @@ export const trayApiTests = [
       }
     },
   }),
+
+  defineTest({
+    name: "Dock badge contract",
+    category: "Utils",
+    description: "Test Utils.setDockBadge and Utils.getDockBadge with counts, text and clearing",
+    timeout: 12000,
+    async run({ log }) {
+      try {
+        if (process.platform === "darwin") {
+          Utils.setDockBadge(7);
+          expect(Utils.getDockBadge()).toBe("7");
+          Utils.setDockBadge("new");
+          expect(Utils.getDockBadge()).toBe("new");
+          Utils.setDockBadge(0);
+          expect(Utils.getDockBadge()).toBe(null);
+          Utils.setDockBadge("99+");
+          Utils.setDockBadge(null);
+          expect(Utils.getDockBadge()).toBe(null);
+          log("Dock badge set, changed and cleared on macOS");
+        } else {
+          Utils.setDockBadge(3);
+          expect(Utils.getDockBadge()).toBe(null);
+          log(`Dock badge APIs are callable on ${process.platform} (stub behavior expected)`);
+        }
+      } finally {
+        Utils.setDockBadge(null);
+      }
+    },
+  }),
+
+  defineTest({
+    name: "Dock progress contract",
+    category: "Utils",
+    description: "Test Utils.setDockProgress and Utils.getDockProgress, including clamping and removal",
+    timeout: 12000,
+    async run({ log }) {
+      try {
+        if (process.platform === "darwin") {
+          expect(Utils.getDockProgress()).toBe(null);
+          Utils.setDockProgress(0.4);
+          expect(Utils.getDockProgress()).toBe(0.4);
+          Utils.setDockProgress(2);
+          expect(Utils.getDockProgress()).toBe(1);
+          Utils.setDockProgress(null);
+          expect(Utils.getDockProgress()).toBe(null);
+          log("Dock progress shown, clamped and removed on macOS");
+        } else {
+          Utils.setDockProgress(0.5);
+          expect(Utils.getDockProgress()).toBe(null);
+          log(`Dock progress APIs are callable on ${process.platform} (stub behavior expected)`);
+        }
+      } finally {
+        Utils.setDockProgress(null);
+      }
+    },
+  }),
+
+  defineTest({
+    name: "Notification with actions and reply is accepted",
+    category: "Utils",
+    description: "Utils.showNotification takes actions, a reply field and an id, and returns that id (delivery and responses need a manual check)",
+    timeout: 12000,
+    async run({ log }) {
+      const id = Utils.showNotification({
+        id: "kitchen-actions",
+        title: "Kitchen",
+        body: "Notification with actions",
+        silent: true,
+        actions: [{ id: "open", title: "Open", foreground: true }, { id: "delete", title: "Delete", destructive: true }],
+        reply: { placeholder: "Reply" },
+      });
+      expect(id).toBe("kitchen-actions");
+      expect(typeof Utils.showNotification({ title: "Kitchen", silent: true })).toBe("string");
+      log(`showNotification returned ${id}`);
+    },
+  }),
 ];

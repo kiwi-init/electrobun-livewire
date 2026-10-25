@@ -13286,6 +13286,38 @@ ELECTROBUN_EXPORT void setAppWakeHandler(void (*callback)()) {
     // Not supported on Linux yet - stub to prevent dlopen failure
 }
 
+ELECTROBUN_EXPORT void setNotificationResponseHandler(void (*handler)(char*)) {
+    (void)handler;
+    // Not supported on Linux yet - stub to prevent dlopen failure
+}
+
+ELECTROBUN_EXPORT void freeNativeString(char *value) {
+    free(value);
+}
+
+// Bun only calls this on macOS; other platforms use showNotification.
+ELECTROBUN_EXPORT void showNotificationWithOptions(const char *optionsJson) {
+    (void)optionsJson;
+}
+
+ELECTROBUN_EXPORT void setDockBadge(const char *label) {
+    (void)label;
+    // Not supported on Linux yet - stub to prevent dlopen failure
+}
+
+ELECTROBUN_EXPORT char *getDockBadge() {
+    return nullptr;
+}
+
+ELECTROBUN_EXPORT void setDockProgress(double progress) {
+    (void)progress;
+    // Not supported on Linux yet - stub to prevent dlopen failure
+}
+
+ELECTROBUN_EXPORT double getDockProgress() {
+    return -1;
+}
+
 ELECTROBUN_EXPORT void setDockIconVisible(bool visible) {
     (void)visible;
     // Not supported on Linux - stub to prevent dlopen failure

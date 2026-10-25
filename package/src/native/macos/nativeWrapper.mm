@@ -9854,7 +9854,7 @@ static BOOL notificationAuthGranted = NO;
 static BOOL useModernNotifications = YES;
 
 // Fallback to deprecated NSUserNotification API (works better in dev mode
-// without proper bundle)
+// without proper bundle). It shows no action buttons or reply field.
 static void showNotificationLegacy(NSString *titleStr, NSString *bodyStr,
                                    NSString *subtitleStr, BOOL silent) {
   dispatch_async(dispatch_get_main_queue(), ^{
@@ -9876,59 +9876,222 @@ static void showNotificationLegacy(NSString *titleStr, NSString *bodyStr,
   });
 }
 
-extern "C" void showNotification(const char *title, const char *body,
-                                 const char *subtitle, BOOL silent) {
-  NSString *titleStr = [NSString stringWithUTF8String:title ?: ""];
-  NSString *bodyStr = [NSString stringWithUTF8String:body ?: ""];
-  NSString *subtitleStr =
-      subtitle ? [NSString stringWithUTF8String:subtitle] : nil;
+// Clicks, action buttons, replies and dismissals come back to Bun as JSON:
+// {"id": notification id, "action": "default" | "dismiss" | action id,
+//  "reply": text}. Bun frees the string with freeNativeString.
+typedef void (*NotificationResponseHandler)(char *responseJson);
+static NotificationResponseHandler g_notificationResponseHandler = nullptr;
+
+@interface ElectrobunNotificationDelegate
+    : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@implementation ElectrobunNotificationDelegate
+// Without this, macOS doesn't show notifications while the app is frontmost.
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:
+             (void (^)(UNNotificationPresentationOptions))completionHandler {
+  completionHandler(UNNotificationPresentationOptionBanner |
+                    UNNotificationPresentationOptionList |
+                    UNNotificationPresentationOptionSound);
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+    didReceiveNotificationResponse:(UNNotificationResponse *)response
+             withCompletionHandler:(void (^)(void))completionHandler {
+  NSString *action = response.actionIdentifier;
+  if ([action isEqualToString:UNNotificationDefaultActionIdentifier]) {
+    action = @"default";
+  } else if ([action isEqualToString:UNNotificationDismissActionIdentifier]) {
+    action = @"dismiss";
+  }
+  NSMutableDictionary *payload = [@{
+    @"id" : response.notification.request.identifier,
+    @"action" : action
+  } mutableCopy];
+  if ([response isKindOfClass:[UNTextInputNotificationResponse class]]) {
+    payload[@"reply"] =
+        ((UNTextInputNotificationResponse *)response).userText ?: @"";
+  }
+  NSData *json = [NSJSONSerialization dataWithJSONObject:payload
+                                                 options:0
+                                                   error:nil];
+  NotificationResponseHandler handler = g_notificationResponseHandler;
+  if (handler && json) {
+    // The handler runs later on Bun's thread, so it gets its own copy.
+    char *copy = (char *)malloc(json.length + 1);
+    memcpy(copy, json.bytes, json.length);
+    copy[json.length] = '\0';
+    handler(copy);
+  }
+  completionHandler();
+}
+@end
+
+static ElectrobunNotificationDelegate *g_notificationDelegate = nil;
+
+// UNUserNotificationCenter throws for a process outside an app bundle.
+static BOOL canUseNotificationCenter() {
+  return [[NSBundle mainBundle] bundleIdentifier] != nil;
+}
+
+extern "C" void setNotificationResponseHandler(
+    NotificationResponseHandler handler) {
+  g_notificationResponseHandler = handler;
+  if (!canUseNotificationCenter())
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!g_notificationDelegate) {
+      g_notificationDelegate = [[ElectrobunNotificationDelegate alloc] init];
+    }
+    [UNUserNotificationCenter currentNotificationCenter].delegate =
+        g_notificationDelegate;
+  });
+}
+
+extern "C" void freeNativeString(char *value) { free(value); }
+
+// One category per distinct set of actions, keyed by that set's JSON, so
+// repeating a notification doesn't register a new category each time.
+static NSMutableDictionary<NSString *, UNNotificationCategory *>
+    *g_notificationCategories = nil;
+
+static UNNotificationCategory *notificationCategoryFor(NSArray *actions,
+                                                       NSDictionary *reply) {
+  if (actions.count == 0 && !reply)
+    return nil;
+  NSData *keyData = [NSJSONSerialization
+      dataWithJSONObject:@{@"actions" : actions ?: @[], @"reply" : reply ?: @{}}
+                 options:NSJSONWritingSortedKeys
+                   error:nil];
+  NSString *key = [@"electrobun."
+      stringByAppendingString:[[NSString alloc]
+                                  initWithData:keyData
+                                      encoding:NSUTF8StringEncoding]];
+  if (!g_notificationCategories) {
+    g_notificationCategories = [NSMutableDictionary dictionary];
+  }
+  UNNotificationCategory *existing = g_notificationCategories[key];
+  if (existing)
+    return existing;
+
+  NSMutableArray<UNNotificationAction *> *unActions = [NSMutableArray array];
+  if (reply) {
+    NSString *replyId = [reply[@"id"] isKindOfClass:[NSString class]]
+                            ? reply[@"id"]
+                            : @"reply";
+    NSString *title = [reply[@"title"] isKindOfClass:[NSString class]]
+                          ? reply[@"title"]
+                          : @"Reply";
+    NSString *button = [reply[@"buttonTitle"] isKindOfClass:[NSString class]]
+                           ? reply[@"buttonTitle"]
+                           : @"Send";
+    NSString *placeholder =
+        [reply[@"placeholder"] isKindOfClass:[NSString class]]
+            ? reply[@"placeholder"]
+            : @"";
+    [unActions addObject:[UNTextInputNotificationAction
+                             actionWithIdentifier:replyId
+                                            title:title
+                                          options:UNNotificationActionOptionNone
+                             textInputButtonTitle:button
+                             textInputPlaceholder:placeholder]];
+  }
+  for (NSDictionary *action in actions) {
+    if (![action isKindOfClass:[NSDictionary class]] ||
+        ![action[@"id"] isKindOfClass:[NSString class]] ||
+        ![action[@"title"] isKindOfClass:[NSString class]])
+      continue;
+    UNNotificationActionOptions options = UNNotificationActionOptionNone;
+    if ([action[@"destructive"] boolValue])
+      options |= UNNotificationActionOptionDestructive;
+    if ([action[@"foreground"] boolValue])
+      options |= UNNotificationActionOptionForeground;
+    [unActions addObject:[UNNotificationAction actionWithIdentifier:action[@"id"]
+                                                              title:action[@"title"]
+                                                            options:options]];
+  }
+  UNNotificationCategory *category = [UNNotificationCategory
+      categoryWithIdentifier:key
+                     actions:unActions
+           intentIdentifiers:@[]
+                     options:UNNotificationCategoryOptionCustomDismissAction];
+  g_notificationCategories[key] = category;
+  return category;
+}
+
+static BOOL ensureNotificationAuthorization(UNUserNotificationCenter *center) {
+  if (notificationAuthRequested)
+    return useModernNotifications;
+  notificationAuthRequested = YES;
+
+  // Use a semaphore to wait for authorization result on first call
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
+                                           UNAuthorizationOptionSound |
+                                           UNAuthorizationOptionBadge)
+                        completionHandler:^(BOOL granted,
+                                            NSError *_Nullable error) {
+                          if (error) {
+                            NSLog(@"Notification authorization error: %@ - "
+                                  @"falling back to legacy API",
+                                  error);
+                            useModernNotifications = NO;
+                          } else if (!granted) {
+                            NSLog(@"Notification permission denied by user - "
+                                  @"falling back to legacy API");
+                            useModernNotifications = NO;
+                          } else {
+                            NSLog(@"Notification permission granted");
+                            notificationAuthGranted = YES;
+                          }
+                          dispatch_semaphore_signal(sem);
+                        }];
+  // Wait briefly for authorization (with timeout)
+  dispatch_semaphore_wait(sem,
+                          dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
+  return useModernNotifications;
+}
+
+// Options JSON: {id, title, body?, subtitle?, silent?, actions?: [{id, title,
+// destructive?, foreground?}], reply?: {id?, title?, placeholder?,
+// buttonTitle?}}. Reusing an id replaces the earlier notification.
+extern "C" void showNotificationWithOptions(const char *optionsJson) {
+  NSData *data = [NSData dataWithBytes:optionsJson
+                                length:optionsJson ? strlen(optionsJson) : 0];
+  NSDictionary *options = [NSJSONSerialization JSONObjectWithData:data
+                                                          options:0
+                                                            error:nil];
+  if (![options isKindOfClass:[NSDictionary class]])
+    return;
+  NSString *(^string)(NSString *) = ^NSString *(NSString *key) {
+    id value = options[key];
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+  };
+  NSString *titleStr = string(@"title") ?: @"";
+  NSString *bodyStr = string(@"body") ?: @"";
+  NSString *subtitleStr = string(@"subtitle");
+  BOOL silent = [options[@"silent"] boolValue];
+  NSString *identifier = string(@"id") ?: [[NSUUID UUID] UUIDString];
+  NSArray *actions =
+      [options[@"actions"] isKindOfClass:[NSArray class]] ? options[@"actions"]
+                                                          : nil;
+  NSDictionary *reply = [options[@"reply"] isKindOfClass:[NSDictionary class]]
+                            ? options[@"reply"]
+                            : nil;
 
   // If we've already determined modern API doesn't work, use legacy
-  if (!useModernNotifications) {
+  if (!useModernNotifications || !canUseNotificationCenter()) {
     showNotificationLegacy(titleStr, bodyStr, subtitleStr, silent);
     return;
   }
 
   UNUserNotificationCenter *center =
       [UNUserNotificationCenter currentNotificationCenter];
-
-  // Request authorization if we haven't already
-  if (!notificationAuthRequested) {
-    notificationAuthRequested = YES;
-
-    // Use a semaphore to wait for authorization result on first call
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-
-    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
-                                             UNAuthorizationOptionSound |
-                                             UNAuthorizationOptionBadge)
-                          completionHandler:^(BOOL granted,
-                                              NSError *_Nullable error) {
-                            if (error) {
-                              NSLog(@"Notification authorization error: %@ - "
-                                    @"falling back to legacy API",
-                                    error);
-                              useModernNotifications = NO;
-                            } else if (!granted) {
-                              NSLog(@"Notification permission denied by user - "
-                                    @"falling back to legacy API");
-                              useModernNotifications = NO;
-                            } else {
-                              NSLog(@"Notification permission granted");
-                              notificationAuthGranted = YES;
-                            }
-                            dispatch_semaphore_signal(sem);
-                          }];
-
-    // Wait briefly for authorization (with timeout)
-    dispatch_semaphore_wait(
-        sem, dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
-
-    // If modern API failed, use legacy for this and future calls
-    if (!useModernNotifications) {
-      showNotificationLegacy(titleStr, bodyStr, subtitleStr, silent);
-      return;
-    }
+  if (!ensureNotificationAuthorization(center)) {
+    showNotificationLegacy(titleStr, bodyStr, subtitleStr, silent);
+    return;
   }
 
   // Create notification content
@@ -9943,8 +10106,15 @@ extern "C" void showNotification(const char *title, const char *body,
     content.sound = [UNNotificationSound defaultSound];
   }
 
-  // Create a unique identifier for this notification
-  NSString *identifier = [[NSUUID UUID] UUIDString];
+  UNNotificationCategory *category = nil;
+  NSSet *categories = nil;
+  @synchronized([ElectrobunNotificationDelegate class]) {
+    category = notificationCategoryFor(actions, reply);
+    categories = [NSSet setWithArray:g_notificationCategories.allValues ?: @[]];
+  }
+  if (category) {
+    content.categoryIdentifier = category.identifier;
+  }
 
   // Create the request with no trigger (immediate delivery)
   UNNotificationRequest *request =
@@ -9952,20 +10122,133 @@ extern "C" void showNotification(const char *title, const char *body,
                                            content:content
                                            trigger:nil];
 
-  // Schedule the notification
-  [center addNotificationRequest:request
-           withCompletionHandler:^(NSError *_Nullable error) {
-             if (error) {
-               NSLog(@"Failed to schedule notification via modern API: %@ - "
-                     @"trying legacy",
-                     error);
-               // Fall back to legacy API
-               useModernNotifications = NO;
-               showNotificationLegacy(titleStr, bodyStr, subtitleStr, silent);
-             } else {
-               NSLog(@"Notification scheduled successfully: %@", titleStr);
-             }
-           }];
+  void (^schedule)(void) = ^{
+    [center addNotificationRequest:request
+             withCompletionHandler:^(NSError *_Nullable error) {
+               if (error) {
+                 NSLog(@"Failed to schedule notification via modern API: %@ - "
+                       @"trying legacy",
+                       error);
+                 // Fall back to legacy API
+                 useModernNotifications = NO;
+                 showNotificationLegacy(titleStr, bodyStr, subtitleStr, silent);
+               } else {
+                 NSLog(@"Notification scheduled successfully: %@", titleStr);
+               }
+             }];
+  };
+  if (!category) {
+    schedule();
+    return;
+  }
+  // Categories register asynchronously; a request that names one before it's
+  // registered shows without its actions. Reading them back waits for that.
+  [center setNotificationCategories:categories];
+  [center getNotificationCategoriesWithCompletionHandler:^(
+              NSSet<UNNotificationCategory *> *registered) {
+    schedule();
+  }];
+}
+
+extern "C" void showNotification(const char *title, const char *body,
+                                 const char *subtitle, BOOL silent) {
+  NSMutableDictionary *options = [@{
+    @"title" : [NSString stringWithUTF8String:title ?: ""],
+    @"body" : [NSString stringWithUTF8String:body ?: ""],
+    @"silent" : @(silent)
+  } mutableCopy];
+  if (subtitle) {
+    options[@"subtitle"] = [NSString stringWithUTF8String:subtitle];
+  }
+  NSData *json = [NSJSONSerialization dataWithJSONObject:options
+                                                 options:0
+                                                   error:nil];
+  NSString *jsonString = [[NSString alloc] initWithData:json
+                                               encoding:NSUTF8StringEncoding];
+  showNotificationWithOptions([jsonString UTF8String]);
+}
+
+// Dock badge: a short label on the app's dock icon, e.g. an unread count.
+// NULL or "" removes it.
+extern "C" void setDockBadge(const char *label) {
+  NSString *labelStr =
+      label && label[0] ? [NSString stringWithUTF8String:label] : nil;
+  runOnMainThreadSyncVoid(^{
+    NSApp.dockTile.badgeLabel = labelStr;
+  });
+}
+
+// The current badge label, or NULL. Free it with freeNativeString.
+extern "C" char *getDockBadge() {
+  __block char *result = NULL;
+  runOnMainThreadSyncVoid(^{
+    NSString *label = NSApp.dockTile.badgeLabel;
+    if (label.length) {
+      result = strdup([label UTF8String]);
+    }
+  });
+  return result;
+}
+
+// Dock progress: the app icon with a progress bar drawn over its bottom edge.
+@interface ElectrobunDockProgressView : NSView
+@property(nonatomic) double progress;
+@end
+
+@implementation ElectrobunDockProgressView
+- (void)drawRect:(NSRect)dirtyRect {
+  NSRect bounds = self.bounds;
+  [[NSApp applicationIconImage] drawInRect:bounds];
+
+  CGFloat height = NSHeight(bounds) * 0.1;
+  NSRect track = NSMakeRect(NSWidth(bounds) * 0.1, NSHeight(bounds) * 0.08,
+                            NSWidth(bounds) * 0.8, height);
+  [[NSColor colorWithWhite:0 alpha:0.55] setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:track
+                                   xRadius:height / 2
+                                   yRadius:height / 2] fill];
+
+  CGFloat inset = height * 0.15;
+  NSRect bar = NSInsetRect(track, inset, inset);
+  bar.size.width = MAX(bar.size.height, bar.size.width * self.progress);
+  CGFloat radius = bar.size.height / 2;
+  [[NSColor controlAccentColor] setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:bar xRadius:radius
+                                   yRadius:radius] fill];
+}
+@end
+
+static ElectrobunDockProgressView *g_dockProgressView = nil;
+static double g_dockProgress = -1;
+
+// progress in [0, 1] shows the bar; anything else (e.g. -1) removes it.
+extern "C" void setDockProgress(double progress) {
+  BOOL show = progress >= 0 && progress <= 1;
+  runOnMainThreadSyncVoid(^{
+    NSDockTile *tile = NSApp.dockTile;
+    g_dockProgress = show ? progress : -1;
+    if (show) {
+      if (!g_dockProgressView) {
+        g_dockProgressView = [[ElectrobunDockProgressView alloc]
+            initWithFrame:NSMakeRect(0, 0, tile.size.width, tile.size.height)];
+      }
+      g_dockProgressView.progress = progress;
+      [g_dockProgressView setNeedsDisplay:YES];
+      tile.contentView = g_dockProgressView;
+    } else {
+      tile.contentView = nil;
+    }
+    [tile display];
+  });
+}
+
+// The progress shown, or -1 when there's no bar.
+extern "C" double getDockProgress() {
+  __block double result = -1;
+  runOnMainThreadSyncVoid(^{
+    result = g_dockProgress;
+  });
+  return result;
 }
 
 extern "C" const char *openFileDialog(const char *startingFolder,
