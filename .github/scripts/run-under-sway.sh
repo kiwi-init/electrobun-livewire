@@ -16,6 +16,10 @@ while [[ $# -gt 0 ]]; do
     *) break ;;
   esac
 done
+if [[ ! "$scale" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "--scale must be a number, got: $scale" >&2
+  exit 2
+fi
 if [[ $# -eq 0 ]]; then
   echo "usage: $0 [--scale S] -- command args..." >&2
   exit 2
