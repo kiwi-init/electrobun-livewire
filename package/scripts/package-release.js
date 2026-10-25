@@ -10,6 +10,7 @@ import { validateNativeDevkitManifest } from "./validate-native-devkit.mjs";
 import { parseAppCottontailVersion } from "./verify-release-toolchain.mjs";
 import { validateWindowsReleaseArchitecture } from "./windows-binary-architecture.mjs";
 import { selectHutchBinary } from "./hutch-launcher.mjs";
+import { stripLinuxRelease } from "./strip-linux-release.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,6 +97,7 @@ if (platform === "darwin") {
 }
 
 if (platform === "linux") {
+	stripLinuxRelease(distPath);
 	const verifier = path.join(__dirname, "verify-linux-elf-abi.js");
 	execFileSync(process.execPath, [verifier, distPath], {
 		stdio: "inherit",
