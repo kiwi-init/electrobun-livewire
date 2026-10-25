@@ -1,11 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
-const linuxWrapper = readFileSync(
-	join(import.meta.dirname, "../native/linux/nativeWrapper.cpp"),
-	"utf8",
-);
+const linuxWrapper = readLinuxWrapperSource();
 const overlaySync = readFileSync(
 	join(import.meta.dirname, "../preload/overlaySync.ts"),
 	"utf8",

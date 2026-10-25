@@ -3,11 +3,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
 const nativeRoot = join(import.meta.dirname, "../native");
 const sharedRoot = join(nativeRoot, "shared");
 const windowsSource = readFileSync(join(nativeRoot, "win/nativeWrapper.cpp"), "utf8");
-const linuxSource = readFileSync(join(nativeRoot, "linux/nativeWrapper.cpp"), "utf8");
+const linuxSource = readLinuxWrapperSource();
 const behaviorSourcePath = join(sharedRoot, "cef_find_session_test.cpp");
 
 function removeTemporaryDirectory(directory: string) {

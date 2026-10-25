@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { join } from "path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
-const source = readFileSync(
-	join(import.meta.dirname, "../native/linux/nativeWrapper.cpp"),
-	"utf8",
-);
+const source = readLinuxWrapperSource();
 
 const countNoArgumentCalls = (functionName: string) =>
 	[

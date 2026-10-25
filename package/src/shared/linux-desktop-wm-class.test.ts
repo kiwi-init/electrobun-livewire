@@ -1,13 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
-const source = readFileSync(
-	join(import.meta.dirname, "../native/linux/nativeWrapper.cpp"),
-	"utf8",
-);
+const source = readLinuxWrapperSource();
 
 describe("Linux desktop WM class", () => {
 	test.skipIf(process.platform === "win32")("qualifies raw names without duplicating packaged channel suffixes", () => {

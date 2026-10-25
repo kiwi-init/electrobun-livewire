@@ -1,11 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
-const wrapper = readFileSync(
-	join(import.meta.dirname, "../native/linux/nativeWrapper.cpp"),
-	"utf8",
-);
+const wrapper = readLinuxWrapperSource();
 const helper = readFileSync(
 	join(import.meta.dirname, "../native/linux/native_file_dialog.h"),
 	"utf8",

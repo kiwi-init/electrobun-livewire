@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
 const sourceRoot = join(import.meta.dirname, "..");
 
@@ -17,7 +18,7 @@ const sources = {
 	odin: readSource("sdks/odin/electrobun.odin"),
 	wrappers: {
 		darwin: readSource("native/macos/nativeWrapper.mm"),
-		linux: readSource("native/linux/nativeWrapper.cpp"),
+		linux: readLinuxWrapperSource(),
 		win32: readSource("native/win/nativeWrapper.cpp"),
 	},
 };
