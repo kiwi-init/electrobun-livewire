@@ -100,6 +100,7 @@ export class TestExecutor {
           sandbox: options.sandbox || false,
           allowedProtocols: options.allowedProtocols,
           spellCheck: options.spellCheck ?? false,
+          navigationRules: options.navigationRules,
         });
 
         // Wait a bit for window to be created

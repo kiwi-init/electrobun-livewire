@@ -282,6 +282,45 @@ export const navigationTests = [
   }),
 
   defineTest({
+    name: "Navigation rules - constructor option",
+    category: "Navigation",
+    description: "Test that navigationRules passed when the window is created are enforced",
+    timeout: 15000,
+    async run({ createWindow, log }) {
+      const navigatedUrls: string[] = [];
+
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        title: "Nav Rules Constructor Test",
+        navigationRules: JSON.stringify([
+          "^*", // Block all
+          "views://test-harness/*", // Allow the current view
+          "views://internal/*", // Allow internal views
+        ]),
+      });
+
+      // Wait for initial load
+      await sleep(500);
+
+      win.webview.on("did-navigate", (e: any) => {
+        const url = e.data?.detail || e.detail || "";
+        navigatedUrls.push(url);
+        log(`did-navigate fired for: ${url}`);
+      });
+
+      log("Loading test-runner (not allowlisted, should be blocked)");
+      win.webview.loadURL("views://test-runner/index.html");
+      await sleep(1500);
+      expect(navigatedUrls.some((url) => url.includes("test-runner"))).toBe(false);
+
+      log("Reloading test-harness (allowlisted, should navigate)");
+      win.webview.loadURL("views://test-harness/index.html?again");
+      await sleep(1500);
+      expect(navigatedUrls.some((url) => url.includes("test-harness"))).toBe(true);
+    },
+  }),
+
+  defineTest({
     name: "dom-ready event",
     category: "Navigation",
     description: "Test that dom-ready event fires after DOM is loaded",

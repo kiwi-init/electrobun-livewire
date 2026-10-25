@@ -76,6 +76,7 @@ export interface WindowOptions {
   sandbox?: boolean; // When true, disables RPC and only allows event emission
   allowedProtocols?: { views?: boolean; appData?: boolean };
   spellCheck?: boolean;
+  navigationRules?: string; // JSON array of rules, as BrowserWindow takes it
 }
 
 export interface TestWindow {
