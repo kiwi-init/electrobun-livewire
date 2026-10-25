@@ -152,8 +152,20 @@ function ensureWebviewRuntimeConfigured() {
 	webviewRuntimeConfigured = true;
 }
 
+// Tests install a fake under this key (see __tests__/fakeFFI.ts). Set before
+// the SDK is imported, the native libraries are never opened; either way
+// ffi.request calls go to the fake whenever FFI is unavailable.
+const FAKE_FFI_KEY = Symbol.for("electrobun.fakeFFI");
+
+function fakeFFI(): Record<string, (params?: unknown) => unknown> | undefined {
+	return (globalThis as Record<PropertyKey, unknown>)[FAKE_FFI_KEY] as
+		| Record<string, (params?: unknown) => unknown>
+		| undefined;
+}
+
 let coreLoadError: unknown = null;
 const core = (() => {
+	if (fakeFFI()) return null;
 	try {
 		const coreFileName =
 			process.platform === "win32"
@@ -751,6 +763,7 @@ const core = (() => {
 
 let nativeWrapperLoadError: unknown = null;
 export const native = (() => {
+	if (fakeFFI()) return null;
 	try {
 		const nativeWrapperFileName = `libNativeWrapper.${suffix}`;
 		return tryDlopenCandidates(nativeWrapperFileName, {
@@ -1262,6 +1275,12 @@ function createFfiRequestProxy(ffiRequest: Record<string, Function>): Record<str
 		get(target, method: string) {
 			if (typeof method !== "string") return target[method];
 			return (params?: unknown) => {
+				const fake = fakeFFI();
+				if (fake) {
+					const handler = fake[method];
+					if (!handler) throw new Error(`The fake FFI has no handler for ${method}`);
+					return handler(params);
+				}
 				if (!bridge) {
 					const loadFailures = [
 						["ElectrobunCore", coreLoadError],

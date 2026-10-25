@@ -26,9 +26,21 @@ These rules win over `CLAUDE.md`, which is upstream's.
 
 - Someone other than the author reviews (`kiwi task review T23`). The lead merges, with a squash, so each fix lands as one commit on `main`.
 
+## Testing
+
+- SDK logic (BrowserView, BrowserWindow, rpc) runs under `bun test` with no native libraries: install the fake from `package/src/sdks/main/__tests__/fakeFFI.ts` before importing the SDK and assert on the `ffi.request` calls it records. From `package/`: `node scripts/run-bun-test.js src/sdks/main`.
+- Native behaviour needs Kitchen. One test against a local devkit, from `kitchen/`:
+
+  ```sh
+  HUTCH_ELECTROBUN_DEVKIT_ROOT=$PWD/../package/dist ELECTROBUN_KITCHEN_MAIN_PROCESS=bun ELECTROBUN_KITCHEN_RENDERER=native \
+    AUTO_RUN_TEST_NAME="<test name>" hutch electrobun dev
+  ```
+
+  Or on CI, for Linux from a Mac: `gh workflow run kitchen-test.yml --ref <branch> -f test="<test name>" -f runner=ubuntu-24.04`.
+
 ## Driving a running app
 
-Start any Livewire app with `ELECTROBUN_AGENT_CONTROL=1` (or `runtime.agentControl: true` in its config) and agents can see and use it: list windows, read text, find controls, click, type, evaluate JS, tail the console, take screenshots (macOS today), run app-registered actions. It listens on a unix socket only your user can open (macOS and Linux).
+Start any Livewire app with `ELECTROBUN_AGENT_CONTROL=1` (or `runtime.agentControl: true` in its config) and agents can see and use it: list windows, read text, find controls, click, type, evaluate JS, tail the console, take screenshots (native WebKit views on macOS and Linux), run app-registered actions. It listens on a unix socket only your user can open (macOS and Linux).
 
 ```sh
 claude mcp add livewire -- bun <repo>/package/src/sdks/main/agent/cli.ts mcp   # tools for Claude Code
