@@ -37,6 +37,13 @@ on:
         options:
           - keep
           - "off"
+      strip:
+        description: Linux only. Strip the devkit's ELF files as a release does (package-release.js), to test stripped binaries
+        type: choice
+        default: "no"
+        options:
+          - "no"
+          - "yes"
       display:
         description: Linux display server (ignored on macOS)
         type: choice
@@ -85,6 +92,10 @@ jobs:
         run: |
           hutch run install
           hutch build:dev
+      - name: Strip the devkit like a release (Linux)
+        if: runner.os == 'Linux' && inputs.strip == 'yes'
+        working-directory: package
+        run: node --input-type=module -e 'const { stripLinuxRelease } = await import("./scripts/strip-linux-release.mjs"); stripLinuxRelease("dist")'
       - name: Install Kitchen
         working-directory: kitchen
         run: hutch run install
