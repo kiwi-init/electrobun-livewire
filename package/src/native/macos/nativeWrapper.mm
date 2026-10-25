@@ -11075,7 +11075,12 @@ static NSDictionary *cookieToDictionary(NSHTTPCookie *cookie) {
   if (cookie.expiresDate) {
     dict[@"expirationDate"] = @([cookie.expiresDate timeIntervalSince1970]);
   }
-  dict[@"sameSite"] = cookie.sameSitePolicy.lowercaseString ?: @"no_restriction";
+  // WebKit hands back "none" for a cookie without a policy.
+  NSString *sameSite = cookie.sameSitePolicy.lowercaseString;
+  dict[@"sameSite"] = [sameSite isEqualToString:@"strict"] ||
+                              [sameSite isEqualToString:@"lax"]
+                          ? sameSite
+                          : @"no_restriction";
   return dict;
 }
 
