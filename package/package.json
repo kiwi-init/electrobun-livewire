@@ -1,6 +1,6 @@
 {
 	"name": "electrobun",
-	"version": "2.1.0-livewire.rc.1",
+	"version": "2.1.0-livewire.rc.2",
 	"private": true,
 	"description": "Build ultra fast, tiny, and cross-platform desktop apps with Typescript.",
 	"license": "MIT",
