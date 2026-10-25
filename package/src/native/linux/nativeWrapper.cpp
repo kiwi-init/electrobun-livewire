@@ -7760,6 +7760,49 @@ void* createX11Window(uint32_t windowId, double x, double y, double width, doubl
     return result;
 }
 
+static bool isWaylandWindow(GtkWidget* window) {
+#ifdef GDK_WINDOWING_WAYLAND
+    return GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(window));
+#else
+    (void)window;
+    return false;
+#endif
+}
+
+// Wayland tells a window it was minimized never: xdg-shell has no such state,
+// and GTK3 never sets ICONIFIED there. Electrobun remembers the request until
+// the window is restored or becomes active again.
+static constexpr const char* kMinimizeRequestedKey = "electrobun-minimize-requested";
+
+static void setMinimizeRequested(GtkWidget* window, bool requested) {
+    g_object_set_data(G_OBJECT(window), kMinimizeRequestedKey, GINT_TO_POINTER(requested ? 1 : 0));
+}
+
+static bool minimizeRequested(GtkWidget* window) {
+    return GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), kMinimizeRequestedKey)) != 0;
+}
+
+// Focus reaches a window two ways: keyboard focus-in/out, and the compositor's
+// activated state (GDK_WINDOW_STATE_FOCUSED), which on Wayland arrives even
+// with no keyboard. Report each change once, whichever comes first.
+static constexpr const char* kReportedFocusKey = "electrobun-reported-focus";
+
+static void reportWindowFocus(ContainerView* container, bool focused) {
+    if (!container || !container->window) return;
+    GObject* object = G_OBJECT(container->window);
+    // 0 = nothing reported yet, 1 = focused, 2 = blurred.
+    const int previous = GPOINTER_TO_INT(g_object_get_data(object, kReportedFocusKey));
+    const int next = focused ? 1 : 2;
+    if (previous == next) return;
+    g_object_set_data(object, kReportedFocusKey, GINT_TO_POINTER(next));
+    if (focused) {
+        setMinimizeRequested(container->window, false);
+        if (container->focusCallback) container->focusCallback(container->windowId);
+    } else if (container->blurCallback) {
+        container->blurCallback(container->windowId);
+    }
+}
+
 // Wayland compositors that negotiate server-side decorations but draw none.
 // GTK3 then draws none either, so a framed window has no title or close
 // button. Each entry is a name from XDG_CURRENT_DESKTOP and an env var the
@@ -7903,19 +7946,21 @@ ELECTROBUN_EXPORT void* createGTKWindow(uint32_t windowId, double x, double y, d
 
         // Connect window focus event
         g_signal_connect(window, "focus-in-event", G_CALLBACK(+[](GtkWidget* widget, GdkEventFocus* event, gpointer user_data) -> gboolean {
-            ContainerView* container = static_cast<ContainerView*>(user_data);
-            if (container && container->focusCallback) {
-                container->focusCallback(container->windowId);
-            }
+            reportWindowFocus(static_cast<ContainerView*>(user_data), true);
             return FALSE; // Allow event to propagate
         }), container.get());
 
         g_signal_connect(window, "focus-out-event", G_CALLBACK(+[](GtkWidget* widget, GdkEventFocus* event, gpointer user_data) -> gboolean {
-            ContainerView* container = static_cast<ContainerView*>(user_data);
-            if (container && container->blurCallback) {
-                container->blurCallback(container->windowId);
-            }
+            reportWindowFocus(static_cast<ContainerView*>(user_data), false);
             return FALSE; // Allow event to propagate
+        }), container.get());
+
+        g_signal_connect(window, "window-state-event", G_CALLBACK(+[](GtkWidget* widget, GdkEventWindowState* event, gpointer user_data) -> gboolean {
+            if (event->changed_mask & GDK_WINDOW_STATE_FOCUSED) {
+                reportWindowFocus(static_cast<ContainerView*>(user_data),
+                                  (event->new_window_state & GDK_WINDOW_STATE_FOCUSED) != 0);
+            }
+            return FALSE;
         }), container.get());
 
         // Note: Removed gtk_main_quit as default behavior - let the app decide whether to exit
@@ -11451,6 +11496,9 @@ ELECTROBUN_EXPORT void minimizeWindow(void* window) {
             GtkWidget* gtkWindow = static_cast<GtkWidget*>(window);
             if (GTK_IS_WINDOW(gtkWindow)) {
                 gtk_window_iconify(GTK_WINDOW(gtkWindow));
+                if (isWaylandWindow(gtkWindow)) {
+                    setMinimizeRequested(gtkWindow, true);
+                }
             }
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
@@ -11471,6 +11519,7 @@ ELECTROBUN_EXPORT void restoreWindow(void* window) {
             if (GTK_IS_WINDOW(gtkWindow)) {
                 gtk_window_deiconify(GTK_WINDOW(gtkWindow));
                 gtk_window_present(GTK_WINDOW(gtkWindow));
+                setMinimizeRequested(gtkWindow, false);
             }
         } else {
             X11Window* x11win = static_cast<X11Window*>(window);
@@ -11543,6 +11592,9 @@ ELECTROBUN_EXPORT bool isWindowMinimized(void* window) {
                 if (gdkWindow) {
                     GdkWindowState state = gdk_window_get_state(gdkWindow);
                     result = (state & GDK_WINDOW_STATE_ICONIFIED) != 0;
+                }
+                if (!result && isWaylandWindow(gtkWindow)) {
+                    result = minimizeRequested(gtkWindow);
                 }
             }
         } else {
