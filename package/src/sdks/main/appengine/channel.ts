@@ -65,9 +65,10 @@ const DEFAULT_POLL_INTERVAL_MS = 5 * 60_000;
 const MANIFEST_MAX_BYTES = 64 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 256 * 1024 * 1024;
 const MANIFEST_TIMEOUT_MS = 15_000;
-// Downloads may take as long as they need, but not stall: abort when no bytes
-// arrive for this long.
+// Downloads may be slow but not stall: abort when no bytes arrive for this
+// long, and give up on a bundle that still isn't done after the deadline.
 const STALL_TIMEOUT_MS = 30_000;
+const BUNDLE_DEADLINE_MS = 15 * 60_000;
 // The server sends a comment every 15 s; a silent stream is a dead one.
 const PUSH_SILENCE_TIMEOUT_MS = 45_000;
 const PUSH_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
@@ -122,6 +123,23 @@ export class UiChannel {
 		const paths = await this.resolvePaths();
 		const dir = join(paths.root, manifest.sha256);
 		return existsSync(dir) ? this.installFor(manifest, dir, paths.appdataRoot) : null;
+	}
+
+	// Deletes installs whose sha256 isn't in `keep`.
+	async prune(keep: Iterable<string>) {
+		const { root } = await this.resolvePaths();
+		const kept = new Set(keep);
+		let entries: string[];
+		try {
+			entries = readdirSync(root);
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			if (/^[0-9a-f]{64}$/.test(entry) && !kept.has(entry)) {
+				rmSync(join(root, entry), { recursive: true, force: true });
+			}
+		}
 	}
 
 	// One check at a time; a check requested while one runs runs once after it.
@@ -193,14 +211,15 @@ export class UiChannel {
 			throw new Error(`bundle URL must be http(s), not ${bundleUrl.protocol}`);
 		}
 		const abort = new AbortController();
-		const response = await this.fetchImpl(bundleUrl.toString(), { signal: abort.signal });
-		if (!response.ok) throw new Error(`bundle: HTTP ${response.status}`);
-		const bytes = await readCapped(
-			response,
-			this.options.maxBundleBytes ?? DEFAULT_MAX_BUNDLE_BYTES,
-			"bundle",
-			abort,
-		);
+		const deadline = setTimeout(() => abort.abort(new Error("bundle download took over 15 minutes")), BUNDLE_DEADLINE_MS);
+		let bytes: Uint8Array;
+		try {
+			const response = await this.fetchImpl(bundleUrl.toString(), { signal: abort.signal });
+			if (!response.ok) throw new Error(`bundle: HTTP ${response.status}`);
+			bytes = await readCapped(response, this.options.maxBundleBytes ?? DEFAULT_MAX_BUNDLE_BYTES, "bundle", abort);
+		} finally {
+			clearTimeout(deadline);
+		}
 		// Checks the hash, version and every path before anything is written.
 		const files = readUipack(bytes, manifest);
 		if (!files.ok) throw new Error(files.reason);

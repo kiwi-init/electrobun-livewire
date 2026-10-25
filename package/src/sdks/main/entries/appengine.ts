@@ -1,3 +1,5 @@
+export { AppEngine } from "../appengine/engine";
+export type { AppEngineEvent, AppEngineOptions, EngineStorage } from "../appengine/engine";
 export { UiChannel } from "../appengine/channel";
 export type {
 	UiChannelEvent,
@@ -8,8 +10,12 @@ export type {
 export {
 	MANIFEST_FORMAT,
 	UIPACK_FORMAT,
+	buildUipack,
+	generateSigningKey,
 	keyIdFor,
 	readUipack,
+	signManifest,
+	uipackFileName,
 	verifyManifest,
 } from "../appengine/format";
 export type { TrustedKeys, UiConfig, UiManifest } from "../appengine/format";
