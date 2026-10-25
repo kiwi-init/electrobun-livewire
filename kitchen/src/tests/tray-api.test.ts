@@ -40,6 +40,21 @@ export const trayApiTests = [
   }),
 
   defineTest({
+    name: "Tray host availability",
+    category: "Tray",
+    description: "Tray.hostAvailable is true on macOS and Windows, a boolean on Linux",
+    timeout: 5000,
+    async run({ log }) {
+      const available = Tray.hostAvailable();
+      expect(typeof available).toBe("boolean");
+      if (process.platform !== "linux") {
+        expect(available).toBe(true);
+      }
+      log(`Tray host available: ${available}`);
+    },
+  }),
+
+  defineTest({
     name: "Dock icon visibility contract",
     category: "Utils",
     description: "Test Utils.setDockIconVisible and Utils.isDockIconVisible",
