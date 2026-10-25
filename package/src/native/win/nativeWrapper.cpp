@@ -1102,8 +1102,9 @@ static std::string loadAppDataFile(const std::string& url) {
     const std::wstring base = electrobun::getEnvironmentVariableWide(L"LOCALAPPDATA");
     if (base.empty()) return "";
     std::error_code ec;
+    // Only userData\appdata is served: the rest of userData stays private.
     const auto root = std::filesystem::weakly_canonical(
-        std::filesystem::path(buildAppDataPath(base, identifierWide, channelWide, L"", L'\\')), ec);
+        std::filesystem::path(buildAppDataPath(base, identifierWide, channelWide, L"appdata", L'\\')), ec);
     if (ec) return "";
     const auto target = std::filesystem::weakly_canonical(root / relativeWide, ec);
     if (ec) return "";

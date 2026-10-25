@@ -811,8 +811,11 @@ static NSString *appDataRootPath(void) {
   if (!appSupportPath)
     return nil;
 
+  // Only userData/appdata is served: the rest of userData (app state, the CEF
+  // profile) stays out of reach of webviews.
   std::string root = electrobun::buildAppDataPath(
-      [appSupportPath UTF8String], g_electrobunIdentifier, g_electrobunChannel);
+      [appSupportPath UTF8String], g_electrobunIdentifier, g_electrobunChannel,
+      "appdata");
   NSString *rootPath = [NSString stringWithUTF8String:root.c_str()];
   [[NSFileManager defaultManager] createDirectoryAtPath:rootPath
                             withIntermediateDirectories:YES

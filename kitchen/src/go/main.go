@@ -2441,10 +2441,11 @@ func runAppDataProtocolTest(enabled bool) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(paths.UserData, 0o755); err != nil {
-		return fmt.Errorf("create user data directory: %w", err)
+	appdataRoot := filepath.Join(paths.UserData, "appdata")
+	if err := os.MkdirAll(appdataRoot, 0o755); err != nil {
+		return fmt.Errorf("create appdata root: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(paths.UserData, fixtureName), []byte(fixtureContents), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(appdataRoot, fixtureName), []byte(fixtureContents), 0o644); err != nil {
 		return fmt.Errorf("write appdata fixture: %w", err)
 	}
 
