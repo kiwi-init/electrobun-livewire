@@ -1,4 +1,4 @@
-import { ffi } from "../proc/native";
+import { ffi, Screen } from "../proc/native";
 import electrobunEventEmitter from "../events/eventEmitter";
 import { BrowserView } from "./BrowserView";
 import type { NewWindowPolicy } from "./newWindowPolicy";
@@ -6,6 +6,13 @@ import { type Pointer } from "bun:ffi";
 import { BuildConfig } from "./BuildConfig";
 import { type RPCWithTransport } from "../../../shared/rpc.js";
 import { WGPUView } from "./WGPUView";
+import {
+	clampToDisplays,
+	loadWindowState,
+	resolveWindowState,
+	WindowStateSaver,
+	type WindowStateOptions,
+} from "./windowState";
 
 const buildConfig = BuildConfig.getSync();
 ffi.request.setExitOnLastWindowClosed({
@@ -60,6 +67,11 @@ export type WindowOptionsType<T = undefined> = {
 	// Use for untrusted content (remote URLs) to prevent malicious sites from
 	// accessing internal APIs, creating OOPIFs, or communicating with Bun
 	sandbox: boolean;
+	// Remember this window's frame, maximized and full-screen state under this
+	// name, and reopen it that way on the next launch (moved onto a visible
+	// display if needed). `frame` is then only used the first time. Off by
+	// default. See windowState.ts.
+	windowState?: WindowStateOptions | null;
 };
 
 const defaultOptions: WindowOptionsType = {
@@ -151,6 +163,9 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	};
 	// todo (yoav): make this an array of ids or something
 	webviewId!: number;
+	private stateSaver: WindowStateSaver | null = null;
+	// Saved maximized/full-screen state to apply once a hidden window is shown.
+	private pendingRestore: { maximized: boolean; fullScreen: boolean } | null = null;
 
 	get ptr(): Pointer | null {
 		return ffi.request.getWindowPointer({ winId: this.id }) as Pointer | null;
@@ -158,6 +173,11 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 
 	constructor(options: Partial<WindowOptionsType<T>> = defaultOptions) {
 		this.title = options.title || "New Window";
+		const stateLocation = options.windowState ? resolveWindowState(options.windowState) : null;
+		const saved = stateLocation ? loadWindowState(stateLocation.file, stateLocation.id) : null;
+		if (saved) {
+			options = { ...options, frame: clampToDisplays(saved.frame, Screen.getAllDisplays()) };
+		}
 		const centered = options.frame?.x === undefined || options.frame?.y === undefined;
 		this.frame = options.frame
 			? {
@@ -191,6 +211,40 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 		this.sandbox = options.sandbox ?? false;
 
 		this.init(options, centered);
+
+		if (stateLocation) {
+			this.stateSaver = new WindowStateSaver(stateLocation.file, stateLocation.id, {
+				frame: { ...this.frame },
+				maximized: saved?.maximized ?? false,
+				fullScreen: saved?.fullScreen ?? false,
+			});
+			const save = () => this.saveState();
+			this.on("resize", save);
+			this.on("move", save);
+			this.on("close", () => this.stateSaver?.flush());
+			if (saved && (saved.maximized || saved.fullScreen)) {
+				this.pendingRestore = { maximized: saved.maximized, fullScreen: saved.fullScreen };
+				// Maximizing or entering full screen would show a hidden window.
+				if (!this.hidden) this.applyPendingRestore();
+			}
+			// Saved now so a window that's never moved still reopens here.
+			this.stateSaver.flush();
+		}
+	}
+
+	private saveState() {
+		if (!this.stateSaver || this.pendingRestore) return;
+		// Minimizing keeps the frame and the state the window had.
+		if (this.isMinimized()) return;
+		this.stateSaver.update(this.getFrame(), this.isMaximized(), this.isFullScreen());
+	}
+
+	private applyPendingRestore() {
+		const restore = this.pendingRestore;
+		if (!restore) return;
+		this.pendingRestore = null;
+		if (restore.fullScreen) this.setFullScreen(true);
+		else if (restore.maximized) this.maximize();
 	}
 
 	init(
@@ -342,11 +396,15 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	}
 
 	show() {
-		return ffi.request.showWindow({ winId: this.id, activate: true });
+		const result = ffi.request.showWindow({ winId: this.id, activate: true });
+		this.applyPendingRestore();
+		return result;
 	}
 
 	showInactive() {
-		return ffi.request.showWindow({ winId: this.id, activate: false });
+		const result = ffi.request.showWindow({ winId: this.id, activate: false });
+		this.applyPendingRestore();
+		return result;
 	}
 
 	hide() {
