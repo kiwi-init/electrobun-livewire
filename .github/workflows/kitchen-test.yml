@@ -22,6 +22,13 @@ on:
         options:
           - light
           - dark
+      background:
+        description: macOS only. Run in background mode, as on a developer's Mac, and fail if the frontmost app or the cursor changes
+        type: choice
+        default: "no"
+        options:
+          - "no"
+          - "yes"
       reduce_transparency:
         description: Reduce transparency (macOS); GitHub's images turn it on, which draws vibrancy as a flat color
         type: choice
@@ -131,4 +138,30 @@ jobs:
       - name: Run the test (macOS)
         if: runner.os == 'macOS'
         working-directory: kitchen
-        run: HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist" hutch electrobun dev
+        env:
+          BACKGROUND: ${{ inputs.background }}
+        run: |
+          export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
+          if [ "$BACKGROUND" != yes ]; then
+            hutch electrobun dev
+            exit
+          fi
+          # As on a developer's Mac: Finder is frontmost, and nothing in the run
+          # may take it over or move the cursor (T758).
+          osascript -e 'tell application "Finder" to activate'
+          sleep 2
+          watch="$RUNNER_TEMP/focus.log"
+          "$GITHUB_WORKSPACE/.github/scripts/watch-focus.sh" > "$watch" &
+          watcher=$!
+          sleep 2
+          status=0
+          ELECTROBUN_BACKGROUND=1 hutch electrobun dev || status=$?
+          sleep 1
+          kill "$watcher"
+          echo "Frontmost app and cursor during the run:"
+          cat "$watch"
+          if [ "$(wc -l < "$watch")" -gt 1 ]; then
+            echo "::error::The background run changed the frontmost app or moved the cursor"
+            exit 1
+          fi
+          exit "$status"
