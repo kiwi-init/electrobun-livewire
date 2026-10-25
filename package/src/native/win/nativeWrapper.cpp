@@ -52,6 +52,7 @@
 
 // Shared cross-platform utilities
 #include "../shared/glob_match.h"
+#include "../shared/preload_injection.h"
 #include "../shared/callbacks.h"
 #include "../shared/permissions.h"
 #include "../shared/mime_types.h"
@@ -1267,26 +1268,10 @@ public:
         // Process accumulated data and inject script
         processed_data_ = data_buffer_;
 
-        // Look for <head> tag and inject script right after it (as first element in head)
-        // This ensures preload script executes before any other scripts in the page
-        size_t head_pos = processed_data_.find("<head>");
-        if (head_pos != std::string::npos && !script_.empty()) {
-            // Insert after the <head> tag (head_pos + 6 to skip past "<head>")
-            size_t insert_pos = head_pos + 6;
-            std::string script_tag = "<script>" + script_ + "</script>";
-            processed_data_.insert(insert_pos, script_tag);
-        } else {
-            // Fallback: try case-insensitive search for <head with attributes
-            size_t head_start = processed_data_.find("<head");
-            if (head_start != std::string::npos && !script_.empty()) {
-                // Find the end of the opening <head...> tag
-                size_t head_end = processed_data_.find(">", head_start);
-                if (head_end != std::string::npos) {
-                    size_t insert_pos = head_end + 1;
-                    std::string script_tag = "<script>" + script_ + "</script>";
-                    processed_data_.insert(insert_pos, script_tag);
-                }
-            }
+        // Before any page script: after <head>, else in a new <head>, else
+        // after the doctype. Documents without <head> used to get no preload.
+        if (!script_.empty()) {
+            electrobun::injectPreloadScripts(processed_data_, "<script>" + script_ + "</script>");
         }
     }
 
