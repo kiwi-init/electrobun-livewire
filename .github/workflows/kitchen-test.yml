@@ -22,6 +22,13 @@ on:
         options:
           - light
           - dark
+      reduce_transparency:
+        description: Reduce transparency (macOS); GitHub's images turn it on, which draws vibrancy as a flat color
+        type: choice
+        default: keep
+        options:
+          - keep
+          - "off"
       display:
         description: Linux display server (ignored on macOS)
         type: choice
@@ -106,7 +113,13 @@ jobs:
         if: runner.os == 'macOS'
         env:
           APPEARANCE: ${{ inputs.appearance }}
+          REDUCE_TRANSPARENCY: ${{ inputs.reduce_transparency }}
         run: |
+          if [ "$REDUCE_TRANSPARENCY" = off ]; then
+            defaults write com.apple.universalaccess reduceTransparency -bool false \
+              || sudo defaults write "$HOME/Library/Preferences/com.apple.universalaccess" reduceTransparency -bool false \
+              || true
+          fi
           if [ "$APPEARANCE" = dark ]; then
             osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' \
               || defaults write -g AppleInterfaceStyle Dark
