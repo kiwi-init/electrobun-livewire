@@ -19,6 +19,7 @@ on:
       - '.github/wayland-known-failures.txt'
       - 'package/scripts/test-linux-xdg-portal.sh'
       - 'package/scripts/test-linux-sni-tray.sh'
+      - 'package/scripts/test-linux-spawn-fallbacks.sh'
   workflow_dispatch:
 
 permissions:
@@ -52,6 +53,9 @@ jobs:
       - name: StatusNotifierItem tray against a mock watcher
         working-directory: package
         run: scripts/test-linux-sni-tray.sh
+      - name: Fallback launchers run without a shell
+        working-directory: package
+        run: scripts/test-linux-spawn-fallbacks.sh
       - name: Build the devkit
         working-directory: package
         run: |
