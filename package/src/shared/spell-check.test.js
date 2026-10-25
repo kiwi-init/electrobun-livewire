@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { readLinuxWrapperSource } from "./linux-wrapper-source.ts";
 
 const src = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath) => readFileSync(join(src, relativePath), "utf8");
@@ -24,7 +25,7 @@ test("macOS WebKit SPI is guarded and reapplied after navigation", () => {
 test("CEF and non-macOS native renderers report unsupported", () => {
 	const mac = read("native/macos/nativeWrapper.mm");
 	const windows = read("native/win/nativeWrapper.cpp");
-	const linux = read("native/linux/nativeWrapper.cpp");
+	const linux = readLinuxWrapperSource();
 
 	assert.match(mac, /AbstractView[\s\S]*setSpellCheck:[\s\S]*return NO/);
 	for (const wrapper of [windows, linux]) {

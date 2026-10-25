@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
 const nativeRoot = join(import.meta.dirname, "../native");
 const sharedHeader = readFileSync(
@@ -29,7 +30,9 @@ describe("CEF partition request contexts", () => {
 		["win/nativeWrapper.cpp"],
 		["linux/nativeWrapper.cpp"],
 	])("routes %s through the shared partition policy", (relativePath) => {
-		const source = readFileSync(join(nativeRoot, relativePath), "utf8");
+		const source = relativePath.startsWith("linux/")
+			? readLinuxWrapperSource()
+			: readFileSync(join(nativeRoot, relativePath), "utf8");
 		expect(source).toContain('#include "../shared/partition_context.h"');
 		expect(source).toContain(
 			"electrobun::getOrCreateRequestContextForPartition(",

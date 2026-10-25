@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
 const sourceRoot = join(import.meta.dirname, "..");
 const read = (path: string) =>
@@ -54,7 +55,7 @@ describe("bridge callback payload ownership", () => {
 			"@end\n",
 		);
 		const linuxHandlers = between(
-			read("native/linux/nativeWrapper.cpp"),
+			readLinuxWrapperSource().replaceAll("\r\n", "\n"),
 			"static void onEventBridgeMessage(",
 			"// Static debounce timestamp",
 		);

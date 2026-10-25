@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
 const packageRoot = join(import.meta.dirname, "..");
 const launcher = readFileSync(
@@ -11,10 +12,7 @@ const launcherAutomation = readFileSync(
 	join(packageRoot, "launcher/automation.zig"),
 	"utf8",
 );
-const nativeWrapper = readFileSync(
-	join(packageRoot, "native/linux/nativeWrapper.cpp"),
-	"utf8",
-);
+const nativeWrapper = readLinuxWrapperSource();
 
 describe("Linux WebKitGTK automation contract", () => {
 	it("requires the exact launcher opt-in and keeps it out of app argv", () => {

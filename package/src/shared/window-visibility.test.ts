@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readLinuxWrapperSource } from "./linux-wrapper-source";
 
 const packageRoot = join(import.meta.dirname, "..");
 const read = (path: string) => readFileSync(join(packageRoot, path), "utf8");
@@ -9,7 +10,7 @@ describe("native window visibility contract", () => {
 	it("queries each platform's native window state", () => {
 		const macos = read("native/macos/nativeWrapper.mm");
 		const windows = read("native/win/nativeWrapper.cpp");
-		const linux = read("native/linux/nativeWrapper.cpp");
+		const linux = readLinuxWrapperSource();
 
 		expect(macos).toContain('extern "C" bool isWindowVisible(NSWindow *window)');
 		expect(macos).toContain("[window isVisible]");
