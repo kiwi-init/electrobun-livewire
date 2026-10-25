@@ -104,10 +104,12 @@ describe("Linux X11 geometry integration", () => {
 		);
 		const libraryLoad = balancedBlock(source, "void on_library_load()");
 		const ensureCall = initializeGTK.indexOf("ensureXlibThreadSupport()");
-		const gtkInit = initializeGTK.indexOf("gtk_init(");
+		const gtkInit = initializeGTK.indexOf("toolkit::init(");
 
 		expect(ensureCall).toBeGreaterThan(-1);
 		expect(ensureCall).toBeLessThan(gtkInit);
+		// toolkit::init is where the GTK3 layer calls gtk_init.
+		expect(source).toMatch(/void init\(\) \{\s*gtk_init\(nullptr, nullptr\);/);
 		expect(libraryLoad).toContain("ensureXlibThreadSupport()");
 		expect(ensureXlibThreads).toContain("XInitThreads()");
 		expect(ensureXlibThreads).toMatch(

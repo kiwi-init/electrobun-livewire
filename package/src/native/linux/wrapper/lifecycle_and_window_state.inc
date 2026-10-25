@@ -32,7 +32,7 @@ ELECTROBUN_EXPORT void stopEventLoop() {
         if (g_cefInitialized.load()) {
             beginCEFShutdownOnMainThread();
         } else {
-            gtk_main_quit();
+            toolkit::quitMainLoop();
         }
     });
 }

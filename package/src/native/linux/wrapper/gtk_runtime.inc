@@ -24,8 +24,8 @@ void initializeGTK() {
             electrobun::xdg_portal::preferPortalFileChooser();
 
             // Disable setlocale before gtk_init to prevent CEF conflicts
-            gtk_disable_setlocale();
-            gtk_init(nullptr, nullptr);
+            toolkit::disableSetlocale();
+            toolkit::init();
             
             // Install X11 error handler for debugging
             XSetErrorHandler(x11_error_handler);

@@ -158,7 +158,11 @@ using electrobun::OperationGuard;
 // as when they were a single file, so a part can use anything declared in an
 // earlier one. From event_loop.inc on, everything is inside the
 // `extern "C" {` that event_loop.inc opens and sessions_and_misc.inc closes.
+// wrapper/toolkit.inc declares the toolkit layer, which wrapper/gtk3/*.inc
+// implement; the other parts are shared by every toolkit.
 #include "wrapper/globals.inc"
+#include "wrapper/toolkit.inc"
+#include "wrapper/gtk3/runtime.inc"
 #include "wrapper/cef_app.inc"
 #include "wrapper/abstract_view.inc"
 #include "wrapper/webkit_view.inc"
