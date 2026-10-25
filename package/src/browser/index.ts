@@ -90,6 +90,9 @@ class Electroview<T extends RPCWithTransport> {
 
 		socket.addEventListener("open", () => {
 			this.hostSocketCanSend = true;
+			// Proves the key right away: the host closes connections that don't
+			// within a few seconds, and only then sends to the page over the socket.
+			void this.sendMessageToHostSocket(JSON.stringify({ type: "hello" }));
 			void this.flushPendingHostSocketMessages();
 		});
 
@@ -221,10 +224,6 @@ class Electroview<T extends RPCWithTransport> {
 		}
 
 		try {
-			if (window.__electrobunPlaintextHostSocket) {
-				this.hostSocket!.send(msg);
-				return true;
-			}
 			const { encryptedData, iv, tag } =
 				await window.__electrobun_encrypt(msg);
 

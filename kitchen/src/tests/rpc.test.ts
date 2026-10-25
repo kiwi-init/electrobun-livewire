@@ -292,6 +292,33 @@ export const rpcTests = [
   }),
 
   defineTest({
+    name: "rpc socket closes connections that never authenticate",
+    category: "RPC",
+    description: "Test that an idle page keeps its RPC socket (it authenticates with a hello on open) while a connection that never proves the key is closed",
+    timeout: 40000,
+    async run({ createWindow, log }) {
+      // One socket server serves every view; read its port from a helper page
+      // so the idle page below never sends anything but its hello.
+      const helperRpc = createTestHarnessRPC(3000);
+      await createWindow({ url: "views://test-harness/index.html", rpc: helperRpc, title: "RPC Auth Helper" });
+      await sleep(2000);
+      const { hostSocketPort } = await helperRpc.request.getHostSocketStressState();
+
+      const rpc = createTestHarnessRPC(3000);
+      const idle = await createWindow({ url: "views://test-harness/index.html", rpc, title: "RPC Auth Idle" });
+
+      log("Opening a connection that never sends anything");
+      const silent = new WebSocket(`ws://127.0.0.1:${hostSocketPort}/socket?webviewId=${idle.webview.id}`);
+      await sleep(14000);
+
+      expect(silent.readyState).toBe(WebSocket.CLOSED);
+      const state = await rpc.request.getHostSocketStressState();
+      expect(state.readyState).toBe(1);
+      expect(await rpc.request.multiply({ a: 6, b: 7 })).toBe(42);
+    },
+  }),
+
+  defineTest({
     name: "webview to bun: request with response",
     category: "RPC",
     description: "Test that webview can make RPC requests to bun and receive responses",
