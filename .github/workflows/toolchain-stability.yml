@@ -1,0 +1,111 @@
+# Starts the pinned Hutch + Cottontail over and over and fails on any crash.
+# Rerun it after bumping the toolchain pins: it's how issue #120 (Cottontail
+# SIGSEGV at JSC bootstrap under Hutch) was checked as fixed (T453).
+name: Toolchain stability
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner
+        type: choice
+        default: macos-14
+        options:
+          - macos-14
+          - macos-15
+      shards:
+        description: Parallel runners
+        type: number
+        default: 5
+      help_runs:
+        description: Runs of `hutch electrobun build --help` per runner
+        type: number
+        default: 20
+      build_runs:
+        description: Kitchen `hutch electrobun build --env=dev` runs per runner
+        type: number
+        default: 10
+
+permissions:
+  contents: read
+
+jobs:
+  shards:
+    runs-on: ubuntu-24.04
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - id: list
+        env:
+          SHARDS: ${{ inputs.shards }}
+        run: echo "list=$(jq -cn --argjson n "$SHARDS" '[range(1; $n + 1)]')" >> "$GITHUB_OUTPUT"
+
+  loop:
+    name: shard ${{ matrix.shard }} (${{ inputs.runner }})
+    needs: shards
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.shards.outputs.list) }}
+    env:
+      HELP_RUNS: ${{ inputs.help_runs }}
+      BUILD_RUNS: ${{ inputs.build_runs }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.1'
+      - uses: ./.github/actions/install-hutch
+      - name: Toolchain
+        working-directory: kitchen
+        run: |
+          sw_vers
+          hutch --version
+      - name: Build the devkit
+        working-directory: package
+        run: |
+          hutch run install
+          hutch build:dev
+      - name: Install Kitchen
+        working-directory: kitchen
+        run: hutch run install
+      - name: Loop
+        working-directory: kitchen
+        run: |
+          export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
+          out="$RUNNER_TEMP/stability"; mkdir -p "$out/logs"
+          : > "$out/results.tsv"
+          run() { # kind index command...
+            kind=$1; i=$2; shift 2
+            log="$out/logs/$kind-$i.log"
+            start=$(date +%s)
+            set +e; "$@" > "$log" 2>&1; code=$?; set -e
+            segv=0; grep -q "fatal runtime signal" "$log" && segv=1
+            printf '%s\t%s\t%s\t%s\t%ss\n' "$kind" "$i" "$code" "$segv" "$(( $(date +%s) - start ))" | tee -a "$out/results.tsv"
+          }
+          for i in $(seq 1 "$HELP_RUNS"); do run help "$i" hutch electrobun build --help; done
+          for i in $(seq 1 "$BUILD_RUNS"); do run build "$i" hutch electrobun build --env=dev; done
+          {
+            echo "| command | runs | non-zero exits | crashes |"
+            echo "| --- | --- | --- | --- |"
+            awk -F'\t' '{n[$1]++; if ($3 != 0) f[$1]++; s[$1] += $4} END {for (k in n) printf "| %s | %d | %d | %d |\n", k, n[k], f[k], s[k]}' "$out/results.tsv"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          ! awk -F'\t' '$3 != 0 {bad = 1} END {exit !bad}' "$out/results.tsv"
+      - name: Collect crash reports
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/stability"; mkdir -p "$out/crashes"
+          for d in ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports; do
+            find "$d" -maxdepth 2 -iname '*cottontail*' -newer "$GITHUB_WORKSPACE/kitchen/hutch.config.ts" -exec cp {} "$out/crashes/" \; 2>/dev/null || true
+          done
+          ls -la "$out/crashes"
+          for bin in $(find ~/.hutch -type f -name cottontail -perm +111 2>/dev/null); do
+            echo "$bin"; shasum -a 256 "$bin"; dwarfdump --uuid "$bin" || true
+          done | tee "$out/binaries.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stability-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/stability
