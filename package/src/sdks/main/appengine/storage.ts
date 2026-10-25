@@ -7,7 +7,7 @@
 // hook). Pages reach it through the `storage.*` capabilities below.
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
 export type EngineStoreOptions = {
@@ -38,6 +38,9 @@ const DEFAULT_KEEP_SNAPSHOTS = 5;
 const MAX_KEY_LENGTH = 256;
 const SNAPSHOT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+// One EngineStore per folder: it keeps the data in memory and rewrites the
+// whole file on each write, so a second instance on the same folder would
+// overwrite the first one's writes.
 export class EngineStore {
 	private readonly file: string;
 	private readonly snapshotDir: string;
@@ -235,8 +238,9 @@ function parse(json: string): Map<string, unknown> | null {
 	}
 }
 
-// Writes to a temp file, flushes it, then renames it over `file`, so a crash
-// or power loss leaves either the old contents or the new ones.
+// Writes to a temp file, flushes it, then renames it over `file` and flushes
+// the folder, so a crash or power loss leaves either the old contents or the
+// new ones.
 function writeAtomic(file: string, contents: string) {
 	const tmp = `${file}.${randomBytes(4).toString("hex")}.tmp`;
 	const fd = openSync(tmp, "w");
@@ -247,6 +251,19 @@ function writeAtomic(file: string, contents: string) {
 		closeSync(fd);
 	}
 	renameSync(tmp, file);
+	fsyncDir(dirname(file));
+}
+
+// The rename is only durable once the folder's entry is on disk. Windows
+// can't open a folder to flush it, and NTFS journals the rename anyway.
+function fsyncDir(dir: string) {
+	if (process.platform === "win32") return;
+	const fd = openSync(dir, "r");
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 // Temp files left by a crash mid-write.
