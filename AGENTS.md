@@ -29,14 +29,14 @@ These rules win over `CLAUDE.md`, which is upstream's.
 ## Testing
 
 - SDK logic (BrowserView, BrowserWindow, rpc) runs under `bun test` with no native libraries: install the fake from `package/src/sdks/main/__tests__/fakeFFI.ts` before importing the SDK and assert on the `ffi.request` calls it records. From `package/`: `node scripts/run-bun-test.js src/sdks/main`.
-- Native behaviour needs Kitchen. One test against a local devkit, from `kitchen/`:
+- Native behaviour needs Kitchen, and Kitchen runs on CI, never on the machine you share with a person. It opens windows, takes focus and moves the cursor. One test, or `all`:
 
   ```sh
-  HUTCH_ELECTROBUN_DEVKIT_ROOT=$PWD/../package/dist ELECTROBUN_KITCHEN_MAIN_PROCESS=bun ELECTROBUN_KITCHEN_RENDERER=native \
-    AUTO_RUN_TEST_NAME="<test name>" hutch electrobun dev
+  gh workflow run kitchen-test.yml --ref <branch> -f test="<test name>|all" -f runner=macos-14
+  gh workflow run kitchen-test.yml --ref <branch> -f test="<test name>" -f runner=ubuntu-24.04 -f display=wayland
   ```
 
-  Or on CI, for Linux from a Mac: `gh workflow run kitchen-test.yml --ref <branch> -f test="<test name>" -f runner=ubuntu-24.04`.
+  Locally, stick to what opens no windows: `bun test`, the fake-FFI unit tests, `tsc` and builds. Interactive tests (a real drag, notification buttons) are for a person to run when they choose.
 
 ## Driving a running app
 
