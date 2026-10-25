@@ -23,12 +23,13 @@ on:
           - light
           - dark
       background:
-        description: macOS only. Run in background mode, as on a developer's Mac, and fail if the frontmost app or the cursor changes
+        description: macOS only. "yes" runs in background mode, as on a developer's Mac, and fails if the frontmost app or the cursor changes; "control" watches the same way in the foreground, and fails if nothing changed (checks the watcher sees it)
         type: choice
         default: "no"
         options:
           - "no"
           - "yes"
+          - control
       reduce_transparency:
         description: Reduce transparency (macOS); GitHub's images turn it on, which draws vibrancy as a flat color
         type: choice
@@ -142,7 +143,7 @@ jobs:
           BACKGROUND: ${{ inputs.background }}
         run: |
           export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
-          if [ "$BACKGROUND" != yes ]; then
+          if [ "$BACKGROUND" = no ]; then
             hutch electrobun dev
             exit
           fi
@@ -155,13 +156,19 @@ jobs:
           watcher=$!
           sleep 2
           status=0
-          ELECTROBUN_BACKGROUND=1 hutch electrobun dev || status=$?
+          mode=1; [ "$BACKGROUND" = control ] && mode=0
+          ELECTROBUN_BACKGROUND=$mode hutch electrobun dev || status=$?
           sleep 1
           kill "$watcher"
           echo "Frontmost app and cursor during the run:"
           cat "$watch"
-          if [ "$(wc -l < "$watch")" -gt 1 ]; then
+          changes=$(( $(wc -l < "$watch") - 1 ))
+          if [ "$BACKGROUND" = yes ] && [ "$changes" -gt 0 ]; then
             echo "::error::The background run changed the frontmost app or moved the cursor"
+            exit 1
+          fi
+          if [ "$BACKGROUND" = control ] && [ "$changes" -eq 0 ]; then
+            echo "::error::Control run: the watcher saw no change in the foreground, so it can't be trusted"
             exit 1
           fi
           exit "$status"
