@@ -1,7 +1,7 @@
 // AppEngine boot lifecycle: boot, probation, rollback, hang recovery and safe
 // mode, against signed UIs published to a local host.
 
-import { mkdtempSync } from "fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Utils } from "electrobun/main";
@@ -66,9 +66,18 @@ function setup(createWindow: (options: any) => Promise<any>, testName: string, o
 	const events: AppEngineEvent[] = [];
 	let engine: AppEngine | null = null;
 	const state = mkdtempSync(join(tmpdir(), "kitchen-appengine-"));
+	// Each test installs into its own folder, so engines running in parallel
+	// can't prune each other's installs.
+	const root = join(Utils.paths.appdataProtocolRoot, "ui", `kitchen-${testName}-${Date.now()}`);
 	return {
 		publish,
 		events,
+		stateFile: join(state, "engine.json"),
+		// Stops the engine and starts a new one on the same state: an app restart.
+		async restart() {
+			engine?.stop();
+			return this.start();
+		},
 		async start() {
 			const win = await createWindow({ title: `AppEngine: ${testName}` });
 			engine = new AppEngine({
@@ -80,9 +89,7 @@ function setup(createWindow: (options: any) => Promise<any>, testName: string, o
 				channel: {
 					manifestUrl: `http://127.0.0.1:${server.port}/manifest.json`,
 					trustedKeys: { [key.keyId]: key.publicKey },
-					// Each test installs into its own folder, so engines running in
-					// parallel can't prune each other's installs.
-					root: join(Utils.paths.appdataProtocolRoot, "ui", `kitchen-${seq}-${Date.now()}`),
+					root,
 					stateFile: join(state, "channel.json"),
 					pollIntervalMs: 60_000,
 				},
@@ -228,6 +235,62 @@ export const appEngineTests = [
 				expect(recycled).toEqual([viewId]);
 				await until(t.events, is("promoted", v1), 15000);
 				expect(t.events.some((e) => e.type === "failed")).toBe(false);
+				expect(engine.showing?.sha256).toBe(v1.sha256);
+				log(t.events.map(describe).join(" → "));
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
+		name: "AppEngine retries a UI that timed out once and bans it the second time",
+		category: "AppEngine",
+		description: "A missed ready() deadline can be the machine's fault: the UI gets one more try at the next startup, and is banned only if it fails again",
+		timeout: 40000,
+		async run({ createWindow, log }) {
+			const t = setup(createWindow, "strikes");
+			try {
+				const v1 = t.publish(UIS.good("v1"));
+				await t.start();
+				await until(t.events, is("promoted", v1));
+				const v2 = t.publish(UIS.hang());
+				await t.check();
+				const first = await until(t.events, is("failed", v2));
+				expect(first.type === "failed" && first.banned).toBe(false);
+				await until(t.events, (e) => e.type === "ready" && e.manifest.sha256 === v1.sha256 && t.events.indexOf(e) > t.events.indexOf(first));
+				const saved = JSON.parse(readFileSync(t.stateFile, "utf8"));
+				expect(saved.strikes[v2.sha256]).toBe(1);
+				expect(saved.retry?.sha256).toBe(v2.sha256);
+				expect(saved.bad[v2.sha256]).toBe(undefined);
+
+				log("Restarting: the retry boots first");
+				const before = t.events.length;
+				const engine = await t.restart();
+				await until(t.events, (e) => is("booting", v2)(e) && t.events.indexOf(e) >= before);
+				const second = await until(t.events, (e) => is("failed", v2)(e) && t.events.indexOf(e) >= before);
+				expect(second.type === "failed" && second.banned).toBe(true);
+				await until(t.events, (e) => e.type === "ready" && e.manifest.sha256 === v1.sha256 && t.events.indexOf(e) > t.events.indexOf(second));
+				expect(engine.showing?.sha256).toBe(v1.sha256);
+				log(t.events.map(describe).join(" → "));
+			} finally {
+				t.stop();
+			}
+		},
+	}),
+
+	defineTest({
+		name: "AppEngine starts with defaults when engine.json is damaged",
+		category: "AppEngine",
+		description: "A state file with the wrong shape falls back to defaults instead of breaking startup",
+		timeout: 30000,
+		async run({ createWindow, log }) {
+			const t = setup(createWindow, "damaged");
+			try {
+				writeFileSync(t.stateFile, JSON.stringify({ current: 5, good: "x", bad: [1], strikes: { a: -1 }, dataSchemaHighWater: "y" }));
+				const v1 = t.publish(UIS.good("v1"));
+				const engine = await t.start();
+				await until(t.events, is("ready", v1));
 				expect(engine.showing?.sha256).toBe(v1.sha256);
 				log(t.events.map(describe).join(" → "));
 			} finally {

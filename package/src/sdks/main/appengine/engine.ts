@@ -3,15 +3,15 @@
 // fails. A UI only becomes a rollback target after it boots (ready() within the
 // deadline) and then runs through probation without an uncaught error.
 
-import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { appEnginePageScript } from "../../../preload/.generated/compiled";
 import type { AppEngineRPC, EngineInvokeResult } from "../../../shared/appengine-protocol";
 import { BrowserView } from "../core/BrowserView";
 import type { BrowserWindow } from "../core/BrowserWindow";
 import { UiChannel, type UiChannelOptions, type UiInstall } from "./channel";
-import type { UiManifest } from "./format";
+import { manifestShapeError, type UiManifest } from "./format";
+import { writeAtomic } from "./storage";
 
 // Engine-owned storage AppEngine can snapshot around a never-good UI's first
 // boot, so a migration that crashes halfway can be undone.
@@ -47,10 +47,19 @@ export type AppEngineEvent =
 	| { type: "booting"; manifest: UiManifest; reason: BootReason }
 	| { type: "ready"; manifest: UiManifest }
 	| { type: "promoted"; manifest: UiManifest }
-	| { type: "failed"; manifest: UiManifest; reason: string }
+	// `banned`: the UI won't be booted again. A missed deadline or a renderer
+	// that went away can be the machine's fault, so those ban on the second
+	// strike; an uncaught error the UI threw bans right away.
+	| { type: "failed"; manifest: UiManifest; reason: string; banned: boolean }
 	| { type: "safe-mode"; reason: string };
 
 type BootReason = "startup" | "update" | "rollback";
+
+// What kind of failure: the UI's own fault, or possibly the environment's
+// (a slow cold start, the OS killing a process, a frozen renderer after sleep).
+type FailureKind = "crash" | "environmental";
+
+const MAX_STRIKES = 2;
 
 type EngineState = {
 	current: UiManifest | null;
@@ -58,9 +67,22 @@ type EngineState = {
 	good: UiManifest[];
 	// sha256 -> why it failed. Never booted again.
 	bad: Record<string, string>;
+	// sha256 -> environmental failures so far; banned at MAX_STRIKES.
+	strikes: Record<string, number>;
+	// A new UI that failed environmentally once, tried again at next startup.
+	retry: UiManifest | null;
 	// Highest data schema a UI that booted has used: older UIs would misread it.
 	dataSchemaHighWater: number;
 };
+
+const emptyState = (): EngineState => ({
+	current: null,
+	good: [],
+	bad: {},
+	strikes: {},
+	retry: null,
+	dataSchemaHighWater: 0,
+});
 
 type Pending = {
 	manifest: UiManifest;
@@ -86,7 +108,9 @@ export class AppEngine {
 	private readonly readyTimeoutMs: number;
 	private readonly probationMs: number;
 	private readonly keepGood: number;
-	private state: EngineState = { current: null, good: [], bad: {}, dataSchemaHighWater: 0 };
+	private state: EngineState = emptyState();
+	// UIs that failed in this run: skipped as rollback targets until restart.
+	private readonly failedThisRun = new Set<string>();
 	private stateFile = "";
 	private view: BrowserView | null = null;
 	private rpc: ReturnType<typeof makeRpc> | null = null;
@@ -129,9 +153,9 @@ export class AppEngine {
 		if (this.started) return;
 		this.started = true;
 		this.stateFile = this.options.stateFile ?? (await defaultStateFile());
-		this.state = { ...this.state, ...readJson<Partial<EngineState>>(this.stateFile) };
+		this.state = parseState(readJson(this.stateFile));
 
-		const startup = await this.pickRollbackTarget([this.state.current, ...this.state.good]);
+		const startup = await this.pickRollbackTarget([this.state.retry, this.state.current, ...this.state.good]);
 		if (startup) {
 			this.mountView(startup.url);
 			this.boot(startup.install.manifest, startup.url, "startup");
@@ -220,7 +244,10 @@ export class AppEngine {
 			url,
 			reason,
 			snapshot,
-			timer: setTimeout(() => this.bootFailed(`no ready() within ${this.readyTimeoutMs}ms`, true), this.readyTimeoutMs),
+			timer: setTimeout(
+				() => this.bootFailed(`no ready() within ${this.readyTimeoutMs}ms`, true, "environmental"),
+				this.readyTimeoutMs,
+			),
 		};
 		this.emit({ type: "booting", manifest, reason });
 		if (options.fresh) this.replaceView(url);
@@ -237,6 +264,8 @@ export class AppEngine {
 		// The UI has migrated its data by now: older UIs are refused from here on.
 		this.state.dataSchemaHighWater = Math.max(this.state.dataSchemaHighWater, pending.manifest.dataSchema);
 		this.handoff = null;
+		delete this.state.strikes[pending.manifest.sha256];
+		if (this.state.retry?.sha256 === pending.manifest.sha256) this.state.retry = null;
 		const known = this.state.good.some((good) => good.sha256 === pending.manifest.sha256);
 		if (known) {
 			this.state.good = [pending.manifest, ...this.state.good.filter((good) => good.sha256 !== pending.manifest.sha256)];
@@ -251,11 +280,11 @@ export class AppEngine {
 
 	onBootError(href: string, message: string) {
 		if (this.pending && stripQuery(href) === this.pending.url) {
-			this.bootFailed(`uncaught error before ready(): ${firstLine(message)}`, false);
+			this.bootFailed(`uncaught error before ready(): ${firstLine(message)}`, false, "crash");
 		}
 	}
 
-	async onRuntimeError(href: string, message: string) {
+	async onRuntimeError(href: string, message: string, kind: FailureKind = "crash") {
 		const probation = this.probation;
 		if (!probation || this.pending || stripQuery(href) !== probation.url) return;
 		this.cancelProbation();
@@ -265,20 +294,20 @@ export class AppEngine {
 		// The user may have worked in the new UI: only undo their writes if the
 		// fallback couldn't read the data otherwise.
 		const restore = probation.manifest.dataSchema > (fallback?.install.manifest.dataSchema ?? 0) ? probation.snapshot : null;
-		this.markBadAndRollBack(probation.manifest, `crashed during probation: ${firstLine(message)}`, restore, false);
+		this.markFailedAndRollBack(probation.manifest, `crashed during probation: ${firstLine(message)}`, restore, false, kind);
 	}
 
 	private onRendererGone() {
-		if (this.pending) this.bootFailed("the renderer process ended", false);
-		else if (this.probation) void this.onRuntimeError(this.probation.url, "the renderer process ended");
+		if (this.pending) this.bootFailed("the renderer process ended", false, "environmental");
+		else if (this.probation) void this.onRuntimeError(this.probation.url, "the renderer process ended", "environmental");
 	}
 
-	private bootFailed(reason: string, hung: boolean) {
+	private bootFailed(reason: string, hung: boolean, kind: FailureKind) {
 		const pending = this.pending;
 		if (!pending) return;
 		clearTimeout(pending.timer);
 		this.pending = null;
-		this.markBadAndRollBack(pending.manifest, reason, pending.snapshot, hung);
+		this.markFailedAndRollBack(pending.manifest, reason, pending.snapshot, hung, kind);
 	}
 
 	private startProbation(pending: Pending) {
@@ -302,14 +331,34 @@ export class AppEngine {
 		this.probation = null;
 	}
 
-	private async markBadAndRollBack(manifest: UiManifest, reason: string, snapshot: string | null, hung: boolean) {
-		this.state.bad[manifest.sha256] = reason;
-		this.state.good = this.state.good.filter((good) => good.sha256 !== manifest.sha256);
-		if (this.state.current?.sha256 === manifest.sha256) this.state.current = null;
-		this.state.dataSchemaHighWater = Math.max(0, ...this.state.good.map((good) => good.dataSchema));
+	private async markFailedAndRollBack(
+		manifest: UiManifest,
+		reason: string,
+		snapshot: string | null,
+		hung: boolean,
+		kind: FailureKind,
+	) {
+		const sha = manifest.sha256;
+		this.failedThisRun.add(sha);
+		const strikes = (this.state.strikes[sha] ?? 0) + 1;
+		const banned = kind === "crash" || strikes >= MAX_STRIKES;
+		if (banned) {
+			this.state.bad[sha] = reason;
+			delete this.state.strikes[sha];
+			this.state.good = this.state.good.filter((good) => good.sha256 !== sha);
+			if (this.state.current?.sha256 === sha) this.state.current = null;
+			if (this.state.retry?.sha256 === sha) this.state.retry = null;
+			this.state.dataSchemaHighWater = Math.max(0, ...this.state.good.map((good) => good.dataSchema));
+		} else {
+			// A rollback target keeps its place; a new UI gets one more try at
+			// the next startup.
+			this.state.strikes[sha] = strikes;
+			const known = this.state.good.some((good) => good.sha256 === sha) || this.state.current?.sha256 === sha;
+			if (!known) this.state.retry = manifest;
+		}
 		this.saveState();
 		if (snapshot) this.options.storage?.restore(snapshot);
-		this.emit({ type: "failed", manifest, reason });
+		this.emit({ type: "failed", manifest, reason, banned });
 
 		const fallback = await this.pickRollbackTarget(this.state.good);
 		if (fallback) {
@@ -377,7 +426,7 @@ export class AppEngine {
 
 	private async pickRollbackTarget(candidates: (UiManifest | null)[]) {
 		for (const manifest of candidates) {
-			if (!manifest || this.state.bad[manifest.sha256]) continue;
+			if (!manifest || this.state.bad[manifest.sha256] || this.failedThisRun.has(manifest.sha256)) continue;
 			const install = await this.channel.installed(manifest);
 			if (install?.url) return { install, url: install.url };
 		}
@@ -385,7 +434,7 @@ export class AppEngine {
 	}
 
 	private async prune() {
-		const keep = [...this.state.good, this.state.current, this.pending?.manifest, this.probation?.manifest]
+		const keep = [...this.state.good, this.state.current, this.state.retry, this.pending?.manifest, this.probation?.manifest]
 			.filter((manifest): manifest is UiManifest => !!manifest)
 			.map((manifest) => manifest.sha256);
 		await this.channel.prune(keep);
@@ -393,9 +442,7 @@ export class AppEngine {
 
 	private saveState() {
 		mkdirSync(dirname(this.stateFile), { recursive: true });
-		const tmp = `${this.stateFile}.${randomBytes(4).toString("hex")}.tmp`;
-		writeFileSync(tmp, JSON.stringify(this.state));
-		renameSync(tmp, this.stateFile);
+		writeAtomic(this.stateFile, JSON.stringify(this.state));
 	}
 
 	private emit(event: AppEngineEvent) {
@@ -427,12 +474,37 @@ function makeRpc(engine: AppEngine) {
 
 const firstLine = (message: string) => message.split("\n")[0]!;
 
-function readJson<T>(path: string): T | Record<string, never> {
+function readJson(path: string): unknown {
 	try {
-		return JSON.parse(readFileSync(path, "utf8")) as T;
+		return JSON.parse(readFileSync(path, "utf8"));
 	} catch {
-		return {};
+		return null;
 	}
+}
+
+// engine.json as read from disk, field by field: anything damaged falls back
+// to its default rather than breaking startup.
+function parseState(raw: unknown): EngineState {
+	const state = emptyState();
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return state;
+	const value = raw as Record<string, unknown>;
+	const manifest = (entry: unknown) => (manifestShapeError(entry) === null ? (entry as UiManifest) : null);
+	const record = <T>(entry: unknown, valid: (item: unknown) => item is T): Record<string, T> => {
+		const out: Record<string, T> = {};
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return out;
+		for (const [key, item] of Object.entries(entry)) if (valid(item)) out[key] = item;
+		return out;
+	};
+	state.current = manifest(value["current"]);
+	state.retry = manifest(value["retry"]);
+	if (Array.isArray(value["good"])) {
+		state.good = value["good"].map(manifest).filter((entry): entry is UiManifest => entry !== null);
+	}
+	state.bad = record(value["bad"], (item): item is string => typeof item === "string");
+	state.strikes = record(value["strikes"], (item): item is number => Number.isSafeInteger(item) && (item as number) > 0);
+	const highWater = value["dataSchemaHighWater"];
+	if (Number.isSafeInteger(highWater) && (highWater as number) >= 0) state.dataSchemaHighWater = highWater as number;
+	return state;
 }
 
 async function defaultStateFile() {
