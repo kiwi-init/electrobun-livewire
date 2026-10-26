@@ -3355,16 +3355,23 @@ if (native) {
 		native_.symbols.setAppWakeHandler(appWakeCallback);
 	}
 
-	// "" when the accent color was unset (Linux) or couldn't be read.
+	// Native passes a strdup'd "#rrggbb", or null when the accent color was
+	// unset (Linux) or couldn't be read. This threadsafe callback runs after
+	// native has returned, so the string is ours to read and free.
 	const accentColorChangedCallback = new JSCallback(
 		(colorPtr: Pointer | null) => {
-			const color = colorPtr ? ffiCStringToString(colorPtr) : "";
-			const event = electrobunEventEmitter.events.app.accentColorChanged({
-				color: color || null,
-			});
+			let color: string | null = null;
+			if (colorPtr) {
+				try {
+					color = new CString(colorPtr).toString() || null;
+				} finally {
+					native_.symbols.freeNativeString(colorPtr);
+				}
+			}
+			const event = electrobunEventEmitter.events.app.accentColorChanged({ color });
 			electrobunEventEmitter.emitEvent(event);
 		},
-		{ args: [FFIType.cstring], returns: "void", threadsafe: true },
+		{ args: [FFIType.ptr], returns: "void", threadsafe: true },
 	);
 	if (process.platform === "darwin" || process.platform === "linux") {
 		native_.symbols.setAccentColorChangedHandler(accentColorChangedCallback);

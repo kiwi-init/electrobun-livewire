@@ -393,11 +393,17 @@ export const utilsTests = [
       try {
         const toRed = nextChange();
         setAccent(0);
+        // Keep JS busy while AppKit delivers the change, then collect, so the
+        // callback reads its string well after native has returned (T1245:
+        // a borrowed string would be freed by then).
+        Bun.sleepSync(500);
+        Bun.gc(true);
         await sleep(1000);
         log(`getAccentColor after the change: ${Utils.getAccentColor()}`);
         const red = await toRed;
         log(`changed to: ${red}`);
         expect(red !== null && red !== before, "a new color").toBe(true);
+        expect(/^#[0-9a-f]{6}$/.test(red ?? ""), "a whole #rrggbb").toBe(true);
         expect(Utils.getAccentColor()).toBe(red);
       } finally {
         const back = nextChange().catch(() => null);

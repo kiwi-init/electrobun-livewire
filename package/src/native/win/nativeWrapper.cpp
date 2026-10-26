@@ -14682,7 +14682,7 @@ extern "C" ELECTROBUN_EXPORT char *getAccentColor() {
     return nullptr;
 }
 
-extern "C" ELECTROBUN_EXPORT void setAccentColorChangedHandler(void (*handler)(const char*)) {
+extern "C" ELECTROBUN_EXPORT void setAccentColorChangedHandler(void (*handler)(char*)) {
     (void)handler;
     // Not supported on Windows yet - stub to prevent dlopen failure
 }

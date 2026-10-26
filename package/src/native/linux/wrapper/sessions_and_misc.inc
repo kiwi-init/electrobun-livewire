@@ -568,17 +568,21 @@ ELECTROBUN_EXPORT char *getAccentColor() {
     return hex.empty() ? nullptr : strdup(hex.c_str());
 }
 
-static void (*g_accentColorChangedHandler)(const char *) = nullptr;
+static void (*g_accentColorChangedHandler)(char *) = nullptr;
 
-// Calls `handler` with "#rrggbb", or "" when the accent color was unset, each
-// time the Settings portal reports a change.
-ELECTROBUN_EXPORT void setAccentColorChangedHandler(void (*handler)(const char *)) {
+// Calls `handler` with a strdup'd "#rrggbb", or NULL when the accent color was
+// unset, each time the Settings portal reports a change. Bun's callback is
+// threadsafe, so it runs after this returns: Bun frees the string with
+// freeNativeString.
+ELECTROBUN_EXPORT void setAccentColorChangedHandler(void (*handler)(char *)) {
     g_accentColorChangedHandler = handler;
     static std::once_flag watching;
     std::call_once(watching, []() {
         dispatch_async_main_void([]() {
             electrobun::xdg_portal::watchAccentColor([](const std::string &hex) {
-                if (g_accentColorChangedHandler) g_accentColorChangedHandler(hex.c_str());
+                if (g_accentColorChangedHandler) {
+                    g_accentColorChangedHandler(hex.empty() ? nullptr : strdup(hex.c_str()));
+                }
             });
         });
     });

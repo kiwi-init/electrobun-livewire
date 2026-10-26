@@ -10737,7 +10737,10 @@ extern "C" char *getAccentColor() {
   return result;
 }
 
-typedef void (*AccentColorChangedHandler)(const char *hex);
+// hex is a strdup'd "#rrggbb", or NULL when the accent can't be read. Bun's
+// callback is threadsafe, so it runs after this returns: Bun frees the string
+// with freeNativeString.
+typedef void (*AccentColorChangedHandler)(char *hex);
 static AccentColorChangedHandler g_accentColorChangedHandler = nullptr;
 
 // Tells Bun when the accent color changes. AppKit posts
@@ -10760,7 +10763,7 @@ extern "C" void setAccentColorChangedHandler(AccentColorChangedHandler handler) 
                     if (hex == lastHex || [hex isEqualToString:lastHex]) return;
                     lastHex = hex;
                     if (g_accentColorChangedHandler) {
-                      g_accentColorChangedHandler(hex ? hex.UTF8String : "");
+                      g_accentColorChangedHandler(hex ? strdup(hex.UTF8String) : NULL);
                     }
                   }];
     });
