@@ -31,20 +31,33 @@ export const utilsTests = [
     name: "Clipboard is shared with other Wayland clients",
     category: "Utils",
     description: "Text the app copies is what wl-paste reads, and text wl-copy sets is what the app reads",
-    requires: { platform: "linux", display: "wayland" },
+    // Wayland sends the clipboard only to the client with keyboard focus, so
+    // the app has to be in front, as it is when a user copies or pastes in it.
+    requires: { platform: "linux", display: "wayland", foreground: true },
     timeout: 15000,
-    async run({ log }) {
+    async run({ createWindow, log }) {
       const wlCopy = Bun.which("wl-copy");
       const wlPaste = Bun.which("wl-paste");
       if (!wlCopy || !wlPaste) {
         throw new Error("wl-copy and wl-paste are needed (install wl-clipboard)");
       }
 
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        title: "Clipboard Test",
+        renderer: "native",
+      });
+      win.window.focus();
+      await sleep(300);
+
       // A compositor only takes a selection from a client with an input
-      // event newer than the current selection. A headless compositor on CI has no
-      // keyboard or pointer, so press Shift on a virtual keyboard, as a real
-      // click or keypress would.
+      // event newer than the current selection, and only the focused client
+      // receives one. On a desktop, focusing the window is enough; a headless
+      // compositor on CI has no keyboard or pointer, so also press Shift on a
+      // virtual keyboard, as a real click or keypress would.
       const giveAppAnInputEvent = async () => {
+        win.window.focus();
+        await sleep(100);
         if (!process.env["KITCHEN_HEADLESS_WAYLAND"]) return;
         const wtype = Bun.which("wtype");
         if (!wtype) throw new Error("wtype is needed under a headless compositor");
@@ -66,6 +79,8 @@ export const utilsTests = [
       const copied = Bun.spawnSync([wlCopy, fromOther], { timeout: 5000 });
       expect(copied.exitCode).toBe(0);
       await sleep(300);
+      win.window.focus();
+      await sleep(200);
       expect(Utils.clipboardReadText()).toBe(fromOther);
       log(`The app read wl-copy's text: "${fromOther}"`);
 

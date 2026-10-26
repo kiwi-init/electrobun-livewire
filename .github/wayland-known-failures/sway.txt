@@ -2,6 +2,11 @@
 # display) and pass under Xvfb. wayland-tests.yml fails a PR only on a failure
 # that is not listed here, and asks for a line to be removed once its test
 # passes. One test name per line, exactly as defineTest names it.
+#
+# On a real desktop, the compositor's config can add failures: Omarchy's
+# Hyprland sets suppress_event = maximize on every window, so "Window
+# maximize/unmaximize" and "Window resize event" (which maximizes) fail there
+# (T1032).
 
 # Wayland clients can't place themselves or read their position (x/y stay 0),
 # and sway tiles windows, so frames and sizes differ from what was asked
