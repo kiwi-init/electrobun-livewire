@@ -1229,6 +1229,14 @@ export const native = (() => {
 				args: [],
 				returns: FFIType.f64,
 			},
+			getAccentColor: {
+				args: [],
+				returns: FFIType.ptr,
+			},
+			setAccentColorChangedHandler: {
+				args: [FFIType.function],
+				returns: FFIType.void,
+			},
 
 			// JSCallback utils for native code to use
 			setJSUtils: {
@@ -2637,6 +2645,15 @@ const _ffiImpl = {
 			const progress = native_.symbols.getDockProgress();
 			return progress < 0 ? null : progress;
 		},
+		getAccentColor: (): string | null => {
+			const color = native_.symbols.getAccentColor();
+			if (!color) return null;
+			try {
+				return new CString(color).toString();
+			} finally {
+				native_.symbols.freeNativeString(color);
+			}
+		},
 		setDockIconVisible: (params: { visible: boolean }): void => {
 			core_.symbols.setDockIconVisible(params.visible);
 		},
@@ -3336,6 +3353,28 @@ if (native) {
 	);
 	if (process.platform === "darwin") {
 		native_.symbols.setAppWakeHandler(appWakeCallback);
+	}
+
+	// Native passes a strdup'd "#rrggbb", or null when the accent color was
+	// unset (Linux) or couldn't be read. This threadsafe callback runs after
+	// native has returned, so the string is ours to read and free.
+	const accentColorChangedCallback = new JSCallback(
+		(colorPtr: Pointer | null) => {
+			let color: string | null = null;
+			if (colorPtr) {
+				try {
+					color = new CString(colorPtr).toString() || null;
+				} finally {
+					native_.symbols.freeNativeString(colorPtr);
+				}
+			}
+			const event = electrobunEventEmitter.events.app.accentColorChanged({ color });
+			electrobunEventEmitter.emitEvent(event);
+		},
+		{ args: [FFIType.ptr], returns: "void", threadsafe: true },
+	);
+	if (process.platform === "darwin" || process.platform === "linux") {
+		native_.symbols.setAccentColorChangedHandler(accentColorChangedCallback);
 	}
 
 	const notificationResponseCallback = new JSCallback(

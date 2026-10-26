@@ -1,7 +1,7 @@
 #pragma once
 
-// xdg-desktop-portal over GDBus: file chooser opt-in, notifications and
-// global shortcuts. The portal is used when a backend provides the interface;
+// xdg-desktop-portal over GDBus: file chooser opt-in, notifications, global
+// shortcuts and the accent color setting. The portal is used when a backend provides the interface;
 // callers keep their previous path as the fallback.
 
 #include <gio/gio.h>
@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -27,6 +28,9 @@ inline constexpr const char* kRequestInterface = "org.freedesktop.portal.Request
 inline constexpr const char* kFileChooserInterface = "org.freedesktop.portal.FileChooser";
 inline constexpr const char* kNotificationInterface = "org.freedesktop.portal.Notification";
 inline constexpr const char* kGlobalShortcutsInterface = "org.freedesktop.portal.GlobalShortcuts";
+inline constexpr const char* kSettingsInterface = "org.freedesktop.portal.Settings";
+inline constexpr const char* kAppearanceNamespace = "org.freedesktop.appearance";
+inline constexpr const char* kAccentColorKey = "accent-color";
 
 // Looking up the session bus without one makes GLib try to autolaunch it.
 inline bool hasSessionBus() {
@@ -242,6 +246,85 @@ inline bool notifyFreedesktop(const std::string& appName, const std::string& tit
     }
     g_variant_unref(reply);
     return true;
+}
+
+// "#rrggbb" from an accent-color value: sRGB as three doubles in 0..1, maybe
+// wrapped in variants. Empty when it isn't one; out-of-range means unset.
+inline std::string accentColorHex(GVariant* value) {
+    if (!value) return "";
+    GVariant* color = g_variant_ref(value);
+    while (g_variant_is_of_type(color, G_VARIANT_TYPE_VARIANT)) {
+        GVariant* inner = g_variant_get_variant(color);
+        g_variant_unref(color);
+        color = inner;
+    }
+    std::string hex;
+    if (g_variant_is_of_type(color, G_VARIANT_TYPE("(ddd)"))) {
+        double rgb[3] = {0, 0, 0};
+        g_variant_get(color, "(ddd)", &rgb[0], &rgb[1], &rgb[2]);
+        if (std::all_of(rgb, rgb + 3, [](double c) { return c >= 0 && c <= 1; })) {
+            char buffer[8];
+            snprintf(buffer, sizeof buffer, "#%02x%02x%02x", static_cast<unsigned>(std::lround(rgb[0] * 255)),
+                     static_cast<unsigned>(std::lround(rgb[1] * 255)),
+                     static_cast<unsigned>(std::lround(rgb[2] * 255)));
+            hex = buffer;
+        }
+    }
+    g_variant_unref(color);
+    return hex;
+}
+
+// The desktop's accent color from the Settings portal, or empty when there's
+// no portal or the desktop doesn't set one. Blocking; callable from any thread.
+inline std::string readAccentColor(int timeoutMs = 1000) {
+    GDBusConnection* bus = sessionBus();
+    if (!bus) return "";
+    // ReadOne is Settings version 2; older portals only have Read, whose
+    // value comes wrapped in one more variant.
+    for (const char* method : {"ReadOne", "Read"}) {
+        GError* error = nullptr;
+        GVariant* reply = g_dbus_connection_call_sync(
+            bus, kBusName, kObjectPath, kSettingsInterface, method,
+            g_variant_new("(ss)", kAppearanceNamespace, kAccentColorKey), G_VARIANT_TYPE("(v)"),
+            G_DBUS_CALL_FLAGS_NONE, timeoutMs, nullptr, &error);
+        if (reply) {
+            GVariant* value = nullptr;
+            g_variant_get(reply, "(v)", &value);
+            std::string hex = accentColorHex(value);
+            g_variant_unref(value);
+            g_variant_unref(reply);
+            return hex;
+        }
+        bool unknownMethod = g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD);
+        g_clear_error(&error);
+        if (!unknownMethod) return "";
+    }
+    return "";
+}
+
+// Calls `onChanged` with the new accent color ("" when it's unset) whenever
+// the Settings portal reports one. Runs on the main context of the thread
+// that calls it. Returns the subscription id, 0 without a session bus.
+inline guint watchAccentColor(std::function<void(const std::string& hex)> onChanged) {
+    GDBusConnection* bus = sessionBus();
+    if (!bus) return 0;
+    using Handler = std::function<void(const std::string&)>;
+    return g_dbus_connection_signal_subscribe(
+        bus, kBusName, kSettingsInterface, "SettingChanged", kObjectPath, kAppearanceNamespace,
+        G_DBUS_SIGNAL_FLAGS_NONE,
+        [](GDBusConnection*, const char*, const char*, const char*, const char*, GVariant* parameters,
+           gpointer data) {
+            if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(ssv)"))) return;
+            const char* ns = nullptr;
+            const char* key = nullptr;
+            GVariant* value = nullptr;
+            g_variant_get(parameters, "(&s&sv)", &ns, &key, &value);
+            if (g_strcmp0(ns, kAppearanceNamespace) == 0 && g_strcmp0(key, kAccentColorKey) == 0) {
+                (*static_cast<Handler*>(data))(accentColorHex(value));
+            }
+            g_variant_unref(value);
+        },
+        new Handler(std::move(onChanged)), [](gpointer data) { delete static_cast<Handler*>(data); });
 }
 
 // GlobalShortcuts portal: one session, rebound with the full set whenever it

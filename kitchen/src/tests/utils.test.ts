@@ -1,9 +1,10 @@
 // Utils Tests - Tests for utility functions (clipboard, notifications, etc.)
 
 import { defineTest, expect, sleep } from "../test-framework/types";
-import { Utils } from "electrobun/main";
+import Electrobun, { Utils } from "electrobun/main";
 import { mkdir, mkdtemp, writeFile, access } from "fs/promises";
 import { homedir, tmpdir } from "os";
+import { spawnSync } from "child_process";
 import { join } from "path";
 
 export const utilsTests = [
@@ -339,6 +340,93 @@ export const utilsTests = [
       expect(Utils.paths.downloads).toBe(Utils.paths.downloads);
       expect(Utils.paths.userData).toBe(Utils.paths.userData);
       log("All tested paths return stable values");
+    },
+  }),
+
+  defineTest({
+    name: "getAccentColor returns a hex color or null",
+    category: "Utils",
+    description: "Test Utils.getAccentColor's shape per platform and that it's stable across calls",
+    async run({ log }) {
+      const color = Utils.getAccentColor();
+      log(`accent color on ${process.platform}: ${color}`);
+      if (process.platform === "darwin") {
+        expect(/^#[0-9a-f]{6}$/.test(color ?? ""), "macOS always has one").toBe(true);
+      } else if (process.platform === "linux") {
+        // Only desktops whose Settings portal publishes accent-color have one.
+        expect(color === null || /^#[0-9a-f]{6}$/.test(color), "hex or null").toBe(true);
+      } else {
+        expect(color).toBe(null);
+      }
+      expect(Utils.getAccentColor()).toBe(color);
+    },
+  }),
+
+  defineTest({
+    name: "accent-color-changed follows the system accent",
+    category: "Utils",
+    description:
+      "Changes the macOS accent color to red and back, and checks each change arrives as accent-color-changed with the color getAccentColor reads. Changes a system setting, so it only runs on CI",
+    timeout: 20000,
+    requires: { platform: "darwin" },
+    async run({ log }) {
+      if (!process.env.GITHUB_ACTIONS) {
+        log("Not on CI: left the system accent color alone");
+        return;
+      }
+      // What System Settings does: write the preference, then tell apps.
+      // AppKit only rereads the accent after AppleAquaColorVariantChanged.
+      const setAccent = (value: number | null) => {
+        spawnSync("defaults", value === null ? ["delete", "-g", "AppleAccentColor"] : ["write", "-g", "AppleAccentColor", "-int", String(value)]);
+        for (const name of ["AppleColorPreferencesChangedNotification", "AppleAquaColorVariantChanged"]) {
+          const posted = spawnSync("osascript", [
+            "-l",
+            "JavaScript",
+            "-e",
+            `ObjC.import('Foundation'); $.NSDistributedNotificationCenter.defaultCenter.postNotificationNameObjectUserInfoDeliverImmediately('${name}', $(), $(), true)`,
+          ]);
+          if (posted.status !== 0) log(`posting ${name} failed: ${posted.stderr?.toString().trim()}`);
+        }
+      };
+      const nextChange = (timeoutMs = 5000) =>
+        new Promise<string | null>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            Electrobun.events.off("accent-color-changed", handler);
+            reject(new Error(`no accent-color-changed within ${timeoutMs} ms`));
+          }, timeoutMs);
+          const handler = (event: { data: { color: string | null } }) => {
+            clearTimeout(timer);
+            Electrobun.events.off("accent-color-changed", handler);
+            resolve(event.data.color);
+          };
+          Electrobun.events.on("accent-color-changed", handler);
+        });
+
+      const before = Utils.getAccentColor();
+      const original = spawnSync("defaults", ["read", "-g", "AppleAccentColor"]).stdout?.toString().trim();
+      log(`before: ${before} (AppleAccentColor ${original || "unset"})`);
+      try {
+        const toRed = nextChange();
+        setAccent(0);
+        // Keep JS busy while AppKit delivers the change, then collect, so the
+        // callback reads its string well after native has returned (T1245:
+        // a borrowed string would be freed by then).
+        Bun.sleepSync(500);
+        Bun.gc(true);
+        await sleep(1000);
+        log(`getAccentColor after the change: ${Utils.getAccentColor()}`);
+        const red = await toRed;
+        log(`changed to: ${red}`);
+        expect(red !== null && red !== before, "a new color").toBe(true);
+        expect(/^#[0-9a-f]{6}$/.test(red ?? ""), "a whole #rrggbb").toBe(true);
+        expect(Utils.getAccentColor()).toBe(red);
+      } finally {
+        const back = nextChange().catch(() => null);
+        setAccent(original ? Number(original) : null);
+        log(`restored: ${await back}`);
+      }
+      await sleep(200);
+      expect(Utils.getAccentColor()).toBe(before);
     },
   }),
 ];
