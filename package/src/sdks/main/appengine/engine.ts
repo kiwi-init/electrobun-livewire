@@ -343,10 +343,8 @@ export class AppEngine {
 		const isNew = !this.state.good.some((good) => good.sha256 === manifest.sha256);
 		const snapshot = isNew && this.options.storage ? `before-${manifest.sha256}` : null;
 		if (snapshot) this.options.storage!.snapshot(snapshot);
-		if (this.state.next?.sha256 === manifest.sha256) {
-			this.state.next = null;
-			this.saveState();
-		}
+		// state.next stays until this boot settles (ready or failed): an app
+		// that quits mid-boot boots it again at the next start.
 
 		this.pending = {
 			manifest,
@@ -382,6 +380,7 @@ export class AppEngine {
 		this.handoff = null;
 		delete this.state.strikes[pending.manifest.sha256];
 		if (this.state.retry?.sha256 === pending.manifest.sha256) this.state.retry = null;
+		if (this.state.next?.sha256 === pending.manifest.sha256) this.state.next = null;
 		const known = this.state.good.some((good) => good.sha256 === pending.manifest.sha256);
 		if (known) {
 			this.state.good = [pending.manifest, ...this.state.good.filter((good) => good.sha256 !== pending.manifest.sha256)];
@@ -457,6 +456,8 @@ export class AppEngine {
 	) {
 		const sha = manifest.sha256;
 		this.failedThisRun.add(sha);
+		// A banned UI never boots again, and one with a strike is `retry` now.
+		if (this.state.next?.sha256 === sha) this.state.next = null;
 		const strikes = (this.state.strikes[sha] ?? 0) + 1;
 		const banned = kind === "crash" || strikes >= MAX_STRIKES;
 		if (banned) {

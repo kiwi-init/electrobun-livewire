@@ -227,6 +227,30 @@ describe("AppEngine host mode", () => {
 		expect(restarted.shown[0]!.uiVersion).toBe("2.0.3000");
 	});
 
+	test("a new UI the app quit on before ready() is still next at the next start", async () => {
+		const server = host();
+		server.publish(2_000, { "index.html": "<p>v2</p>", "assets/app-2.js": "two()" });
+		const rig = makeRig();
+		await rig.start(server.manifestUrl);
+		await waitFor(() => rig.shown.length === 2);
+		expect(rig.lastShown().uiVersion).toBe("2.0.2000");
+		rig.engine.stop();
+
+		const again = makeRig({ dir: rig.dir });
+		rigs.splice(rigs.indexOf(rig), 1);
+		await again.start(server.manifestUrl);
+		expect(again.shown[0]!.uiVersion).toBe("2.0.2000");
+		again.engine.ready();
+		await again.until((event) => event.type === "promoted");
+
+		const third = makeRig({ dir: rig.dir });
+		rigs.splice(rigs.indexOf(again), 1);
+		again.engine.stop();
+		await third.start(server.manifestUrl);
+		expect(third.shown[0]!.uiVersion).toBe("2.0.2000");
+		expect(JSON.parse(readFileSync(join(rig.dir, "engine.json"), "utf8")).next).toBeNull();
+	});
+
 	test("a pack changed on disk isn't booted: the built-in UI shows instead", async () => {
 		const server = host();
 		server.publish(2_000, { "index.html": "<p>v2</p>", "assets/app-2.js": "two()" });
