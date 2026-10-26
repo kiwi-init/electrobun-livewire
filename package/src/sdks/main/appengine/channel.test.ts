@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UiChannel, type UiChannelEvent } from "./channel";
-import { buildUipack, generateSigningKey, signManifest, uipackFileName, type UiManifest } from "./format";
+import { buildUipack, generateSigningKey, readUipack, signManifest, uipackFileName, type UiManifest } from "./format";
 
 const key = generateSigningKey();
 const trustedKeys = { [key.keyId]: key.publicKey };
@@ -105,7 +105,13 @@ afterEach(() => {
 });
 
 function setup(
-	options: { accept?: (m: UiManifest) => string | null; now?: () => number; maxBundleBytes?: number; fetch?: typeof fetch } = {},
+	options: {
+		accept?: (m: UiManifest) => string | null;
+		now?: () => number;
+		maxBundleBytes?: number;
+		fetch?: typeof fetch;
+		keep?: "files" | "pack";
+	} = {},
 ) {
 	const host = startHost();
 	const appdataRoot = mkdtempSync(join(tmpdir(), "uichannel-appdata-"));
@@ -144,13 +150,29 @@ describe("UiChannel", () => {
 		if (first.result !== "available") return;
 		expect(first.install.dir).toBe(join(appdataRoot, "ui", manifest.sha256));
 		expect(first.install.url).toBe(`appdata://ui/${manifest.sha256}/index.html`);
-		expect(readFileSync(join(first.install.dir, "index.html"), "utf8")).toBe("<h1>1.0.1</h1>");
+		expect(readFileSync(join(first.install.dir!, "index.html"), "utf8")).toBe("<h1>1.0.1</h1>");
 		expect(JSON.parse(readFileSync(join(stateDir, "channel.json"), "utf8"))).toEqual({ seenSeq: 1 });
 		expect(events.map((e) => e.type)).toEqual(["status", "available"]);
 
 		expect((await channel.check()).result).toBe("up-to-date");
 		// A new instance (an app restart) keeps the seq it accepted.
 		expect((await make().check()).result).toBe("up-to-date");
+	});
+
+	test("keep: pack keeps the verified .uipack instead of unpacking it, and prunes it like an install", async () => {
+		const { host, appdataRoot, make } = setup({ keep: "pack" });
+		const manifest = host.publish(1);
+		const channel = make();
+		const result = await channel.check();
+		if (result.result !== "available") throw new Error(`expected available, got ${result.result}`);
+		const pack = join(appdataRoot, "ui", `${manifest.sha256}.uipack`);
+		expect(result.install).toEqual({ manifest, dir: null, pack, url: null });
+		expect(readdirSync(join(appdataRoot, "ui"))).toEqual([`${manifest.sha256}.uipack`]);
+		expect(readUipack(new Uint8Array(readFileSync(pack)), manifest).ok).toBe(true);
+		expect(await channel.installed(manifest)).toEqual(result.install);
+		await channel.prune([]);
+		expect(existsSync(pack)).toBe(false);
+		expect(await channel.installed(manifest)).toBeNull();
 	});
 
 	test("refuses an older seq (replay)", async () => {

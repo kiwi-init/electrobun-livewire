@@ -241,11 +241,12 @@ function parse(json: string): Map<string, unknown> | null {
 // Writes to a temp file, flushes it, then renames it over `file` and flushes
 // the folder, so a crash or power loss leaves either the old contents or the
 // new ones.
-export function writeAtomic(file: string, contents: string) {
+export function writeAtomic(file: string, contents: string | Uint8Array) {
 	const tmp = `${file}.${randomBytes(4).toString("hex")}.tmp`;
 	const fd = openSync(tmp, "w");
 	try {
-		writeSync(fd, contents);
+		if (typeof contents === "string") writeSync(fd, contents);
+		else writeSync(fd, contents);
 		fsyncSync(fd);
 	} finally {
 		closeSync(fd);

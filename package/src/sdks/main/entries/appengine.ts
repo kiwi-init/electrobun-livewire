@@ -1,5 +1,5 @@
 export { AppEngine } from "../appengine/engine";
-export type { AppEngineEvent, AppEngineOptions, EngineStorage } from "../appengine/engine";
+export type { AppEngineEvent, AppEngineHost, AppEngineOptions, BuiltInUi, EngineStorage, HostUi } from "../appengine/engine";
 export { contractRangeError, contractRefusal } from "../appengine/contract";
 export type { CapabilityHandler } from "../appengine/contract";
 export type { EngineContract } from "../../../shared/appengine-protocol";
@@ -22,5 +22,7 @@ export {
 	verifyManifest,
 } from "../appengine/format";
 export type { TrustedKeys, UiConfig, UiManifest } from "../appengine/format";
+export { placeFiles, pruneFiles, readFolder, readVerifiedPack } from "../appengine/served";
+export type { UiFiles } from "../appengine/served";
 export { EngineStore, StorageError, storageCapabilities } from "../appengine/storage";
 export type { EngineStoreOptions, StorageOp } from "../appengine/storage";

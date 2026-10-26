@@ -2,17 +2,27 @@
 // new installs from the UI channel while the app runs, and rolls back when one
 // fails. A UI only becomes a rollback target after it boots (ready() within the
 // deadline) and then runs through probation without an uncaught error.
+//
+// Two ways to display a UI:
+// - default: a BrowserView the engine owns on top of `window`, with a
+//   throwaway partition and the `window.engine` preload (view-display.ts).
+// - host mode (`host`): the app's own view, with its own partition, preload,
+//   bridge and guards. The engine keeps the UI's files in the view's viewsRoot,
+//   rewritten from the signed pack before every boot (served.ts), hands the
+//   app the UI's index.html, and the app reports ready() and errors from its
+//   own bridge. The app's built-in UI is the fallback instead of a safe mode.
 
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { appEnginePageScript } from "../../../preload/.generated/compiled";
-import type { AppEngineRPC, EngineInvokeResult } from "../../../shared/appengine-protocol";
-import { BrowserView } from "../core/BrowserView";
+import type { EngineInvokeResult } from "../../../shared/appengine-protocol";
+import type { BrowserView } from "../core/BrowserView";
 import type { BrowserWindow } from "../core/BrowserWindow";
-import { UiChannel, type UiChannelOptions, type UiInstall } from "./channel";
+import { UiChannel, type UiChannelOptions } from "./channel";
 import { Capabilities, contractRefusal, type CapabilityHandler } from "./contract";
 import { manifestShapeError, type UiManifest } from "./format";
+import { placeFiles, pruneFiles, readVerifiedPack, type UiFiles } from "./served";
 import { writeAtomic } from "./storage";
+import type { ViewDisplay } from "./view-display";
 
 // Engine-owned storage AppEngine can snapshot around a never-good UI's first
 // boot, so a migration that crashes halfway can be undone.
@@ -21,15 +31,60 @@ export type EngineStorage = {
 	restore(name: string): boolean;
 };
 
+// The UI an app ships inside its bundle, for host mode.
+export type BuiltInUi = {
+	uiVersion: string;
+	// Where it sits among published UIs: installed UIs whose seq isn't above it
+	// are never booted, and the channel refuses them. Publishers use the publish
+	// time in ms as seq, so the build time in ms fits.
+	seq: number;
+	// Its files by relative path, index.html included. Read from the app bundle,
+	// which is trusted like the app's code.
+	files(): UiFiles;
+};
+
+// What host mode shows. The engine has placed the UI's files under the
+// viewsRoot; `index` is its index.html, which it keeps out of there so the app
+// can load it its own way (with a CSP added, for example).
+export type HostUi = {
+	// null for the built-in UI.
+	manifest: UiManifest | null;
+	uiVersion: string;
+	index: Uint8Array;
+	// The renderer hung: replace it rather than navigate it.
+	fresh: boolean;
+};
+
+export type AppEngineHost = {
+	// The folder the app's view serves views:// from (its viewsRoot), and the
+	// path under it the UI's files go to: "internal" for views://internal/.
+	// The engine owns viewsRoot/prefix and deletes anything else in it.
+	viewsRoot: string;
+	prefix: string;
+	builtIn: BuiltInUi;
+	show(ui: HostUi): void;
+	// The page's state to carry across a swap (session.takeHandoff returns it).
+	prepareSwap?(toVersion: string): Promise<unknown>;
+	// Whether a newly installed UI may replace the one on screen right now.
+	// When it says no, the UI waits for applyUpdate() or the next start.
+	canSwap?(): boolean;
+};
+
 export type AppEngineOptions = {
 	// The UI channel the engine installs from. The engine adds its own accept
 	// checks (bundles that failed before, data schema downgrades).
 	channel: UiChannelOptions;
-	// The window the UI is shown in. Its own webview stays blank; the UI runs
-	// in a BrowserView on top that the engine can throw away.
-	window: BrowserWindow;
-	// Shown when no UI that works is installed, e.g. views://safemode/index.html.
-	safeModeUrl: string;
+	// Default display: the window the UI is shown in. Its own webview stays
+	// blank; the UI runs in a BrowserView on top that the engine can throw away.
+	window?: BrowserWindow;
+	// Default display: shown when no UI that works is installed, e.g.
+	// views://safemode/index.html.
+	safeModeUrl?: string;
+	// Host mode: show UIs in the app's own view instead. There's no storage
+	// snapshot unless `storage` is given: a UI's data is usually the app's own
+	// (localStorage), so a UI that migrates it and then fails can't be undone.
+	// The dataSchema guard still refuses older UIs once a newer one booted.
+	host?: AppEngineHost;
 	// Time a booting UI gets to call engine.ready(). Default 5 s.
 	readyTimeoutMs?: number;
 	// Error-free time after ready() before a new UI becomes a rollback target.
@@ -58,7 +113,11 @@ export type AppEngineEvent =
 	// that went away can be the machine's fault, so those ban on the second
 	// strike; an uncaught error the UI threw bans right away.
 	| { type: "failed"; manifest: UiManifest; reason: string; banned: boolean }
-	| { type: "safe-mode"; reason: string };
+	| { type: "safe-mode"; reason: string }
+	// Host mode: the app's built-in UI is on screen.
+	| { type: "built-in"; reason: string }
+	// Host mode: a new UI is installed and waits for applyUpdate() or the next start.
+	| { type: "waiting"; manifest: UiManifest };
 
 type BootReason = "startup" | "update" | "rollback";
 
@@ -67,6 +126,7 @@ type BootReason = "startup" | "update" | "rollback";
 type FailureKind = "crash" | "environmental";
 
 const MAX_STRIKES = 2;
+const INDEX = "index.html";
 
 type EngineState = {
 	current: UiManifest | null;
@@ -78,6 +138,8 @@ type EngineState = {
 	strikes: Record<string, number>;
 	// A new UI that failed environmentally once, tried again at next startup.
 	retry: UiManifest | null;
+	// Host mode: the newest install, not booted yet. Booted at next startup.
+	next: UiManifest | null;
 	// Highest data schema a UI that booted has used: older UIs would misread it.
 	dataSchemaHighWater: number;
 };
@@ -88,8 +150,14 @@ const emptyState = (): EngineState => ({
 	bad: {},
 	strikes: {},
 	retry: null,
+	next: null,
 	dataSchemaHighWater: 0,
 });
+
+// A UI ready to boot. `url` identifies it to ready() and the error reports:
+// its appdata:// URL by default, `ui:<sha256>` in host mode, where `files` are
+// its verified files.
+type Target = { manifest: UiManifest; url: string; files: UiFiles | null };
 
 type Pending = {
 	manifest: UiManifest;
@@ -111,6 +179,7 @@ const stripQuery = (url: string) => url.split(/[?#]/)[0]!;
 export class AppEngine {
 	readonly channel: UiChannel;
 	private readonly options: AppEngineOptions;
+	private readonly host: AppEngineHost | null;
 	private readonly listeners = new Set<(event: AppEngineEvent) => void>();
 	private readonly readyTimeoutMs: number;
 	private readonly probationMs: number;
@@ -119,19 +188,29 @@ export class AppEngine {
 	// UIs that failed in this run: skipped as rollback targets until restart.
 	private readonly failedThisRun = new Set<string>();
 	private stateFile = "";
-	private view: BrowserView | null = null;
-	private rpc: ReturnType<typeof makeRpc> | null = null;
-	private generation = 0;
+	private display: ViewDisplay | null = null;
 	private pending: Pending | null = null;
 	private probation: Probation | null = null;
-	private queued: UiInstall | null = null;
+	private queued: UiManifest | null = null;
+	private waiting: UiManifest | null = null;
 	private handoff: unknown = null;
 	private showingManifest: UiManifest | null = null;
+	private showingBuiltIn = false;
+	// Host mode: the files each UI placed under viewsRoot/prefix uses, by
+	// sha256 ("built-in" for the app's own), since the last prune.
+	private placed = new Map<string, Set<string>>();
 	private started = false;
 	private readonly capabilities: Capabilities;
 
 	constructor(options: AppEngineOptions) {
 		this.options = options;
+		this.host = options.host ?? null;
+		if (!this.host && (!options.window || !options.safeModeUrl)) {
+			throw new Error("AppEngine needs either `host`, or `window` and `safeModeUrl`");
+		}
+		if (this.host && options.channel.keep === "files") {
+			throw new Error("AppEngine in host mode keeps packs, so it can check them before every boot");
+		}
 		this.readyTimeoutMs = options.readyTimeoutMs ?? 5_000;
 		this.probationMs = options.probationMs ?? 30_000;
 		this.keepGood = options.keepGood ?? 3;
@@ -139,8 +218,8 @@ export class AppEngine {
 			options.contractVersion,
 			{
 				"engine.info": () => ({
-					uiVersion: this.showingManifest?.uiVersion ?? null,
-					seq: this.showingManifest?.seq ?? null,
+					uiVersion: this.showingManifest?.uiVersion ?? (this.showingBuiltIn ? this.host!.builtIn.uiVersion : null),
+					seq: this.showingManifest?.seq ?? (this.showingBuiltIn ? this.host!.builtIn.seq : null),
 					contract: this.capabilities.contract,
 				}),
 				"session.takeHandoff": () => this.handoff,
@@ -150,6 +229,7 @@ export class AppEngine {
 		const appAccept = options.channel.accept;
 		this.channel = new UiChannel({
 			...options.channel,
+			...(this.host ? { keep: "pack" as const } : {}),
 			accept: (manifest) => this.accept(manifest) ?? appAccept?.(manifest) ?? null,
 		});
 	}
@@ -159,14 +239,15 @@ export class AppEngine {
 		return () => this.listeners.delete(listener);
 	}
 
-	// The UI on screen, or null in safe mode.
+	// The installed UI on screen, or null in safe mode or on the built-in UI.
 	get showing(): UiManifest | null {
 		return this.showingManifest;
 	}
 
-	// The BrowserView the UI currently runs in (replaced after a hang).
+	// The BrowserView the UI currently runs in (replaced after a hang). Always
+	// null in host mode, where the app owns the view.
 	getView(): BrowserView | null {
-		return this.view;
+		return this.display?.getView() ?? null;
 	}
 
 	async start() {
@@ -174,18 +255,31 @@ export class AppEngine {
 		this.started = true;
 		this.stateFile = this.options.stateFile ?? (await defaultStateFile());
 		this.state = parseState(readJson(this.stateFile));
+		if (!this.host) {
+			// Imported lazily: host mode never loads BrowserView or the page script.
+			const { ViewDisplay } = await import("./view-display");
+			this.display = new ViewDisplay(this, this.options.window!, this.options.safeModeUrl!, this.capabilities.pagePrelude());
+		}
 
-		const startup = await this.pickRollbackTarget([this.state.retry, this.state.current, ...this.state.good]);
+		const candidates = [this.state.retry, this.state.current, ...this.state.good];
+		const startup = await this.pickRollbackTarget(this.host ? [this.state.next, ...candidates] : candidates);
 		if (startup) {
-			this.mountView(startup.url);
-			this.boot(startup.install.manifest, startup.url, "startup");
+			this.display?.mount(startup.url);
+			this.boot(startup, "startup");
+		} else if (this.host) {
+			this.showBuiltIn("no installed UI that works is newer than the built-in one", false);
 		} else {
-			this.mountView(this.options.safeModeUrl);
+			this.display!.mount(this.options.safeModeUrl!);
 			this.emit({ type: "safe-mode", reason: "no UI that works is installed" });
 		}
 
 		this.channel.on((event) => {
-			if (event.type === "available") this.swapTo(event.install);
+			if (event.type !== "available") return;
+			if (this.host) {
+				this.state.next = event.install.manifest;
+				this.saveState();
+			}
+			void this.swapTo(event.install.manifest);
 		});
 		this.channel.start();
 	}
@@ -198,6 +292,33 @@ export class AppEngine {
 		this.probation = null;
 	}
 
+	// ---------------------------------------------------------------- host mode
+
+	// The page host.show() loaded booted. The app calls this from its own bridge
+	// after every load it does for the engine.
+	ready() {
+		if (this.pending) this.onReady(this.pending.url);
+	}
+
+	// An uncaught error in the page: a failed boot before ready(), a crash
+	// during probation, nothing after that.
+	error(message: string) {
+		if (this.pending) this.onBootError(this.pending.url, message);
+		else if (this.probation) void this.onRuntimeError(this.probation.url, message);
+	}
+
+	// The page's renderer process ended on its own.
+	rendererGone() {
+		this.onRendererGone();
+	}
+
+	// Boots the installed UI that canSwap() held back, if any.
+	applyUpdate() {
+		const waiting = this.waiting;
+		this.waiting = null;
+		if (waiting) void this.swapTo(waiting, true);
+	}
+
 	// Refuses bundles the engine knows it can't run, before they're downloaded.
 	private accept(manifest: UiManifest): string | null {
 		const refusal = contractRefusal(this.capabilities.contract.version, manifest);
@@ -207,59 +328,23 @@ export class AppEngine {
 		if (manifest.dataSchema < this.state.dataSchemaHighWater) {
 			return `data schema ${manifest.dataSchema} is older than the ${this.state.dataSchemaHighWater} this app's data uses`;
 		}
+		if (this.host && manifest.seq <= this.host.builtIn.seq) {
+			return `UI ${manifest.uiVersion} is older than the one this app ships (${this.host.builtIn.uiVersion})`;
+		}
 		return null;
-	}
-
-	// ---------------------------------------------------------------- views
-
-	private mountView(url: string) {
-		const window = this.options.window;
-		const frame = window.getFrame();
-		const rpc = makeRpc(this);
-		this.view = new BrowserView({
-			windowId: window.id,
-			url,
-			// Ephemeral: nothing the page stores outlives the view, so UI data
-			// lives in engine storage, which the engine can snapshot and guard.
-			partition: `appengine-${++this.generation}`,
-			preload: this.capabilities.pagePrelude() + appEnginePageScript,
-			rpc,
-			allowedProtocols: { views: true, appData: true },
-			navigationRules: JSON.stringify(["^*", "appdata://ui/*", `${stripQuery(this.options.safeModeUrl)}*`]),
-			frame: { x: 0, y: 0, width: frame.width, height: frame.height },
-			autoResize: true,
-		});
-		this.rpc = rpc;
-		const view = this.view;
-		view.on("render-process-gone", () => {
-			if (view !== this.view) return;
-			// Wake recovery killed a frozen process and reloads the same UI, which
-			// boots again: not the UI's failure.
-			if (view.rendererExitExpected) {
-				view.rendererExitExpected = null;
-				return;
-			}
-			this.onRendererGone();
-		});
-	}
-
-	// A UI stuck in a loop can't be navigated away from: kill its renderer and
-	// show the next URL in a fresh view.
-	private replaceView(url: string) {
-		const old = this.view;
-		old?.terminateRenderer();
-		this.mountView(url);
-		old?.remove();
 	}
 
 	// ---------------------------------------------------------------- boot
 
-	private boot(manifest: UiManifest, url: string, reason: BootReason, options: { load?: boolean; fresh?: boolean } = {}) {
+	private boot(target: Target, reason: BootReason, options: { load?: boolean; fresh?: boolean } = {}) {
+		const { manifest, url } = target;
 		// First boot of a UI that never worked: snapshot storage so a failed
 		// boot (a migration that crashes halfway) can be undone.
 		const isNew = !this.state.good.some((good) => good.sha256 === manifest.sha256);
 		const snapshot = isNew && this.options.storage ? `before-${manifest.sha256}` : null;
 		if (snapshot) this.options.storage!.snapshot(snapshot);
+		// state.next stays until this boot settles (ready or failed): an app
+		// that quits mid-boot boots it again at the next start.
 
 		this.pending = {
 			manifest,
@@ -272,8 +357,15 @@ export class AppEngine {
 			),
 		};
 		this.emit({ type: "booting", manifest, reason });
-		if (options.fresh) this.replaceView(url);
-		else if (options.load) this.view?.loadURL(url);
+		if (this.host) {
+			this.showingBuiltIn = false;
+			try {
+				this.hostShow(manifest, manifest.uiVersion, target.files!, !!options.fresh);
+			} catch (error) {
+				this.bootFailed(`couldn't show it: ${String(error)}`, false, "environmental");
+			}
+		} else if (options.fresh) this.display?.replace(url);
+		else if (options.load) this.display?.load(url);
 	}
 
 	onReady(href: string) {
@@ -288,6 +380,7 @@ export class AppEngine {
 		this.handoff = null;
 		delete this.state.strikes[pending.manifest.sha256];
 		if (this.state.retry?.sha256 === pending.manifest.sha256) this.state.retry = null;
+		if (this.state.next?.sha256 === pending.manifest.sha256) this.state.next = null;
 		const known = this.state.good.some((good) => good.sha256 === pending.manifest.sha256);
 		if (known) {
 			this.state.good = [pending.manifest, ...this.state.good.filter((good) => good.sha256 !== pending.manifest.sha256)];
@@ -296,6 +389,7 @@ export class AppEngine {
 		}
 		this.saveState();
 		this.emit({ type: "ready", manifest: pending.manifest });
+		this.pruneServed();
 		void this.prune();
 		this.afterSettle();
 	}
@@ -312,14 +406,14 @@ export class AppEngine {
 		this.cancelProbation();
 		// The page is still alive, so the user's work can come along.
 		const fallback = await this.pickRollbackTarget(this.state.good);
-		if (fallback) await this.captureHandoff(fallback.install.manifest.uiVersion);
+		await this.captureHandoff(fallback?.manifest.uiVersion ?? this.host?.builtIn.uiVersion ?? null);
 		// The user may have worked in the new UI: only undo their writes if the
 		// fallback couldn't read the data otherwise.
-		const restore = probation.manifest.dataSchema > (fallback?.install.manifest.dataSchema ?? 0) ? probation.snapshot : null;
+		const restore = probation.manifest.dataSchema > (fallback?.manifest.dataSchema ?? 0) ? probation.snapshot : null;
 		this.markFailedAndRollBack(probation.manifest, `crashed during probation: ${firstLine(message)}`, restore, false, kind);
 	}
 
-	private onRendererGone() {
+	onRendererGone() {
 		if (this.pending) this.bootFailed("the renderer process ended", false, "environmental");
 		else if (this.probation) void this.onRuntimeError(this.probation.url, "the renderer process ended", "environmental");
 	}
@@ -362,6 +456,8 @@ export class AppEngine {
 	) {
 		const sha = manifest.sha256;
 		this.failedThisRun.add(sha);
+		// A banned UI never boots again, and one with a strike is `retry` now.
+		if (this.state.next?.sha256 === sha) this.state.next = null;
 		const strikes = (this.state.strikes[sha] ?? 0) + 1;
 		const banned = kind === "crash" || strikes >= MAX_STRIKES;
 		if (banned) {
@@ -385,29 +481,39 @@ export class AppEngine {
 		const fallback = await this.pickRollbackTarget(this.state.good);
 		if (fallback) {
 			// A hung renderer can't be navigated: use a fresh view.
-			this.boot(fallback.install.manifest, fallback.url, "rollback", hung ? { fresh: true } : { load: true });
+			this.boot(fallback, "rollback", hung ? { fresh: true } : { load: true });
 			return;
 		}
 		this.showingManifest = null;
-		if (hung) this.replaceView(this.options.safeModeUrl);
-		else this.view?.loadURL(this.options.safeModeUrl);
-		this.emit({ type: "safe-mode", reason: `${manifest.uiVersion} failed and no UI that works is installed` });
+		if (this.host) {
+			this.showBuiltIn(`${manifest.uiVersion} failed and no other installed UI works`, hung);
+		} else {
+			if (hung) this.display?.replace(this.options.safeModeUrl!);
+			else this.display?.load(this.options.safeModeUrl!);
+			this.emit({ type: "safe-mode", reason: `${manifest.uiVersion} failed and no UI that works is installed` });
+		}
 		this.afterSettle();
 	}
 
 	// ---------------------------------------------------------------- swaps
 
-	private async swapTo(install: UiInstall) {
-		if (!install.url) return;
+	private async swapTo(manifest: UiManifest, force = false) {
 		// One boot at a time: a publish that lands mid-boot waits for it.
 		if (this.pending) {
-			this.queued = install;
+			this.queued = manifest;
 			return;
 		}
+		if (this.host && !force && this.host.canSwap?.() === false) {
+			this.waiting = manifest;
+			this.emit({ type: "waiting", manifest });
+			return;
+		}
+		const target = await this.pickRollbackTarget([manifest]);
+		if (!target) return;
 		// A newer UI supersedes one still on probation, which is never promoted.
 		this.cancelProbation();
-		await this.captureHandoff(install.manifest.uiVersion);
-		this.boot(install.manifest, install.url, "update", { load: true });
+		await this.captureHandoff(manifest.uiVersion);
+		this.boot(target, "update", { load: true });
 	}
 
 	private afterSettle() {
@@ -416,15 +522,64 @@ export class AppEngine {
 		if (queued) void this.swapTo(queued);
 	}
 
-	private async captureHandoff(toVersion: string) {
+	private async captureHandoff(toVersion: string | null) {
+		const prepare = this.host ? this.host.prepareSwap?.bind(this.host) : this.display?.prepareSwap.bind(this.display);
+		if (!prepare || toVersion === null) {
+			this.handoff = null;
+			return;
+		}
 		try {
 			const result = await Promise.race([
-				this.rpc?.request.prepareSwap({ toVersion }),
+				prepare(toVersion),
 				new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1_000)),
 			]);
-			this.handoff = result?.state ?? null;
+			this.handoff = result ?? null;
 		} catch {
 			this.handoff = null;
+		}
+	}
+
+	// ---------------------------------------------------------------- host display
+
+	// Puts the UI's files under the viewsRoot, then has the app show it. What
+	// the UI it replaces uses stays until pruneServed().
+	private hostShow(manifest: UiManifest | null, uiVersion: string, files: UiFiles, fresh: boolean) {
+		const host = this.host!;
+		const index = files.get(INDEX)!;
+		const assets = new Map(files);
+		assets.delete(INDEX);
+		placeFiles(join(host.viewsRoot, host.prefix), assets);
+		this.placed.set(manifest?.sha256 ?? "built-in", new Set(assets.keys()));
+		host.show({ manifest, uiVersion, index, fresh });
+	}
+
+	private showBuiltIn(reason: string, fresh: boolean) {
+		const host = this.host!;
+		this.showingManifest = null;
+		try {
+			const files = host.builtIn.files();
+			if (!files.has(INDEX)) throw new Error(`it has no ${INDEX}`);
+			this.hostShow(null, host.builtIn.uiVersion, files, fresh);
+		} catch (error) {
+			this.emit({ type: "safe-mode", reason: `the built-in UI can't be shown: ${String(error)}` });
+			return;
+		}
+		this.showingBuiltIn = true;
+		this.pruneServed();
+		this.emit({ type: "built-in", reason });
+	}
+
+	// Drops the files only UIs no longer on screen used.
+	private pruneServed() {
+		const host = this.host;
+		const key = this.showingBuiltIn ? "built-in" : this.showingManifest?.sha256;
+		const keep = key ? this.placed.get(key) : undefined;
+		if (!host || !key || !keep) return;
+		this.placed = new Map([[key, keep]]);
+		try {
+			pruneFiles(join(host.viewsRoot, host.prefix), keep);
+		} catch (error) {
+			console.error("AppEngine couldn't prune its served files:", error);
 		}
 	}
 
@@ -441,17 +596,35 @@ export class AppEngine {
 
 	// ---------------------------------------------------------------- state
 
-	private async pickRollbackTarget(candidates: (UiManifest | null)[]) {
+	private async pickRollbackTarget(candidates: (UiManifest | null)[]): Promise<Target | null> {
 		for (const manifest of candidates) {
 			if (!manifest || this.state.bad[manifest.sha256] || this.failedThisRun.has(manifest.sha256)) continue;
 			const install = await this.channel.installed(manifest);
-			if (install?.url) return { install, url: install.url };
+			if (!this.host) {
+				if (install?.url) return { manifest, url: install.url, files: null };
+				continue;
+			}
+			if (!install?.pack || manifest.seq <= this.host.builtIn.seq) continue;
+			const files = readVerifiedPack(install.pack, manifest, this.options.channel.trustedKeys);
+			if (files.ok && files.value.has(INDEX)) return { manifest, url: `ui:${manifest.sha256}`, files: files.value };
+			// Changed on disk since it was installed, or damaged: not the UI's
+			// fault, but nothing to boot either until the channel brings a new one.
+			this.failedThisRun.add(manifest.sha256);
+			const problem = files.ok ? `it has no ${INDEX}` : files.reason;
+			this.emit({ type: "failed", manifest, reason: `the installed pack doesn't check out: ${problem}`, banned: false });
 		}
 		return null;
 	}
 
 	private async prune() {
-		const keep = [...this.state.good, this.state.current, this.state.retry, this.pending?.manifest, this.probation?.manifest]
+		const keep = [
+			...this.state.good,
+			this.state.current,
+			this.state.retry,
+			this.state.next,
+			this.pending?.manifest,
+			this.probation?.manifest,
+		]
 			.filter((manifest): manifest is UiManifest => !!manifest)
 			.map((manifest) => manifest.sha256);
 		await this.channel.prune(keep);
@@ -471,22 +644,6 @@ export class AppEngine {
 			}
 		}
 	}
-}
-
-function makeRpc(engine: AppEngine) {
-	return BrowserView.defineRPC<AppEngineRPC>({
-		maxRequestTime: 10_000,
-		handlers: {
-			requests: {
-				invoke: ({ cap, args }) => engine.invoke(cap, args),
-			},
-			messages: {
-				ready: ({ href }) => engine.onReady(href),
-				bootError: ({ href, message }) => engine.onBootError(href, message),
-				runtimeError: ({ href, message }) => void engine.onRuntimeError(href, message),
-			},
-		},
-	});
 }
 
 const firstLine = (message: string) => message.split("\n")[0]!;
@@ -514,6 +671,7 @@ function parseState(raw: unknown): EngineState {
 	};
 	state.current = manifest(value["current"]);
 	state.retry = manifest(value["retry"]);
+	state.next = manifest(value["next"]);
 	if (Array.isArray(value["good"])) {
 		state.good = value["good"].map(manifest).filter((entry): entry is UiManifest => entry !== null);
 	}

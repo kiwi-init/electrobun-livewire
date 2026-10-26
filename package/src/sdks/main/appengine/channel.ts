@@ -20,7 +20,8 @@ export type UiChannelOptions = {
 	// Poll even while push is connected, as a safety net. Default 5 minutes.
 	pollIntervalMs?: number;
 	// Install root. Defaults to `ui` under Utils.paths.appdataProtocolRoot, so
-	// installs load as appdata://ui/<sha256>/...
+	// installs load as appdata://ui/<sha256>/..., or to
+	// userData/appengine/packs when the channel keeps packs.
 	root?: string;
 	// The folder appdata:// serves, used to build install URLs. Defaults to
 	// Utils.paths.appdataProtocolRoot.
@@ -30,6 +31,10 @@ export type UiChannelOptions = {
 	stateFile?: string;
 	// Largest bundle the channel downloads. Default 256 MB.
 	maxBundleBytes?: number;
+	// What an install keeps on disk: the bundle's files, unpacked where views
+	// load them (default), or the verified .uipack itself, for an engine that
+	// checks it against its signed manifest again before every boot.
+	keep?: "files" | "pack";
 	// Extra checks run after the signature and anti-replay checks, before
 	// download (contract range, data schema, known-bad bundles). Return a
 	// reason to refuse the manifest, or null to accept it.
@@ -41,10 +46,13 @@ export type UiChannelOptions = {
 
 export type UiInstall = {
 	manifest: UiManifest;
-	// Directory the bundle's files were installed into.
-	dir: string;
+	// Directory the bundle's files were installed into, or null when the
+	// channel keeps packs.
+	dir: string | null;
+	// The kept .uipack, or null when the channel keeps files.
+	pack: string | null;
 	// appdata:// URL of the bundle's index.html, or null when `root` isn't
-	// under the appdata:// root.
+	// under the appdata:// root or the channel keeps packs.
 	url: string | null;
 };
 
@@ -121,11 +129,10 @@ export class UiChannel {
 	// The install for a bundle hash, if it's on disk.
 	async installed(manifest: UiManifest): Promise<UiInstall | null> {
 		const paths = await this.resolvePaths();
-		const dir = join(paths.root, manifest.sha256);
-		return existsSync(dir) ? this.installFor(manifest, dir, paths.appdataRoot) : null;
+		return existsSync(this.installPath(manifest, paths.root)) ? this.installFor(manifest, paths) : null;
 	}
 
-	// Deletes installs whose sha256 isn't in `keep`.
+	// Deletes installs (unpacked or packs) whose sha256 isn't in `keep`.
 	async prune(keep: Iterable<string>) {
 		const { root } = await this.resolvePaths();
 		const kept = new Set(keep);
@@ -136,7 +143,8 @@ export class UiChannel {
 			return;
 		}
 		for (const entry of entries) {
-			if (/^[0-9a-f]{64}$/.test(entry) && !kept.has(entry)) {
+			const sha = /^([0-9a-f]{64})(?:\.uipack)?$/.exec(entry)?.[1];
+			if (sha && !kept.has(sha)) {
 				rmSync(join(root, entry), { recursive: true, force: true });
 			}
 		}
@@ -202,8 +210,8 @@ export class UiChannel {
 		manifest: UiManifest,
 		paths: { root: string; appdataRoot: string | null },
 	): Promise<UiInstall> {
-		const dir = join(paths.root, manifest.sha256);
-		if (existsSync(dir)) return this.installFor(manifest, dir, paths.appdataRoot);
+		const target = this.installPath(manifest, paths.root);
+		if (existsSync(target)) return this.installFor(manifest, paths);
 
 		const bundleUrl = new URL(manifest.bundleUrl, this.options.manifestUrl);
 		// Signed, but a relative URL can still resolve to file:, which fetch reads.
@@ -224,31 +232,45 @@ export class UiChannel {
 		const files = readUipack(bytes, manifest);
 		if (!files.ok) throw new Error(files.reason);
 
-		// Unpack next to the final directory and rename it into place, so a
+		// Write next to the final path and rename it into place, so a
 		// half-written install is never visible under its hash.
 		mkdirSync(paths.root, { recursive: true });
 		const staging = join(paths.root, `.staging-${manifest.sha256}-${randomBytes(4).toString("hex")}`);
 		try {
-			for (const [path, content] of files.value) {
-				const target = join(staging, path);
-				mkdirSync(dirname(target), { recursive: true });
-				writeFileSync(target, content);
+			if (this.keepsPacks) {
+				writeFileSync(staging, bytes);
+			} else {
+				for (const [path, content] of files.value) {
+					const file = join(staging, path);
+					mkdirSync(dirname(file), { recursive: true });
+					writeFileSync(file, content);
+				}
 			}
-			renameSync(staging, dir);
+			renameSync(staging, target);
 		} catch (error) {
 			rmSync(staging, { recursive: true, force: true });
-			if (!existsSync(dir)) throw error;
+			if (!existsSync(target)) throw error;
 		}
-		return this.installFor(manifest, dir, paths.appdataRoot);
+		return this.installFor(manifest, paths);
 	}
 
-	private installFor(manifest: UiManifest, dir: string, appdataRoot: string | null): UiInstall {
-		const rel = appdataRoot ? relative(appdataRoot, dir) : null;
+	private get keepsPacks() {
+		return this.options.keep === "pack";
+	}
+
+	private installPath(manifest: UiManifest, root: string) {
+		return join(root, this.keepsPacks ? `${manifest.sha256}.uipack` : manifest.sha256);
+	}
+
+	private installFor(manifest: UiManifest, paths: { root: string; appdataRoot: string | null }): UiInstall {
+		const path = this.installPath(manifest, paths.root);
+		if (this.keepsPacks) return { manifest, dir: null, pack: path, url: null };
+		const rel = paths.appdataRoot ? relative(paths.appdataRoot, path) : null;
 		const url =
 			rel && !rel.startsWith("..") && !rel.startsWith(sep)
 				? `appdata://${rel.split(sep).join("/")}/index.html`
 				: null;
-		return { manifest, dir, url };
+		return { manifest, dir: path, pack: null, url };
 	}
 
 	// Server-Sent Events: any event means "check now". Reconnects with backoff
@@ -343,14 +365,14 @@ export class UiChannel {
 		let appdataRoot = this.options.appdataRoot;
 		let root = this.options.root;
 		let stateFile = this.options.stateFile;
-		if (!root || !stateFile || !appdataRoot) {
+		if (!root || !stateFile || (!appdataRoot && !this.keepsPacks)) {
 			// Imported lazily: Utils needs the app's runtime, which unit tests don't have.
 			const { paths } = await import("../core/Utils");
-			appdataRoot ??= paths.appdataProtocolRoot;
-			root ??= join(appdataRoot, "ui");
+			if (!this.keepsPacks) appdataRoot ??= paths.appdataProtocolRoot;
+			root ??= this.keepsPacks ? join(paths.userData, "appengine", "packs") : join(appdataRoot!, "ui");
 			stateFile ??= join(paths.userData, "appengine", "channel.json");
 		}
-		this.paths = { root, stateFile, appdataRoot };
+		this.paths = { root, stateFile, appdataRoot: appdataRoot ?? null };
 		this.sweepStaging(root);
 		return this.paths;
 	}

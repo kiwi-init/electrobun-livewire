@@ -6,10 +6,12 @@
 //       DIR/<keyId>.public.txt. Prints the keyId and public key for the engine.
 //
 //   bun cli.ts publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL]
-//                      [--base-url URL] [--expires-in 30d]
+//                      [--base-url URL] [--expires-in 30d] [--flat]
 //       Packs SRC (its files plus ui.json {uiVersion, requiresContract,
 //       dataSchema}) into SITE/bundles/<uiVersion>-<sha>.uipack and writes the
-//       signed SITE/manifest.json. Upload SITE as is. seq is the later of the
+//       signed SITE/manifest.json. Upload SITE as is. --flat puts the bundle
+//       next to manifest.json instead, for hosts without folders (GitHub
+//       release assets). seq is the later of the
 //       previous seq + 1 and the publish time in ms, so a fresh checkout still
 //       publishes past what engines have. --previous reads the live manifest
 //       (default: SITE/manifest.json) for that and for the dataSchema guard.
@@ -136,6 +138,7 @@ export async function publish(options: {
 	previous?: string;
 	baseUrl?: string;
 	expiresInMs?: number;
+	flat?: boolean;
 	now?: number;
 }) {
 	const now = options.now ?? Date.now();
@@ -150,16 +153,15 @@ export async function publish(options: {
 		throw new Error(`dataSchema ${config.dataSchema} is below the published ${previous.dataSchema}; engines would refuse it`);
 	}
 
-	const bundlesDir = join(options.siteDir, "bundles");
+	const bundlesDir = options.flat ? options.siteDir : join(options.siteDir, "bundles");
+	const bundleRel = options.flat ? bundleName : `bundles/${bundleName}`;
 	mkdirSync(bundlesDir, { recursive: true });
 	const bundlePath = join(bundlesDir, bundleName);
 	// Content-addressed: an existing file with this name already has these bytes.
 	if (!existsSync(bundlePath)) writeAtomically(bundlePath, pack.bytes);
 
 	const publicKey = publicKeyFromPrivate(options.privateKeyPem);
-	const bundleUrl = options.baseUrl
-		? `${options.baseUrl.replace(/\/+$/, "")}/bundles/${bundleName}`
-		: `bundles/${bundleName}`;
+	const bundleUrl = options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}/${bundleRel}` : bundleRel;
 	const manifest = signManifest(
 		{
 			format: MANIFEST_FORMAT,
@@ -219,8 +221,10 @@ async function main(argv: string[]) {
 			const previous = flag(args, "--previous");
 			const baseUrl = flag(args, "--base-url");
 			const expiresIn = flag(args, "--expires-in");
+			const flat = args.includes("--flat");
+			if (flat) args.splice(args.indexOf("--flat"), 1);
 			const [srcDir] = args;
-			if (!srcDir || !keyPath || !siteDir) throw new Error("usage: publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL] [--base-url URL] [--expires-in 30d]");
+			if (!srcDir || !keyPath || !siteDir) throw new Error("usage: publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL] [--base-url URL] [--expires-in 30d] [--flat]");
 			const result = await publish({
 				srcDir,
 				privateKeyPem: readFileSync(keyPath, "utf8"),
@@ -228,6 +232,7 @@ async function main(argv: string[]) {
 				previous,
 				baseUrl,
 				expiresInMs: expiresIn ? parseDuration(expiresIn) : undefined,
+				flat,
 			});
 			console.log(`published ${result.manifest.uiVersion} as seq ${result.manifest.seq}: ${result.fileCount} files, ${result.bytes} bytes\n  ${result.bundlePath}\n  ${result.manifestPath}`);
 			return;
@@ -242,7 +247,7 @@ async function main(argv: string[]) {
 			return;
 		}
 		default:
-			console.error("usage: cli.ts keygen [--out DIR] | publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL] [--base-url URL] [--expires-in 30d] | verify SITE --public-key KEY [--key-id ID]");
+			console.error("usage: cli.ts keygen [--out DIR] | publish SRC --key PRIVATE.pem --out SITE [--previous PATH|URL] [--base-url URL] [--expires-in 30d] [--flat] | verify SITE --public-key KEY [--key-id ID]");
 			process.exitCode = 2;
 	}
 }
