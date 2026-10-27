@@ -54,7 +54,8 @@ export type WindowOptionsType<T = undefined> = {
 	transparent: boolean;
 	// passthrough: when true, mouse events pass through transparent regions
 	passthrough: boolean;
-	// Enables macOS system spell checking for native WKWebView content.
+	// Enables system spell checking for native web views: WKWebView on macOS,
+	// WebKitGTK on Linux (with an installed hunspell/enchant dictionary).
 	spellCheck: boolean;
 	hidden?: boolean;
 	navigationRules: string | null;
@@ -409,7 +410,7 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 	}
 
 	/**
-	 * Toggles macOS system spell checking for this window's native WKWebView.
+	 * Toggles system spell checking for this window's native web view.
 	 * Returns false when the current renderer/platform does not support it.
 	 */
 	setSpellCheck(enabled: boolean): boolean {

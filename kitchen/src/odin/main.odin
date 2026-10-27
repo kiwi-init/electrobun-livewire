@@ -3712,7 +3712,7 @@ runWebviewSpellCheckTest :: proc(state: ^AppState) -> string {
 	}
 	defer electrobun.closeWindow(state.core, created.window_id)
 
-	expected_support := ODIN_OS == .Darwin
+	expected_support := ODIN_OS == .Darwin || ODIN_OS == .Linux
 	disabled, disable_err := electrobun.setWebviewSpellCheck(state.core, created.webview_id, false)
 	if disable_err != .None {
 		return errName(disable_err)

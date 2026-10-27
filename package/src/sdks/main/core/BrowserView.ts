@@ -93,7 +93,8 @@ export type BrowserViewOptions<T = undefined> = {
 	startTransparent: boolean;
 	// Set passthrough on the AbstractView at creation (before first paint)
 	startPassthrough: boolean;
-	// Enables macOS system spell checking for native WKWebView content.
+	// Enables system spell checking for native web views: WKWebView on macOS,
+	// WebKitGTK on Linux (with an installed hunspell/enchant dictionary).
 	// Unsupported renderers/platforms leave their behavior unchanged.
 	spellCheck: boolean;
 	// renderer:
@@ -347,10 +348,6 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		ffi.request.setWebviewNavigationRules({ id: this.id, rulesJson });
 	}
 
-	/**
-	 * Toggles macOS system spell checking for native WKWebView content.
-	 * Returns false when the current renderer/platform does not support it.
-	 */
 	// Applies to the view's next views:// and appdata:// responses; reload to
 	// put it on the current page. null removes it.
 	setContentSecurityPolicy(policy: string | null) {
@@ -363,6 +360,11 @@ export class BrowserView<T extends RPCWithTransport = RPCWithTransport> {
 		ffi.request.webviewSetNewWindowPolicy({ id: this.id, policy });
 	}
 
+	/**
+	 * Toggles system spell checking for native web view content. On Linux,
+	 * WebKitGTK checks spelling for the whole process while any view asks.
+	 * Returns false when the current renderer/platform does not support it.
+	 */
 	setSpellCheck(enabled: boolean): boolean {
 		this.spellCheck = enabled;
 		return ffi.request.webviewSetSpellCheck({ id: this.id, enabled });

@@ -233,7 +233,7 @@ export const windowTests = [
   defineTest({
     name: "BrowserView spell check capability",
     category: "BrowserWindow",
-    description: "Test initial and runtime macOS WKWebView spell checking support",
+    description: "Test initial and runtime spell checking support on macOS WKWebView and Linux WebKitGTK",
     async run({ createWindow, log }) {
       const win = await createWindow({
         html: "<!doctype html><div contenteditable>mispellled wurd</div>",
@@ -245,7 +245,7 @@ export const windowTests = [
         spellCheck: true,
       });
 
-      const expectedSupport = process.platform === "darwin";
+      const expectedSupport = process.platform === "darwin" || process.platform === "linux";
       expect(win.window.spellCheck).toBe(true);
       expect(win.window.setSpellCheck(false)).toBe(expectedSupport);
       expect(win.webview.setSpellCheck(true)).toBe(expectedSupport);

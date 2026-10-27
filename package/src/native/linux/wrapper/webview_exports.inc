@@ -231,11 +231,72 @@ ELECTROBUN_EXPORT void webviewSetNewWindowPolicy(AbstractView* abstractView, int
     }
 }
 
+// WebKitGTK keeps one text checker for the whole process, so spell checking
+// is on while any live WebKit view asks for it. Languages come from the
+// user's locale; WebKit loads only those with an installed dictionary.
+static void setWebKitSpellCheckingLanguages(WebKitWebContext* context) {
+    std::vector<std::string> names;
+    for (const gchar* const* name = g_get_language_names(); *name; ++name) {
+        std::string language(*name);
+        if (language == "C" || language == "POSIX" || language.find_first_of(".@") != std::string::npos) {
+            continue;
+        }
+        bool regionAlreadyListed = std::any_of(names.begin(), names.end(), [&language](const std::string& listed) {
+            return listed.rfind(language + "_", 0) == 0;
+        });
+        if (!regionAlreadyListed) {
+            names.push_back(language);
+        }
+    }
+
+    std::vector<const gchar*> languages;
+    for (const auto& language : names) {
+        languages.push_back(language.c_str());
+    }
+    languages.push_back(nullptr);
+    webkit_web_context_set_spell_checking_languages(context, languages.data());
+
+    if (!webkit_web_context_get_spell_checking_languages(context)) {
+        // An empty list makes WebKit fall back to Pango's default language,
+        // then to the first dictionary installed.
+        const gchar* fallback[] = {nullptr};
+        webkit_web_context_set_spell_checking_languages(context, fallback);
+    }
+}
+
+static bool webKitSpellCheckingAvailable(WebKitWebContext* context) {
+    static const bool available = [context]() {
+        setWebKitSpellCheckingLanguages(context);
+        return webkit_web_context_get_spell_checking_languages(context) != nullptr;
+    }();
+    return available;
+}
+
+static bool anyWebKitViewWantsSpellChecking() {
+    std::lock_guard<std::mutex> lock(g_webviewMapMutex);
+    return std::any_of(g_webviewMap.begin(), g_webviewMap.end(), [](const auto& entry) {
+        auto* view = dynamic_cast<WebKitWebViewImpl*>(entry.second.get());
+        return view && !view->isRemoved && view->spellCheckRequested;
+    });
+}
+
 ELECTROBUN_EXPORT bool webviewSetSpellCheck(AbstractView* abstractView, bool enabled) {
-    (void)abstractView;
-    (void)enabled;
-    // This option intentionally targets macOS WKWebView, not WebKitGTK or CEF.
-    return false;
+    auto* view = dynamic_cast<WebKitWebViewImpl*>(abstractView);
+    if (!view) {
+        return false;
+    }
+    return dispatch_sync_main([view, enabled]() -> bool {
+        if (!view->webview) {
+            return false;
+        }
+        WebKitWebContext* context = webkit_web_view_get_context(WEBKIT_WEB_VIEW(view->webview));
+        if (!webKitSpellCheckingAvailable(context)) {
+            return false;
+        }
+        view->spellCheckRequested = enabled;
+        webkit_web_context_set_spell_checking_enabled(context, anyWebKitViewWantsSpellChecking() ? TRUE : FALSE);
+        return true;
+    });
 }
 
 // No native bridge-origin check here yet; the preload still gives the bridge
