@@ -1,0 +1,87 @@
+// Page clipboard: what a page copies with navigator.clipboard reaches other apps
+
+import { defineTest, expect, sleep } from "../test-framework/types";
+import { createTestHarnessRPC } from "./rpc.test";
+
+const ARM = `
+  window.kitchenCopies = [];
+  const button = document.createElement("button");
+  button.id = "kitchen-copy";
+  Object.assign(button.style, { position: "fixed", inset: "0", width: "100vw", height: "100vh", zIndex: "99999", opacity: "0.01" });
+  button.addEventListener("click", () => {
+    const record = (kind, p) => p.then(() => window.kitchenCopies.push({ kind, ok: true }), (e) => window.kitchenCopies.push({ kind, ok: false, error: String(e && e.name) + ": " + String(e && e.message) }));
+    const active = navigator.userActivation ? navigator.userActivation.isActive : "no userActivation API";
+    window.kitchenCopies.push({ kind: "activation", ok: active });
+    if (window.kitchenMode === "text") return record("writeText", navigator.clipboard.writeText(window.kitchenText));
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 24;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#3366ff";
+    context.fillRect(0, 0, 32, 24);
+    const png = new Promise((ok, no) => canvas.toBlob((blob) => (blob ? ok(blob) : no(new Error("no PNG"))), "image/png"));
+    return record("write image/png", navigator.clipboard.write([new ClipboardItem({ "image/png": png })]));
+  });
+  document.body.append(button);
+  return true;
+`;
+
+function windowCenter(title: string): [number, number] | null {
+  const tree = Bun.spawnSync(["swaymsg", "-t", "get_tree", "-r"], { timeout: 5000 });
+  type Node = { name?: string | null; rect?: { x: number; y: number; width: number; height: number }; nodes?: Node[]; floating_nodes?: Node[] };
+  const walk = (n: Node): Node | null => {
+    if (n.name === title && n.rect) return n;
+    for (const c of [...(n.nodes ?? []), ...(n.floating_nodes ?? [])]) {
+      const hit = walk(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  try {
+    const hit = walk(JSON.parse(tree.stdout.toString()) as Node);
+    return hit?.rect ? [Math.round(hit.rect.x + hit.rect.width / 2), Math.round(hit.rect.y + hit.rect.height / 2)] : null;
+  } catch {
+    // No sway tree to read: the caller reports it.
+    return null;
+  }
+}
+
+export const pageClipboardTests = [
+  defineTest({
+    name: "Text and a PNG the page copies reach the system clipboard",
+    category: "Utils",
+    description: "A real click on the page runs navigator.clipboard.writeText, then write with an image/png ClipboardItem; wl-paste reads each",
+    requires: { platform: "linux", display: "wayland", renderer: "native", foreground: true },
+    timeout: 30000,
+    async run({ createWindow, log }) {
+      const wlPaste = Bun.which("wl-paste");
+      if (!wlPaste || !Bun.which("swaymsg")) throw new Error("needs sway and wl-clipboard");
+      const title = "Page Clipboard Test";
+      const rpc = createTestHarnessRPC(8000);
+      const win = await createWindow({ url: "views://test-harness/index.html", rpc, renderer: "native", title });
+      await sleep(1500);
+      win.window.focus();
+      await rpc.request.evaluateJavascriptWithResponse({ script: ARM });
+      const center = windowCenter(title);
+      log(`window center: ${JSON.stringify(center)}`);
+      if (!center) throw new Error("couldn't find the window in sway's tree");
+      const click = async () => {
+        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "set", String(center[0]), String(center[1])], { timeout: 5000 });
+        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "press", "button1"], { timeout: 5000 });
+        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "release", "button1"], { timeout: 5000 });
+        await sleep(1200);
+      };
+      const text = `from the page ${Date.now()}`;
+      await rpc.request.evaluateJavascriptWithResponse({ script: `window.kitchenMode = "text"; window.kitchenText = ${JSON.stringify(text)}; return true;` });
+      await click();
+      const pastedText = Bun.spawnSync([wlPaste, "--no-newline"], { timeout: 5000 }).stdout.toString();
+      log(`after writeText: ${JSON.stringify(await rpc.request.evaluateJavascriptWithResponse({ script: "return window.kitchenCopies" }))}; wl-paste: ${JSON.stringify(pastedText.slice(0, 60))}`);
+      await rpc.request.evaluateJavascriptWithResponse({ script: `window.kitchenMode = "image"; window.kitchenCopies = []; return true;` });
+      await click();
+      const types = Bun.spawnSync([wlPaste, "--list-types"], { timeout: 5000 }).stdout.toString().trim();
+      log(`after write image/png: ${JSON.stringify(await rpc.request.evaluateJavascriptWithResponse({ script: "return window.kitchenCopies" }))}; wl-paste --list-types: ${JSON.stringify(types)}`);
+      expect(pastedText).toBe(text);
+      expect(types.split("\n")).toContain("image/png");
+    },
+  }),
+];
