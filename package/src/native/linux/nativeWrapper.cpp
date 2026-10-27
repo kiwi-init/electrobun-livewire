@@ -75,7 +75,6 @@
 #include "native_file_dialog.h"
 #include "xdg_portal.h"
 #include "spawn_fallbacks.h"
-#include "rendering_rate.h"
 #include "../shared/dialog_paths.h"
 #include "../shared/cef_find_session.h"
 #include "../shared/linux_dpi.h"
