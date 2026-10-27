@@ -13,11 +13,8 @@ import { navigationTests } from "./navigation.test";
 import { snapshotTests } from "./snapshot.test";
 import { newWindowTests } from "./new-window.test";
 import { cspTests } from "./csp.test";
-<<<<<<< HEAD
 import { renderingRateTests } from "./rendering-rate.test";
-=======
 import { pageClipboardTests } from "./page-clipboard.test";
->>>>>>> 6c848e72 (Kitchen: a PNG the page copies reaches the system clipboard (Linux))
 import { fileDragTests } from "./file-drag.test";
 import { internalBridgeTests } from "./internal-bridge.test";
 import { utilsTests } from "./utils.test";
@@ -69,11 +66,8 @@ export const allTests: TestDefinition[] = [
   ...snapshotTests,
   ...newWindowTests,
   ...cspTests,
-<<<<<<< HEAD
   ...renderingRateTests,
-=======
   ...pageClipboardTests,
->>>>>>> 6c848e72 (Kitchen: a PNG the page copies reaches the system clipboard (Linux))
   ...fileDragTests,
   ...internalBridgeTests,
   ...utilsTests,
