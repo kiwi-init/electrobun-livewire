@@ -2854,7 +2854,7 @@ fn run_webview_spell_check_test() -> Result<(), String> {
         false,
     )?;
     let result = (|| {
-        let expected_support = std::env::consts::OS == "macos";
+        let expected_support = matches!(std::env::consts::OS, "macos" | "linux");
         let disabled = app_state()
             .core
             .set_webview_spell_check(created.webview_id, false)?;

@@ -3204,7 +3204,7 @@ fn runWebviewSpellCheckTest(state: *AppState) !void {
     );
     defer state.core.closeWindow(created.window_id) catch {};
 
-    const expected_support = builtin.os.tag == .macos;
+    const expected_support = builtin.os.tag == .macos or builtin.os.tag == .linux;
     if (try state.core.setWebviewSpellCheck(created.webview_id, false) != expected_support) {
         return error.UnexpectedSpellCheckSupport;
     }

@@ -17,6 +17,7 @@ public:
     bool isHidden = false;
     // 0 deny, 1 external, 2 popup
     int newWindowPolicy = 0;
+    bool spellCheckRequested = false;
     
     // Navigation state tracking
     bool lastNavigationWasBlocked = false;

@@ -321,8 +321,9 @@ pub const WebviewOptions = struct {
     sandbox: bool = true,
     start_transparent: bool = false,
     start_passthrough: bool = false,
-    /// Effective only for macOS native WKWebView. Other renderers return false
-    /// from setWebviewSpellCheck and leave their behavior unchanged.
+    /// Effective for native WKWebView (macOS) and WebKitGTK (Linux, with an
+    /// installed dictionary). Other renderers return false from
+    /// setWebviewSpellCheck and leave their behavior unchanged.
     spell_check: bool = false,
 };
 

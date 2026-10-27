@@ -2225,7 +2225,7 @@ func runWebviewSpellCheckTest() error {
 		return err
 	}
 	err = func() error {
-		expectedSupport := runtime.GOOS == "darwin"
+		expectedSupport := runtime.GOOS == "darwin" || runtime.GOOS == "linux"
 		disabled, err := state.core.SetWebviewSpellCheck(created.webviewID, false)
 		if err != nil {
 			return err
