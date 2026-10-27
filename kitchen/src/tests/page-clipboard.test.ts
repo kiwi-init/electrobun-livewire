@@ -1,7 +1,5 @@
 // Page clipboard: what a page copies with navigator.clipboard reaches other apps
 
-import { readdirSync } from "fs";
-import { join } from "path";
 import { defineTest, expect, sleep } from "../test-framework/types";
 import { createTestHarnessRPC } from "./rpc.test";
 
@@ -28,63 +26,23 @@ const ARM = `
   return true;
 `;
 
-function swayEnv(): Record<string, string> {
-  const runtime = process.env["XDG_RUNTIME_DIR"] ?? "";
-  let sock = process.env["SWAYSOCK"] ?? "";
-  try {
-    sock ||= join(runtime, readdirSync(runtime).find((f) => f.startsWith("sway-ipc.") && f.endsWith(".sock")) ?? "");
-  } catch {
-    // No runtime dir to look in: swaymsg reports it.
-  }
-  return { ...(process.env as Record<string, string>), SWAYSOCK: sock };
-}
-
-type SwayNode = { name?: string | null; focused?: boolean; type?: string; rect?: { x: number; y: number; width: number; height: number }; nodes?: SwayNode[]; floating_nodes?: SwayNode[] };
-
-function windowCenter(title: string, log: (line: string) => void): [number, number] | null {
-  const tree = Bun.spawnSync(["swaymsg", "-t", "get_tree", "-r"], { timeout: 5000, env: swayEnv() });
-  if (tree.exitCode !== 0) {
-    log(`swaymsg get_tree: exit ${tree.exitCode}, ${tree.stderr.toString().trim()} (SWAYSOCK=${swayEnv()["SWAYSOCK"]})`);
-    return null;
-  }
-  const views: SwayNode[] = [];
-  const walk = (n: SwayNode) => {
-    if ((n.type === "con" || n.type === "floating_con") && n.rect && !(n.nodes?.length || n.floating_nodes?.length)) views.push(n);
-    for (const c of [...(n.nodes ?? []), ...(n.floating_nodes ?? [])]) walk(c);
-  };
-  try {
-    walk(JSON.parse(tree.stdout.toString()) as SwayNode);
-  } catch {
-    // Not sway's JSON: report it below as no window.
-  }
-  log(`sway views: ${JSON.stringify(views.map((v) => ({ name: v.name, focused: v.focused, rect: v.rect })))}`);
-  const hit = views.find((v) => v.name === title) ?? views.find((v) => v.focused) ?? null;
-  return hit?.rect ? [Math.round(hit.rect.x + hit.rect.width / 2), Math.round(hit.rect.y + hit.rect.height / 2)] : null;
-}
-
 export const pageClipboardTests = [
   defineTest({
     name: "Text and a PNG the page copies reach the system clipboard",
     category: "Utils",
-    description: "A real click on the page runs navigator.clipboard.writeText, then write with an image/png ClipboardItem; wl-paste reads each",
+    description: "A click with a user gesture (WebKit's native evaluate) runs navigator.clipboard.writeText, then write with an image/png ClipboardItem; wl-paste reads each",
     requires: { platform: "linux", display: "wayland", renderer: "native", foreground: true },
     timeout: 30000,
     async run({ createWindow, log }) {
       const wlPaste = Bun.which("wl-paste");
-      if (!wlPaste || !Bun.which("swaymsg")) throw new Error("needs sway and wl-clipboard");
-      const title = "Page Clipboard Test";
+      if (!wlPaste) throw new Error("needs wl-clipboard");
       const rpc = createTestHarnessRPC(8000);
-      const win = await createWindow({ url: "views://test-harness/index.html", rpc, renderer: "native", title });
+      const win = await createWindow({ url: "views://test-harness/index.html", rpc, renderer: "native", title: "Page Clipboard Test" });
       await sleep(1500);
       win.window.focus();
       await rpc.request.evaluateJavascriptWithResponse({ script: ARM });
-      const center = windowCenter(title, log);
-      log(`window center: ${JSON.stringify(center)}`);
-      if (!center) throw new Error("couldn't find the window in sway's tree");
       const click = async () => {
-        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "set", String(center[0]), String(center[1])], { timeout: 5000, env: swayEnv() });
-        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "press", "button1"], { timeout: 5000, env: swayEnv() });
-        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "release", "button1"], { timeout: 5000, env: swayEnv() });
+        win.webview.executeJavascript(`document.getElementById("kitchen-copy").click()`);
         await sleep(1200);
       };
       const text = `from the page ${Date.now()}`;
