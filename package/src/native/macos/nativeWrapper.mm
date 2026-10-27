@@ -28,6 +28,7 @@ static bool wgpuDebugEnabled() {
 }
 #include "../shared/pending_resize_queue.h"
 #include "inspector_layout.h"
+#include "rendering_rate.h"
 #include "spell_check.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <UserNotifications/UserNotifications.h>
@@ -3365,6 +3366,7 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
       [configuration.preferences
           setValue:@YES
             forKey:@"allowsPictureInPictureMediaPlayback"];
+      electrobun::renderAtDisplayRate(configuration.preferences);
 
       // Add scheme handler
       MyURLSchemeHandler *assetSchemeHandler =

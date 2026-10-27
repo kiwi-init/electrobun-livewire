@@ -33,6 +33,11 @@ jobs:
       - name: Native symbol contract
         working-directory: package
         run: hutch test:native-symbol-contract
+      # WKWebView renders at the display's rate, not near 60 fps: the WebKit
+      # feature SPI it uses must still exist and take the change.
+      - name: macOS rendering rate
+        working-directory: package
+        run: hutch test:macos-rendering-rate
       - name: Build (dev)
         working-directory: package
         run: hutch build:dev
