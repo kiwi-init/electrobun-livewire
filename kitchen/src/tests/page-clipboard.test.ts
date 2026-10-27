@@ -26,24 +26,27 @@ const ARM = `
   return true;
 `;
 
-function windowCenter(title: string): [number, number] | null {
+type SwayNode = { name?: string | null; focused?: boolean; type?: string; rect?: { x: number; y: number; width: number; height: number }; nodes?: SwayNode[]; floating_nodes?: SwayNode[] };
+
+function windowCenter(title: string, log: (line: string) => void): [number, number] | null {
   const tree = Bun.spawnSync(["swaymsg", "-t", "get_tree", "-r"], { timeout: 5000 });
-  type Node = { name?: string | null; rect?: { x: number; y: number; width: number; height: number }; nodes?: Node[]; floating_nodes?: Node[] };
-  const walk = (n: Node): Node | null => {
-    if (n.name === title && n.rect) return n;
-    for (const c of [...(n.nodes ?? []), ...(n.floating_nodes ?? [])]) {
-      const hit = walk(c);
-      if (hit) return hit;
-    }
-    return null;
-  };
-  try {
-    const hit = walk(JSON.parse(tree.stdout.toString()) as Node);
-    return hit?.rect ? [Math.round(hit.rect.x + hit.rect.width / 2), Math.round(hit.rect.y + hit.rect.height / 2)] : null;
-  } catch {
-    // No sway tree to read: the caller reports it.
+  if (tree.exitCode !== 0) {
+    log(`swaymsg get_tree: exit ${tree.exitCode}, ${tree.stderr.toString().trim()} (SWAYSOCK=${process.env["SWAYSOCK"] ?? "unset"})`);
     return null;
   }
+  const views: SwayNode[] = [];
+  const walk = (n: SwayNode) => {
+    if ((n.type === "con" || n.type === "floating_con") && n.rect && !(n.nodes?.length || n.floating_nodes?.length)) views.push(n);
+    for (const c of [...(n.nodes ?? []), ...(n.floating_nodes ?? [])]) walk(c);
+  };
+  try {
+    walk(JSON.parse(tree.stdout.toString()) as SwayNode);
+  } catch {
+    // Not sway's JSON: report it below as no window.
+  }
+  log(`sway views: ${JSON.stringify(views.map((v) => ({ name: v.name, focused: v.focused, rect: v.rect })))}`);
+  const hit = views.find((v) => v.name === title) ?? views.find((v) => v.focused) ?? null;
+  return hit?.rect ? [Math.round(hit.rect.x + hit.rect.width / 2), Math.round(hit.rect.y + hit.rect.height / 2)] : null;
 }
 
 export const pageClipboardTests = [
@@ -62,7 +65,7 @@ export const pageClipboardTests = [
       await sleep(1500);
       win.window.focus();
       await rpc.request.evaluateJavascriptWithResponse({ script: ARM });
-      const center = windowCenter(title);
+      const center = windowCenter(title, log);
       log(`window center: ${JSON.stringify(center)}`);
       if (!center) throw new Error("couldn't find the window in sway's tree");
       const click = async () => {
