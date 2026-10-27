@@ -69,7 +69,7 @@ jobs:
       - name: WebKitGTK renders at the display's rate
         if: matrix.compositor == 'sway'
         working-directory: package
-        run: scripts/test-linux-rendering-rate.sh
+        run: dbus-run-session -- "$GITHUB_WORKSPACE/.github/scripts/run-under-wayland.sh" --compositor sway -- scripts/test-linux-rendering-rate.sh
       - name: Build the devkit
         working-directory: package
         run: |

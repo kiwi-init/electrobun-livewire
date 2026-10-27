@@ -13,6 +13,7 @@
 
 int main()
 {
+    CHECK(gtk_init_check(nullptr, nullptr), "needs a display: run it under run-under-wayland.sh");
     std::printf("WebKitGTK %u.%u.%u\n", webkit_get_major_version(), webkit_get_minor_version(), webkit_get_micro_version());
     CHECK(!electrobun::renderAtDisplayRate(nullptr), "no settings must change nothing");
     WebKitSettings* settings = webkit_settings_new();
