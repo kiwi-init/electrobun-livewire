@@ -1,6 +1,7 @@
 // Page clipboard: what a page copies with navigator.clipboard reaches other apps
 
 import { defineTest, expect, sleep } from "../test-framework/types";
+import { Utils } from "electrobun/main";
 import { createTestHarnessRPC } from "./rpc.test";
 
 const ARM = `
@@ -41,11 +42,17 @@ export const pageClipboardTests = [
       await sleep(1500);
       win.window.focus();
       await rpc.request.evaluateJavascriptWithResponse({ script: ARM });
+      const wtype = Bun.which("wtype");
       const click = async () => {
+        win.window.focus();
+        await sleep(100);
+        if (wtype) Bun.spawnSync([wtype, "-k", "Shift_L"], { timeout: 5000 });
+        await sleep(100);
         win.webview.executeJavascript(`document.getElementById("kitchen-copy").click()`);
         await sleep(1200);
       };
       const text = `from the page ${Date.now()}`;
+      Utils.clipboardWriteText("");
       await rpc.request.evaluateJavascriptWithResponse({ script: `window.kitchenMode = "text"; window.kitchenText = ${JSON.stringify(text)}; return true;` });
       await click();
       const pastedText = Bun.spawnSync([wlPaste, "--no-newline"], { timeout: 5000 }).stdout.toString();
