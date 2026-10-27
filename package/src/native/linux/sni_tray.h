@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,17 @@ struct Pixmap {
     int height = 0;
     std::vector<uint32_t> argb;
 };
+
+// An icon a host looks up by name in themePath, as an icon theme would.
+struct ThemedIcon {
+    std::string name;
+    std::string themePath;
+};
+
+// A file named <name>-symbolic.svg or .png, freedesktop's convention for a
+// one-color icon the panel recolors to match its text: its name, and its
+// folder as the theme path. Nothing for any other path.
+std::optional<ThemedIcon> symbolicIconFile(const std::string& path);
 
 // The org.kde.StatusNotifierWatcher session-bus name: present when an SNI
 // host (a panel or bar) can show tray items.
@@ -69,6 +81,9 @@ public:
 
     void setTitle(const std::string& title);
     void setIconName(const std::string& iconName);
+    // Hosts look iconName up in themePath first, and draw fallback when they
+    // can't find it.
+    void setThemedIcon(const ThemedIcon& icon, Pixmap fallback);
     void setIconPixmap(Pixmap pixmap);
     // Active when visible, Passive when hidden.
     void setVisible(bool visible);

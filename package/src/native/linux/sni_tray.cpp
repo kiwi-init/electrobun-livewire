@@ -3,7 +3,10 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <filesystem>
 #include <map>
+#include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace sni {
@@ -176,6 +179,7 @@ struct StatusNotifierItem::State {
 
     std::string title;
     std::string iconName;
+    std::string iconThemePath;
     Pixmap pixmap;
     bool visible = true;
 
@@ -307,7 +311,7 @@ GVariant* itemProperty(GDBusConnection*, const char*, const char*, const char*, 
     if (g_strcmp0(property, "Title") == 0) return g_variant_new_string(state->title.c_str());
     if (g_strcmp0(property, "Status") == 0) return g_variant_new_string(state->status());
     if (g_strcmp0(property, "WindowId") == 0) return g_variant_new_int32(0);
-    if (g_strcmp0(property, "IconThemePath") == 0) return g_variant_new_string("");
+    if (g_strcmp0(property, "IconThemePath") == 0) return g_variant_new_string(state->iconThemePath.c_str());
     if (g_strcmp0(property, "IconName") == 0) return g_variant_new_string(state->iconName.c_str());
     if (g_strcmp0(property, "IconPixmap") == 0) return pixmapsVariant(state->pixmap);
     if (g_strcmp0(property, "OverlayIconName") == 0 || g_strcmp0(property, "AttentionIconName") == 0 ||
@@ -515,15 +519,36 @@ void StatusNotifierItem::setTitle(const std::string& title) {
 }
 
 void StatusNotifierItem::setIconName(const std::string& iconName) {
-    state_->iconName = iconName;
-    state_->pixmap = Pixmap{};
+    setThemedIcon(ThemedIcon{iconName, ""}, Pixmap{});
+}
+
+void StatusNotifierItem::setThemedIcon(const ThemedIcon& icon, Pixmap fallback) {
+    state_->iconName = icon.name;
+    state_->iconThemePath = icon.themePath;
+    state_->pixmap = std::move(fallback);
     state_->emitItem("NewIcon");
 }
 
 void StatusNotifierItem::setIconPixmap(Pixmap pixmap) {
     state_->iconName.clear();
+    state_->iconThemePath.clear();
     state_->pixmap = std::move(pixmap);
     state_->emitItem("NewIcon");
+}
+
+std::optional<ThemedIcon> symbolicIconFile(const std::string& path) {
+    constexpr std::string_view kSuffix = "-symbolic";
+    if (path.empty()) return std::nullopt;
+    std::error_code error;
+    const std::filesystem::path file = std::filesystem::absolute(path, error);
+    if (error) return std::nullopt;
+    const std::string extension = file.extension().string();
+    const std::string name = file.stem().string();
+    if ((extension != ".svg" && extension != ".png") || name.size() <= kSuffix.size() ||
+        !name.ends_with(kSuffix)) {
+        return std::nullopt;
+    }
+    return ThemedIcon{name, file.parent_path().string()};
 }
 
 void StatusNotifierItem::setVisible(bool visible) {
