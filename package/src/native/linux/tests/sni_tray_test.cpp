@@ -196,7 +196,23 @@ std::string menuLabel(GVariant* node) {
 
 }  // namespace
 
+void checkSymbolicIconFile() {
+    const auto svg = sni::symbolicIconFile("/opt/channels/assets/channels-tray-symbolic.svg");
+    CHECK(svg && svg->name == "channels-tray-symbolic" && svg->themePath == "/opt/channels/assets");
+    const auto png = sni::symbolicIconFile("/icons/app-symbolic.png");
+    CHECK(png && png->name == "app-symbolic" && png->themePath == "/icons");
+    const auto relative = sni::symbolicIconFile("assets/app-symbolic.svg");
+    CHECK(relative && relative->name == "app-symbolic" && relative->themePath.ends_with("/assets") &&
+          relative->themePath.front() == '/');
+    CHECK(!sni::symbolicIconFile("/icons/app.svg"));
+    CHECK(!sni::symbolicIconFile("/icons/-symbolic.svg"));
+    CHECK(!sni::symbolicIconFile("/icons/app-symbolic.jpg"));
+    CHECK(!sni::symbolicIconFile("/icons/app-symbolic"));
+    CHECK(!sni::symbolicIconFile(""));
+}
+
 int main() {
+    checkSymbolicIconFile();
     GMainLoop* loop = g_main_loop_new(nullptr, FALSE);
     GDBusConnection* app = connect();
     watcher.connection = connect();
@@ -280,6 +296,21 @@ int main() {
             CHECK(g_strcmp0(title, "Kitchen Tray") == 0);
             g_variant_unref(tip);
         }
+
+        // A symbolic icon goes by name from its folder, with pixels as the fallback.
+        CHECK(stringProperty(bar, name, "IconName") == "");
+        CHECK(stringProperty(bar, name, "IconThemePath") == "");
+        onMain([&] { item.setThemedIcon(sni::ThemedIcon{"kitchen-symbolic", "/opt/kitchen/icons"}, sni::Pixmap{1, 1, {0x11223344u}}); });
+        CHECK(stringProperty(bar, name, "IconName") == "kitchen-symbolic");
+        CHECK(stringProperty(bar, name, "IconThemePath") == "/opt/kitchen/icons");
+        if (GVariant* pixmaps = itemProperty(bar, name, "IconPixmap")) {
+            CHECK(g_variant_n_children(pixmaps) == 1);
+            g_variant_unref(pixmaps);
+        }
+        // Plain pixels clear both.
+        onMain([&] { item.setIconPixmap(sni::Pixmap{1, 1, {0x11223344u}}); });
+        CHECK(stringProperty(bar, name, "IconName") == "");
+        CHECK(stringProperty(bar, name, "IconThemePath") == "");
 
         // Left click.
         if (GVariant* r = call(bar, name, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "Activate",
