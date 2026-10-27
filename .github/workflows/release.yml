@@ -5,12 +5,10 @@ concurrency:
   cancel-in-progress: false
   queue: max
 
+# Upstream Electrobun's release pipeline (npm, Hutch catalog). Livewire releases
+# come from livewire-release.yml, so no tag push runs this: Livewire's own
+# vYYYY.M.PATCH tags and any upstream tag pushed by mistake are both ignored.
 on:
-  push:
-    tags:
-      - 'v*'
-      # Livewire release candidates are published by livewire-rc.yml, never here.
-      - '!v*-livewire*'
   workflow_dispatch:
     inputs:
       tag:
