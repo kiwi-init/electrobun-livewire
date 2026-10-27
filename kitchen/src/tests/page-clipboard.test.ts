@@ -1,5 +1,7 @@
 // Page clipboard: what a page copies with navigator.clipboard reaches other apps
 
+import { readdirSync } from "fs";
+import { join } from "path";
 import { defineTest, expect, sleep } from "../test-framework/types";
 import { createTestHarnessRPC } from "./rpc.test";
 
@@ -26,12 +28,23 @@ const ARM = `
   return true;
 `;
 
+function swayEnv(): Record<string, string> {
+  const runtime = process.env["XDG_RUNTIME_DIR"] ?? "";
+  let sock = process.env["SWAYSOCK"] ?? "";
+  try {
+    sock ||= join(runtime, readdirSync(runtime).find((f) => f.startsWith("sway-ipc.") && f.endsWith(".sock")) ?? "");
+  } catch {
+    // No runtime dir to look in: swaymsg reports it.
+  }
+  return { ...(process.env as Record<string, string>), SWAYSOCK: sock };
+}
+
 type SwayNode = { name?: string | null; focused?: boolean; type?: string; rect?: { x: number; y: number; width: number; height: number }; nodes?: SwayNode[]; floating_nodes?: SwayNode[] };
 
 function windowCenter(title: string, log: (line: string) => void): [number, number] | null {
-  const tree = Bun.spawnSync(["swaymsg", "-t", "get_tree", "-r"], { timeout: 5000 });
+  const tree = Bun.spawnSync(["swaymsg", "-t", "get_tree", "-r"], { timeout: 5000, env: swayEnv() });
   if (tree.exitCode !== 0) {
-    log(`swaymsg get_tree: exit ${tree.exitCode}, ${tree.stderr.toString().trim()} (SWAYSOCK=${process.env["SWAYSOCK"] ?? "unset"})`);
+    log(`swaymsg get_tree: exit ${tree.exitCode}, ${tree.stderr.toString().trim()} (SWAYSOCK=${swayEnv()["SWAYSOCK"]})`);
     return null;
   }
   const views: SwayNode[] = [];
@@ -69,9 +82,9 @@ export const pageClipboardTests = [
       log(`window center: ${JSON.stringify(center)}`);
       if (!center) throw new Error("couldn't find the window in sway's tree");
       const click = async () => {
-        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "set", String(center[0]), String(center[1])], { timeout: 5000 });
-        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "press", "button1"], { timeout: 5000 });
-        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "release", "button1"], { timeout: 5000 });
+        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "set", String(center[0]), String(center[1])], { timeout: 5000, env: swayEnv() });
+        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "press", "button1"], { timeout: 5000, env: swayEnv() });
+        Bun.spawnSync(["swaymsg", "seat", "-", "cursor", "release", "button1"], { timeout: 5000, env: swayEnv() });
         await sleep(1200);
       };
       const text = `from the page ${Date.now()}`;
