@@ -14,6 +14,7 @@ import { snapshotTests } from "./snapshot.test";
 import { newWindowTests } from "./new-window.test";
 import { cspTests } from "./csp.test";
 import { renderingRateTests } from "./rendering-rate.test";
+import { pageClipboardTests } from "./page-clipboard.test";
 import { fileDragTests } from "./file-drag.test";
 import { internalBridgeTests } from "./internal-bridge.test";
 import { utilsTests } from "./utils.test";
@@ -66,6 +67,7 @@ export const allTests: TestDefinition[] = [
   ...newWindowTests,
   ...cspTests,
   ...renderingRateTests,
+  ...pageClipboardTests,
   ...fileDragTests,
   ...internalBridgeTests,
   ...utilsTests,
@@ -125,6 +127,7 @@ export {
   snapshotTests,
   newWindowTests,
   cspTests,
+  pageClipboardTests,
   fileDragTests,
   internalBridgeTests,
   utilsTests,
