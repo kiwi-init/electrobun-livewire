@@ -20,7 +20,7 @@ export default {
 	app: {
 		name: appName,
 		identifier: appIdentifier,
-		version: "2.1.0-livewire.rc.5",
+		version: "2026.10.0",
 		urlSchemes: ["electrobun-playground"],
 	},
 	runtime: {

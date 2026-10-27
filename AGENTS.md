@@ -54,18 +54,18 @@ Apps expose their own capabilities with `AgentControl.registerAction(name, { des
 Livewire is a hard fork. We don't track or sync upstream, and we never open pull requests there.
 
 - Take an upstream change only on purpose: cherry-pick it in its own PR and say where it came from.
-- Never push upstream's tags to `origin` (`git push --tags`, `--follow-tags`, `--mirror`). `release.yml` runs on any `v*` tag push and would cut a release from this fork.
+- Never push upstream's tags to `origin` (`git push --tags`, `--follow-tags`, `--mirror`). They'd sit next to Livewire's own `v*` tags. `release.yml` (upstream's npm and Hutch catalog pipeline) no longer runs on tag pushes; never dispatch it.
 
 ## Releases
 
-Livewire ships release candidates with `livewire-rc.yml`. Don't run `hutch push:*` or `release.yml`, and don't push `v*` tags by hand: those are upstream's pipeline and names.
+Livewire is versioned like Channels: CalVer `YYYY.M.PATCH` (2026.10.0, 2026.10.1, ...; a new month starts again at `.0`). `livewire-release.yml` publishes each one as the latest GitHub release, "Livewire YYYY.M.PATCH", tagged `vYYYY.M.PATCH`. Don't run `hutch push:*` or `release.yml`, and don't push `v*` tags by hand: the workflow creates the tag.
 
-1. `node package/scripts/set-livewire-version.mjs X.Y.Z-livewire.rc.N` stamps the version everywhere; open a PR with it.
-2. After it merges, run `gh workflow run livewire-rc.yml --ref main`. It builds all six platforms, publishes the GitHub prerelease `vX.Y.Z-livewire.rc.N` with the devkit and its index, and then has Kitchen install it through Hutch. On any other ref it's a dry run that publishes nothing.
+1. `node package/scripts/set-livewire-version.mjs --next` stamps the next version everywhere (or pass one, `... set-livewire-version.mjs 2026.11.0`); open a PR with it.
+2. After it merges, run `gh workflow run livewire-release.yml --ref main`. It builds all six platforms, publishes the release with the devkit and its index, and then has Kitchen install it through Hutch. On any other ref it's a dry run that publishes nothing.
 
-To build an app (like Channels) against a candidate:
+To build an app (like Channels) against a release:
 
 ```sh
 export ELECTROBUN_RELEASES_BASE_URL=https://github.com/kiwi-init/electrobun-livewire/releases/download
-# hutch.config.ts: electrobun: { version: "X.Y.Z-livewire.rc.N" }
+# hutch.config.ts: electrobun: { version: "YYYY.M.PATCH" }
 ```

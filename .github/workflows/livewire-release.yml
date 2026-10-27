@@ -1,14 +1,16 @@
-name: Livewire release candidate
+name: Livewire release
 
-# Builds the devkit for every platform and publishes it as a GitHub prerelease
-# that Hutch can install from this repository:
+# Builds the devkit for every platform and publishes it as the latest GitHub
+# release, "Livewire YYYY.M.PATCH" tagged vYYYY.M.PATCH, that Hutch can install
+# from this repository:
 #
 #   ELECTROBUN_RELEASES_BASE_URL=https://github.com/kiwi-init/electrobun-livewire/releases/download
-#   hutch.config.ts: electrobun: { version: "<the RC version>" }
+#   hutch.config.ts: electrobun: { version: "YYYY.M.PATCH" }
 #
-# Cut one: run `node package/scripts/set-livewire-version.mjs X.Y.Z-livewire.rc.N`,
-# merge that PR, then dispatch this workflow on main. From any other branch it's
-# a dry run: everything is built and indexed, nothing is published.
+# Cut one: run `node package/scripts/set-livewire-version.mjs --next` (or an
+# explicit YYYY.M.PATCH), merge that PR, then dispatch this workflow on main.
+# From any other branch it's a dry run: everything is built and indexed, nothing
+# is published.
 
 on:
   workflow_dispatch:
@@ -17,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: livewire-rc
+  group: livewire-release
   cancel-in-progress: false
 
 jobs:
@@ -30,6 +32,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - name: Test the Livewire version rules
+        run: node --test package/scripts/set-livewire-version.test.mjs
       - name: Read and check the Livewire version
         id: version
         shell: bash
@@ -39,7 +43,7 @@ jobs:
           node --input-type=module -e '
             const { isLivewireVersion } = await import("./package/scripts/set-livewire-version.mjs");
             if (!isLivewireVersion(process.argv[1])) {
-              console.error(`package.json version ${process.argv[1]} is not a Livewire version (needs a "livewire" prerelease identifier); run set-livewire-version.mjs first`);
+              console.error(`package.json version ${process.argv[1]} is not a Livewire version (CalVer YYYY.M.PATCH, like 2026.10.0); run set-livewire-version.mjs first`);
               process.exit(1);
             }' "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -155,7 +159,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ env.TAG }}
           RELEASE_PACKAGE_JSON: package/package.json
-          EXPLICIT_PRERELEASE: 'true'
+          EXPLICIT_PRERELEASE: 'false'
         run: node package/scripts/verify-release-version.mjs
       - name: Download devkit artifacts
         uses: actions/download-artifact@v7
@@ -177,7 +181,7 @@ jobs:
         with:
           name: dry-run-electrobun-artifacts
           path: artifacts/electrobun-artifacts.json
-      - name: Publish the prerelease
+      - name: Publish the release
         if: needs.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -185,16 +189,15 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "$TAG already exists; bump the version with set-livewire-version.mjs for a new candidate." >&2
+            echo "$TAG already exists; stamp the next version with set-livewire-version.mjs --next for a new release." >&2
             exit 1
           fi
-          # Created with the workflow token, so the tag doesn't trigger release.yml.
           gh release create "$TAG" artifacts/*.tar.gz artifacts/electrobun-artifacts.json \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --prerelease \
+            --latest \
             --title "Livewire $VERSION" \
-            --notes "Livewire release candidate $VERSION, built from $GITHUB_SHA.
+            --notes "Livewire $VERSION, built from $GITHUB_SHA.
 
           Install with Hutch: set \`ELECTROBUN_RELEASES_BASE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download\` and \`electrobun: { version: \"$VERSION\" }\` in hutch.config.ts."
 
