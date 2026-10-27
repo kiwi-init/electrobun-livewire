@@ -13,6 +13,8 @@ struct AppIndicatorApi {
     decltype(&::app_indicator_set_title) setTitle;
     decltype(&::app_indicator_set_icon_full) setIconFull;
     decltype(&::app_indicator_set_menu) setMenu;
+    // Optional: without it, symbolic icons are shown from their file.
+    decltype(&::app_indicator_set_icon_theme_path) setIconThemePath;
 };
 
 static const AppIndicatorApi* appIndicatorApi() {
@@ -28,6 +30,7 @@ static const AppIndicatorApi* appIndicatorApi() {
             reinterpret_cast<decltype(&::app_indicator_set_title)>(dlsym(lib, "app_indicator_set_title")),
             reinterpret_cast<decltype(&::app_indicator_set_icon_full)>(dlsym(lib, "app_indicator_set_icon_full")),
             reinterpret_cast<decltype(&::app_indicator_set_menu)>(dlsym(lib, "app_indicator_set_menu")),
+            reinterpret_cast<decltype(&::app_indicator_set_icon_theme_path)>(dlsym(lib, "app_indicator_set_icon_theme_path")),
         };
         if (!loaded.indicatorNew || !loaded.setStatus || !loaded.setTitle || !loaded.setIconFull || !loaded.setMenu) {
             fprintf(stderr, "Tray: no tray icon, libayatana-appindicator3.so.1 lacks the functions it needs\n");
@@ -169,6 +172,7 @@ public:
 #ifndef NO_APPINDICATOR
         if (indicator) {
             app_indicator_set_title(indicator, title.c_str());
+            applyIndicatorIcon();
         }
 #endif
     }
@@ -179,9 +183,7 @@ public:
             applySniIcon();
         }
 #ifndef NO_APPINDICATOR
-        if (indicator && !imagePath.empty()) {
-            app_indicator_set_icon_full(indicator, imagePath.c_str(), "Electrobun Tray Icon");
-        }
+        applyIndicatorIcon();
 #endif
     }
 
@@ -237,11 +239,26 @@ private:
         }
     }
 
-    // A file is sent as pixels; anything else is taken as an icon theme name.
+    // The image file's symbolic icon (<name>-symbolic.svg or .png), when it
+    // names one that exists.
+    std::optional<sni::ThemedIcon> symbolicIcon() const {
+        if (imagePath.empty() || !g_file_test(imagePath.c_str(), G_FILE_TEST_IS_REGULAR)) {
+            return std::nullopt;
+        }
+        return sni::symbolicIconFile(imagePath);
+    }
+
+    // A symbolic icon file is sent by name with its folder as the icon theme
+    // path, so the host can recolor it to match the panel, and as pixels for
+    // hosts that can't look it up. Any other file is sent as pixels; anything
+    // else is taken as an icon theme name.
     void applySniIcon() {
         sni::Pixmap pixmap;
-        if (!imagePath.empty() && g_file_test(imagePath.c_str(), G_FILE_TEST_IS_REGULAR) &&
-            trayPixmapFromFile(imagePath, pixmap)) {
+        if (const auto symbolic = symbolicIcon()) {
+            trayPixmapFromFile(imagePath, pixmap);
+            sniItem->setThemedIcon(*symbolic, std::move(pixmap));
+        } else if (!imagePath.empty() && g_file_test(imagePath.c_str(), G_FILE_TEST_IS_REGULAR) &&
+                   trayPixmapFromFile(imagePath, pixmap)) {
             sniItem->setIconPixmap(std::move(pixmap));
         } else {
             sniItem->setIconName(!imagePath.empty() && imagePath.find('/') == std::string::npos
@@ -263,12 +280,28 @@ private:
                                       !imagePath.empty() ? imagePath.c_str() : "application-default-icon",
                                       APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
         if (indicator) {
+            applyIndicatorIcon();
             app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
             if (!title.empty()) {
                 app_indicator_set_title(indicator, title.c_str());
             }
             // Create default menu (required for AppIndicator)
             createDefaultMenu();
+        }
+    }
+
+    // Like applySniIcon: a symbolic icon by name from its folder, any other
+    // image by its path. The title is the icon's accessible description.
+    void applyIndicatorIcon() {
+        if (!indicator || imagePath.empty()) {
+            return;
+        }
+        const auto symbolic = symbolicIcon();
+        if (symbolic && appIndicatorApi()->setIconThemePath) {
+            appIndicatorApi()->setIconThemePath(indicator, symbolic->themePath.c_str());
+            app_indicator_set_icon_full(indicator, symbolic->name.c_str(), title.c_str());
+        } else {
+            app_indicator_set_icon_full(indicator, imagePath.c_str(), title.c_str());
         }
     }
 

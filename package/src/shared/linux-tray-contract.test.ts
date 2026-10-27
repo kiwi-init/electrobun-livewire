@@ -20,6 +20,14 @@ describe("Linux tray interaction contract", () => {
 		);
 	});
 
+	it("sends a -symbolic image file by name from its folder, with pixels as the fallback", () => {
+		expect(nativeWrapper).toContain("sni::symbolicIconFile(imagePath)");
+		expect(nativeWrapper).toContain("sniItem->setThemedIcon(*symbolic, std::move(pixmap));");
+		expect(sniTray).toContain(
+			'if (g_strcmp0(property, "IconThemePath") == 0) return g_variant_new_string(state->iconThemePath.c_str());',
+		);
+	});
+
 	it("falls back to menu-only AppIndicator when no watcher is on the bus", () => {
 		expect(nativeWrapper).toContain("sni::watcherAvailable(bus) || !appIndicatorApi()");
 		expect(nativeWrapper).toContain("app_indicator_new");
