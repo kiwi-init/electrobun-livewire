@@ -36,17 +36,19 @@ export const pageClipboardTests = [
     timeout: 30000,
     async run({ createWindow, log }) {
       const wlPaste = Bun.which("wl-paste");
-      if (!wlPaste) throw new Error("needs wl-clipboard");
+      const wtype = Bun.which("wtype");
+      if (!wlPaste || !wtype) throw new Error("needs wl-clipboard and wtype");
       const rpc = createTestHarnessRPC(8000);
       const win = await createWindow({ url: "views://test-harness/index.html", rpc, renderer: "native", title: "Page Clipboard Test" });
       await sleep(1500);
       win.window.focus();
       await rpc.request.evaluateJavascriptWithResponse({ script: ARM });
-      const wtype = Bun.which("wtype");
+      // A compositor takes a selection only from a client with a recent input
+      // event, as a real click gives; wtype's key press stands in for one.
       const click = async () => {
         win.window.focus();
         await sleep(100);
-        if (wtype) Bun.spawnSync([wtype, "-k", "Shift_L"], { timeout: 5000 });
+        Bun.spawnSync([wtype, "-k", "Shift_L"], { timeout: 5000 });
         await sleep(100);
         win.webview.executeJavascript(`document.getElementById("kitchen-copy").click()`);
         await sleep(1200);
