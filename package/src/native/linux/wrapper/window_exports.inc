@@ -73,6 +73,10 @@ ELECTROBUN_EXPORT void* createGTKWindow(uint32_t windowId, double x, double y, d
             // server decorations are disabled. In particular, existing apps
             // using hidden must not need a style change to become resizable.
             gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+            // An empty titlebar makes GTK draw the window itself: on KWin it
+            // asks for client-side decorations (request_mode 1) instead of a
+            // server title bar over the app's own.
+            gtk_window_set_titlebar(GTK_WINDOW(window), gtk_fixed_new());
             attachGtkWindowResizeHandles(window);
         } else if (shouldDrawClientDecorations()) {
             // GtkWindow keeps a header bar titlebar's title in sync with
