@@ -21,6 +21,7 @@ on:
       - 'package/scripts/test-linux-xdg-portal.sh'
       - 'package/scripts/test-linux-sni-tray.sh'
       - 'package/scripts/test-linux-spawn-fallbacks.sh'
+      - 'package/scripts/test-linux-rendering-rate.sh'
   workflow_dispatch:
 
 permissions:
@@ -65,6 +66,10 @@ jobs:
         if: matrix.compositor == 'sway'
         working-directory: package
         run: scripts/test-linux-spawn-fallbacks.sh
+      - name: WebKitGTK renders at the display's rate
+        if: matrix.compositor == 'sway'
+        working-directory: package
+        run: scripts/test-linux-rendering-rate.sh
       - name: Build the devkit
         working-directory: package
         run: |
