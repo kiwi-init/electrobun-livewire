@@ -8494,19 +8494,31 @@ CreateRequestContextForPartition(const char *partitionIdentifier,
     self.closeHandler(self.windowId);
   }
 }
-- (void)windowDidResize:(NSNotification *)notification {
-  NSWindow *window = [notification object];
-  NSRect windowFrame = [window frame];
+// Fits fullSize views to the content view's bounds (which exclude the title
+// bar) so they don't overflow the visible area. Full-size webviews aren't
+// autoresized, so every change that can move the content bounds calls this.
+static void refitFullSizeViews(NSWindow *window) {
   ContainerView *containerView = [window contentView];
-  // Use the content view's bounds (excludes title bar) instead of the
-  // window frame so fullSize webviews don't overflow the visible area.
   NSRect fullFrame = containerView.bounds;
-
   for (AbstractView *abstractView in containerView.abstractViews) {
     if (abstractView.fullSize) {
       [abstractView resize:fullFrame withMasksJSON:""];
     }
   }
+}
+
+// A move to another display, or a backing scale change, doesn't always post
+// windowDidResize:, which left the page at its old size inside the window.
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+  refitFullSizeViews([notification object]);
+}
+- (void)windowDidChangeBackingProperties:(NSNotification *)notification {
+  refitFullSizeViews([notification object]);
+}
+- (void)windowDidResize:(NSNotification *)notification {
+  NSWindow *window = [notification object];
+  NSRect windowFrame = [window frame];
+  refitFullSizeViews(window);
 
   if (self.resizeHandler) {
     NSScreen *primaryScreen = [NSScreen screens][0];
