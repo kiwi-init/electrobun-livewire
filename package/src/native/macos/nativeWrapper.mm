@@ -3403,6 +3403,10 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
   _heldMouseEvents = nil;
   if (!deliver)
     return;
+  // A title bar drag brings its window forward. AppKit doesn't once the
+  // gesture becomes a window move, so do it here.
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.window makeKeyAndOrderFront:nil];
   for (NSEvent *event in events) {
     switch (event.type) {
     case NSEventTypeLeftMouseDown:
