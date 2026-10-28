@@ -3357,11 +3357,12 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
   NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
   if (!self.isFlipped)
     point.y = NSHeight(self.bounds) - point.y;
-  CGFloat scale = self.pageZoom * self.magnification;
+  // CSS pixels: views are never pinch-magnified, so only the page zoom counts.
+  CGFloat zoom = self.pageZoom;
   NSString *script = [NSString
       stringWithFormat:
           @"window.__electrobun?.isAppRegionDragAt?.(%f, %f) === true",
-          point.x / scale, point.y / scale];
+          point.x / zoom, point.y / zoom];
 
   __weak ElectrobunWKWebView *weakSelf = self;
   [self evaluateJavaScript:script
