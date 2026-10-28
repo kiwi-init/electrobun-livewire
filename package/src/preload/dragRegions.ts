@@ -476,6 +476,8 @@ export function initDragRegions() {
 	installCompatibilityStyles();
 	initStylesheetMirroring();
 	registerDragRegionListeners(document, () => window.__electrobunWindowId);
-	window.__electrobun.isAppRegionDragAt = (x, y) =>
-		isAppRegionDragPoint(document, x, y);
+	if (window.__electrobun) {
+		window.__electrobun.isAppRegionDragAt = (x: number, y: number) =>
+			isAppRegionDragPoint(document, x, y);
+	}
 }
