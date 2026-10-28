@@ -1462,6 +1462,10 @@ NSMenu *createMenuFromConfig(NSArray *menuConfig, StatusItemTarget *target) {
       if (submenuConfig) {
         NSMenu *submenu = createMenuFromConfig(submenuConfig, target);
         [menu setSubmenu:submenu forItem:menuItem];
+        // A parent only opens its submenu. With an action, clicking it ran
+        // menuItemClicked: (an empty action) and closed the whole menu.
+        menuItem.action = nil;
+        menuItem.target = nil;
       }
     }
     [menu addItem:menuItem];
