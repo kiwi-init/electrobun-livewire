@@ -9496,15 +9496,92 @@ extern "C" NSWindow *createWindowWithFrameAndStyleFromWorker(
   return window;
 }
 
+// WebKit doesn't paint a web view while its window is ordered out, so a
+// window shown from hidden showed its background for a few frames before the
+// page. WebKit does paint a window ordered in at alpha 0, so the window is
+// ordered in invisible and revealed once each of its web views has presented
+// a frame, or after a short timeout.
+@interface ElectrobunPendingReveal : NSObject
+@property(nonatomic, assign) CGFloat alpha;
+@property(nonatomic, assign) NSUInteger framesLeft;
+@end
+
+@implementation ElectrobunPendingReveal
+@end
+
+static const void *kPendingRevealKey = &kPendingRevealKey;
+static const int64_t kRevealTimeoutMs = 250;
+
+static void collectShownWebViews(NSView *view,
+                                 NSMutableArray<WKWebView *> *webViews) {
+  if (view.isHidden)
+    return;
+  if ([view isKindOfClass:[WKWebView class]]) {
+    [webViews addObject:(WKWebView *)view];
+    return;
+  }
+  for (NSView *subview in view.subviews)
+    collectShownWebViews(subview, webViews);
+}
+
+// Gives the window back its alpha. With no reveal named, finishes whichever
+// one is pending.
+static void finishReveal(NSWindow *window, ElectrobunPendingReveal *reveal) {
+  ElectrobunPendingReveal *pending =
+      window ? objc_getAssociatedObject(window, kPendingRevealKey) : nil;
+  if (!pending || (reveal && pending != reveal))
+    return;
+  objc_setAssociatedObject(window, kPendingRevealKey, nil,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  window.alphaValue = pending.alpha;
+}
+
+static void orderInWhenPainted(NSWindow *window, void (^orderIn)(void)) {
+  SEL presented = @selector(_doAfterNextPresentationUpdate:);
+  NSMutableArray<WKWebView *> *webViews = [NSMutableArray array];
+  if (!window.isVisible && !window.isMiniaturized && window.alphaValue > 0 &&
+      !objc_getAssociatedObject(window, kPendingRevealKey))
+    collectShownWebViews(window.contentView, webViews);
+  if (webViews.count == 0 ||
+      ![webViews.firstObject respondsToSelector:presented]) {
+    orderIn();
+    return;
+  }
+
+  ElectrobunPendingReveal *reveal = [[ElectrobunPendingReveal alloc] init];
+  reveal.alpha = window.alphaValue;
+  reveal.framesLeft = webViews.count;
+  objc_setAssociatedObject(window, kPendingRevealKey, reveal,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  window.alphaValue = 0;
+  orderIn();
+
+  __weak NSWindow *weakWindow = window;
+  void (^framePresented)(void) = ^{
+    if (reveal.framesLeft > 0 && --reveal.framesLeft == 0)
+      finishReveal(weakWindow, reveal);
+  };
+  for (WKWebView *webView in webViews)
+    [webView performSelector:@selector(_doAfterNextPresentationUpdate:)
+                  withObject:framePresented];
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, kRevealTimeoutMs * NSEC_PER_MSEC),
+      dispatch_get_main_queue(), ^{
+        finishReveal(weakWindow, reveal);
+      });
+}
+
 extern "C" void showWindow(NSWindow *window, bool activate) {
   runOnMainThreadSyncVoid(^{
-    if (activate) {
-      [window orderFront:nil];
-      [window makeKeyAndOrderFront:nil];
-      [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
-    } else {
-      [window orderFrontRegardless];
-    }
+    orderInWhenPainted(window, ^{
+      if (activate) {
+        [window orderFront:nil];
+        [window makeKeyAndOrderFront:nil];
+        [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+      } else {
+        [window orderFrontRegardless];
+      }
+    });
 
     runOnMainThreadAsyncVoid(^{
       WindowDelegate *delegate = (WindowDelegate *)[window delegate];
@@ -9531,6 +9608,7 @@ extern "C" void activateWindow(NSWindow *window) {
 
 extern "C" void hideWindow(NSWindow *window) {
   runOnMainThreadSyncVoid(^{
+    finishReveal(window, nil);
     [window orderOut:nil];
   });
 }
