@@ -340,6 +340,13 @@ static WebKitWebContext* getContextForPartition(const char* partitionIdentifier)
             g_object_unref(dataManager);
         }
 
+        // WebKitGTK's sandbox is per context and must be set before the
+        // context's first web process. Give partitions the app's choice for
+        // the default context, or their pages run outside bubblewrap.
+        webkit_web_context_set_sandbox_enabled(
+            context,
+            webkit_web_context_get_sandbox_enabled(webkit_web_context_get_default()));
+
         g_partitionContexts[partition] = context;
         if (isEphemeralPartition) {
             g_ephemeralPartitionContextRefCounts[partition] = 1;
