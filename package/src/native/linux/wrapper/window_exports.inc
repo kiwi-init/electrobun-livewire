@@ -356,6 +356,20 @@ ELECTROBUN_EXPORT void showWindow(void* window, bool activate) {
     }
 }
 
+// A launch's activation token (XDG_ACTIVATION_TOKEN on Wayland,
+// DESKTOP_STARTUP_ID on X11), handed over by another process, so the next
+// present brings this window forward instead of the compositor refusing it.
+// GTK3 uses it for xdg-activation and X11 startup notification alike.
+ELECTROBUN_EXPORT void setWindowStartupId(void* window, const char* token) {
+    if (isCEFAvailable() || !token || !*token) {
+        return;
+    }
+    std::string startupId(token);
+    dispatch_sync_main_void([&]() {
+        gtk_window_set_startup_id(GTK_WINDOW(window), startupId.c_str());
+    });
+}
+
 ELECTROBUN_EXPORT void activateWindow(void* window) {
     if (isCEFAvailable()) {
         activateX11Window(window);
