@@ -434,6 +434,17 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 		return ffi.request.activateWindow({ winId: this.id });
 	}
 
+	/**
+	 * Linux: the activation token of another launch (its XDG_ACTIVATION_TOKEN
+	 * or DESKTOP_STARTUP_ID), so the next show() or activate() brings this
+	 * window forward. Without it, Wayland compositors refuse to raise a window
+	 * for a request that came from another process. Ignored elsewhere.
+	 */
+	setActivationToken(token: string) {
+		if (!token) return;
+		ffi.request.setWindowActivationToken({ winId: this.id, token });
+	}
+
 	focus() {
 		console.log(
 			"[electrobun] BrowserWindow.focus() is deprecated. Use window.activate() instead.",

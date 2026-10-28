@@ -261,6 +261,10 @@ const core = (() => {
 				args: [FFIType.u32],
 				returns: FFIType.void,
 			},
+			setWindowActivationToken: {
+				args: [FFIType.u32, FFIType.cstring],
+				returns: FFIType.void,
+			},
 			hideWindow: {
 				args: [FFIType.u32],
 				returns: FFIType.void,
@@ -1773,6 +1777,12 @@ const _ffiImpl = {
 			}
 
 			core_.symbols.activateWindow(winId);
+		},
+
+		setWindowActivationToken: (params: { winId: number; token: string }) => {
+			const { winId, token } = params;
+			if (!getWindowPtr(winId)) return;
+			core_.symbols.setWindowActivationToken(winId, toCString(token));
 		},
 
 		hideWindow: (params: { winId: number }) => {
