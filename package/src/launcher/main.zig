@@ -455,6 +455,19 @@ pub fn main(init: std.process.Init) !void {
         },
     }
 
+    // On Linux, URLs and files a desktop entry passes (%u/%f) arrive as
+    // arguments, so the app's own arguments go on to its argv. The launcher's
+    // --automation flag stays out.
+    if (builtin.os.tag == .linux) {
+        var forwarded: std.ArrayList([]const u8) = .empty;
+        try forwarded.appendSlice(arena_alloc, argv);
+        for (launcher_args, 0..) |arg, index| {
+            if (index == 0 or std.mem.eql(u8, arg, automation.launcher_flag)) continue;
+            try forwarded.append(arena_alloc, arg);
+        }
+        argv = forwarded.items;
+    }
+
     // Child processes inherit the launcher's environment plus our overrides.
     const env_map = init.environ_map;
     const installed_channel_root = try configureInstallRootEnv(
