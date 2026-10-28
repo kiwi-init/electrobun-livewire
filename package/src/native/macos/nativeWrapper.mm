@@ -9595,6 +9595,13 @@ extern "C" void showWindow(NSWindow *window, bool activate) {
   });
 }
 
+// Linux presents a window with another launch's activation token; macOS
+// activation needs none, so the core's lookup finds this no-op.
+extern "C" void setWindowStartupId(NSWindow *window, const char *token) {
+  (void)window;
+  (void)token;
+}
+
 extern "C" void activateWindow(NSWindow *window) {
   runOnMainThreadSyncVoid(^{
     if (![window isVisible]) {

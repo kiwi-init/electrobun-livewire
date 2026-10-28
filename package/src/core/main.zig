@@ -3348,7 +3348,8 @@ export fn activateWindow(window_id: u32) void {
     activate_window(window);
 }
 
-// Only the Linux wrapper has setWindowStartupId; elsewhere this does nothing.
+// Only the Linux wrapper's setWindowStartupId does anything; macOS and
+// Windows define it as a no-op.
 export fn setWindowActivationToken(window_id: u32, token: [*:0]const u8) void {
     const SetWindowStartupIdFn = *const fn (WindowPtr, [*:0]const u8) callconv(.c) void;
     const window = requireWindowPtr(window_id) orelse return;

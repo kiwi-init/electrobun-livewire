@@ -11532,6 +11532,13 @@ ELECTROBUN_EXPORT void showWindow(void *window, bool activate) {
     });
 }
 
+// Linux presents a window with another launch's activation token; Windows
+// has no equivalent, so the core's lookup finds this no-op.
+ELECTROBUN_EXPORT void setWindowStartupId(void *window, const char *token) {
+    (void)window;
+    (void)token;
+}
+
 ELECTROBUN_EXPORT void activateWindow(void *window) {
     HWND hwnd = reinterpret_cast<HWND>(window);
 
