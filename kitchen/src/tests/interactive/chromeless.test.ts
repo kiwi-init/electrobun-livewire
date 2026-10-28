@@ -81,6 +81,60 @@ export const chromelessTests = [
   }),
 
   defineTest({
+    name: "First click on a background window's drag region moves it",
+    category: "Chromeless Windows (Interactive)",
+    description:
+      "A background window takes its first click only on a drag region (macOS system WebKit)",
+    instructions: [
+      "A window with a custom titlebar will open",
+      "Click into another app, so this window is in the background",
+      "Press on the dark titlebar and drag in one motion: the window moves on the first click",
+      "Put the window in the background again and click a colored button once: it only brings the window forward",
+      "Close the window when done to pass the test",
+    ],
+    requires: { platform: "darwin", renderer: "native" },
+    interactive: true,
+    timeout: 120000,
+    async run({ log }) {
+      await new Promise<void>((resolve) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let winRef: BrowserWindow<any> | null = null;
+        const rpc = BrowserView.defineRPC<any>({
+          maxRequestTime: 120000,
+          handlers: {
+            requests: {
+              closeWindow: () => {
+                log("Close button clicked");
+                winRef?.close();
+                return { success: true };
+              },
+              minimizeWindow: () => {
+                log("Minimize button clicked");
+                return { success: true };
+              },
+              maximizeWindow: () => {
+                log("Maximize button clicked");
+                return { success: true };
+              },
+            },
+            messages: {},
+          },
+        });
+
+        winRef = new BrowserWindow({
+          title: "First Click",
+          url: "views://playgrounds/custom-titlebar/index.html",
+          renderer: "native",
+          frame: { width: 500, height: 700, x: 150, y: 50 },
+          titleBarStyle: "hidden",
+          rpc,
+        });
+        winRef.on("close", () => resolve());
+      });
+    },
+  }),
+
+  defineTest({
     name: "Transparent/borderless window for floating UI",
     category: "Chromeless Windows (Interactive)",
     description: "Test transparent window with custom-shaped floating UI elements",

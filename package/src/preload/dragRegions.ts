@@ -436,6 +436,22 @@ export function isAppRegionDragTarget(
 	return foundDragRegion;
 }
 
+// macOS asks this before letting the first click into a background window
+// reach the page: only a drag region takes it, so the window moves at once.
+// x and y are CSS pixels in the viewport.
+export function isAppRegionDragPoint(
+	targetDocument: Pick<Document, "elementFromPoint">,
+	x: number,
+	y: number,
+	readComputedStyle: ComputedStyleReader = (element) =>
+		window.getComputedStyle(element),
+): boolean {
+	return isAppRegionDragTarget(
+		targetDocument.elementFromPoint(x, y),
+		readComputedStyle,
+	);
+}
+
 export function registerDragRegionListeners(
 	targetDocument: Document,
 	getWindowId: () => number,
@@ -460,4 +476,6 @@ export function initDragRegions() {
 	installCompatibilityStyles();
 	initStylesheetMirroring();
 	registerDragRegionListeners(document, () => window.__electrobunWindowId);
+	window.__electrobun.isAppRegionDragAt = (x, y) =>
+		isAppRegionDragPoint(document, x, y);
 }
