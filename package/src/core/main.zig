@@ -118,7 +118,7 @@ const WebviewSnapshotHandler = *const fn (u32, ?[*:0]u8, ?[*:0]u8) callconv(.c) 
 const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
 const WebviewSecretKey = [Aes256Gcm.key_length]u8;
 const websocket_magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const websocket_payload_limit: usize = 1024 * 1024 * 500;
+const websocket_payload_limit: usize = 1024 * 1024 * 64;
 const websocket_port_range_start: u16 = 50000;
 const websocket_port_range_end: u16 = 65535;
 // Amortize runtime FFI and string decoding without allowing an unbounded batch.
