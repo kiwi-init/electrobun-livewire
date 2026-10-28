@@ -455,8 +455,9 @@ pub fn main(init: std.process.Init) !void {
         },
     }
 
-    // On Linux a kiwi:// link arrives as an argument, so the app's own
-    // arguments go on to its argv. The launcher's --automation flag stays out.
+    // On Linux, URLs and files a desktop entry passes (%u/%f) arrive as
+    // arguments, so the app's own arguments go on to its argv. The launcher's
+    // --automation flag stays out.
     if (builtin.os.tag == .linux) {
         var forwarded: std.ArrayList([]const u8) = .empty;
         try forwarded.appendSlice(arena_alloc, argv);
