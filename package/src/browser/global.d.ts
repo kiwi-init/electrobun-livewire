@@ -12,6 +12,7 @@ interface ElectrobunBridge {
   receiveMessageFromBun: (msg: unknown) => void;
   receiveInternalMessageFromBun: (msg: unknown) => void;
   startFileDrag?: (paths: string | string[]) => Promise<unknown>;
+  isAppRegionDragAt?: (x: number, y: number) => boolean;
 }
 
 interface MessageHandler {

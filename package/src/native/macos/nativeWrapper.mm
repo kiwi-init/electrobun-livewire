@@ -3315,6 +3315,121 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
 }
 @end
 
+// ----------------------- First click in drag regions -----------------------
+
+// The first click into a background window only activates it. On a drag
+// region it should also start moving the window, as a title bar does, but
+// only the page knows where its drag regions are. So that click is held,
+// with the rest of the gesture behind it, while the preload is asked about
+// its point; the page gets it only if the point is in a drag region.
+@interface ElectrobunWKWebView : WKWebView
+// Drag regions come from the preload, which sandboxed views don't get.
+@property(nonatomic, assign) BOOL firstClickMovesFromDragRegions;
+@end
+
+@implementation ElectrobunWKWebView {
+  BOOL _hasFirstMouse;
+  NSInteger _firstMouseEventNumber;
+  NSMutableArray<NSEvent *> *_heldMouseEvents;
+  NSUInteger _hold;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+  if ([super acceptsFirstMouse:event])
+    return YES;
+  if (!self.firstClickMovesFromDragRegions ||
+      event.type != NSEventTypeLeftMouseDown)
+    return NO;
+  _hasFirstMouse = YES;
+  _firstMouseEventNumber = event.eventNumber;
+  return YES;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+  if (_heldMouseEvents) {
+    [_heldMouseEvents addObject:event];
+    return;
+  }
+  if (!_hasFirstMouse || event.eventNumber != _firstMouseEventNumber) {
+    [super mouseDown:event];
+    return;
+  }
+  _hasFirstMouse = NO;
+  _heldMouseEvents = [NSMutableArray arrayWithObject:event];
+  NSUInteger hold = ++_hold;
+
+  NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  if (!self.isFlipped)
+    point.y = NSHeight(self.bounds) - point.y;
+  // CSS pixels: views are never pinch-magnified, so only the page zoom counts.
+  CGFloat zoom = self.pageZoom;
+  NSString *script = [NSString
+      stringWithFormat:
+          @"window.__electrobun?.isAppRegionDragAt?.(%f, %f) === true",
+          point.x / zoom, point.y / zoom];
+
+  __weak ElectrobunWKWebView *weakSelf = self;
+  [self evaluateJavaScript:script
+         completionHandler:^(id result, NSError *error) {
+           BOOL drag = [result isKindOfClass:[NSNumber class]] &&
+                       [(NSNumber *)result boolValue];
+           [weakSelf finishHold:hold deliver:drag];
+         }];
+  // A page that doesn't answer mustn't keep the mouse.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf finishHold:hold deliver:NO];
+                 });
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+  if (_heldMouseEvents) {
+    [_heldMouseEvents addObject:event];
+    return;
+  }
+  [super mouseDragged:event];
+}
+
+- (void)mouseUp:(NSEvent *)event {
+  if (_heldMouseEvents) {
+    [_heldMouseEvents addObject:event];
+    return;
+  }
+  [super mouseUp:event];
+}
+
+// Hands the held gesture to the page, or drops all of it, so the page never
+// sees a mouseup without its mousedown.
+- (void)finishHold:(NSUInteger)hold deliver:(BOOL)deliver {
+  if (hold != _hold || !_heldMouseEvents)
+    return;
+  NSArray<NSEvent *> *events = _heldMouseEvents;
+  _heldMouseEvents = nil;
+  // A click on a background window brings it forward, whatever the page does
+  // with it. AppKit doesn't once this view has taken the first mouse (on a
+  // drag region, or a no-drag button inside one), so do it here.
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.window makeKeyAndOrderFront:nil];
+  if (!deliver)
+    return;
+  for (NSEvent *event in events) {
+    switch (event.type) {
+    case NSEventTypeLeftMouseDown:
+      [super mouseDown:event];
+      break;
+    case NSEventTypeLeftMouseDragged:
+      [super mouseDragged:event];
+      break;
+    case NSEventTypeLeftMouseUp:
+      [super mouseUp:event];
+      break;
+    default:
+      break;
+    }
+  }
+}
+@end
+
 // ----------------------- WKWebViewImpl -----------------------
 
 @implementation WKWebViewImpl
@@ -3387,8 +3502,11 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
                             forURLScheme:@"appdata"];
 
       // create WKWebView
-      self.webView = [[WKWebView alloc] initWithFrame:frame
-                                        configuration:configuration];
+      ElectrobunWKWebView *webView =
+          [[ElectrobunWKWebView alloc] initWithFrame:frame
+                                       configuration:configuration];
+      webView.firstClickMovesFromDragRegions = !sandbox;
+      self.webView = webView;
 
       // Only set transparent background for main window webviews
       // (autoResize/fullscreen) Child webviews (OOPIFs) need a visible

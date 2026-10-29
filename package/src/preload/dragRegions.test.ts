@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	DRAG_REGION_COMPATIBILITY_CSS,
+	isAppRegionDragPoint,
 	isAppRegionDragTarget,
 	registerDragRegionListeners,
 	rewriteAppRegionDeclarations,
@@ -116,6 +117,35 @@ describe("drag-region DOM targeting", () => {
 		).toBe(true);
 		expect(
 			isAppRegionDragTarget(asEventTarget(excludedChild), readComputedStyle),
+		).toBe(false);
+	});
+
+	test("answers for the element under a point", () => {
+		const dragRow = new TestElement({
+			computed: { "--electrobun-app-region": "drag" },
+		});
+		const button = new TestElement({
+			parent: dragRow,
+			computed: { "--electrobun-app-region": "no-drag" },
+		});
+		const under: Record<string, TestElement | null> = {
+			"10,5": dragRow,
+			"40,5": button,
+			"10,300": null,
+		};
+		const targetDocument = {
+			elementFromPoint: (x: number, y: number) =>
+				(under[`${x},${y}`] ?? null) as unknown as Element | null,
+		};
+
+		expect(isAppRegionDragPoint(targetDocument, 10, 5, readComputedStyle)).toBe(
+			true,
+		);
+		expect(isAppRegionDragPoint(targetDocument, 40, 5, readComputedStyle)).toBe(
+			false,
+		);
+		expect(
+			isAppRegionDragPoint(targetDocument, 10, 300, readComputedStyle),
 		).toBe(false);
 	});
 
