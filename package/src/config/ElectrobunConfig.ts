@@ -604,6 +604,13 @@ export interface ElectrobunConfig {
 		 */
 		exitOnLastWindowClosed?: boolean;
 
+		/**
+		 * Set to false to ship without the web inspector on native WebKit views
+		 * (macOS and Linux): no Inspect Element, and openDevTools does nothing.
+		 * @default true
+		 */
+		inspector?: boolean;
+
 		[key: string]: unknown;
 	};
 

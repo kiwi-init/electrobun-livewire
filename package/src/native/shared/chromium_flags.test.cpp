@@ -1,4 +1,5 @@
 #include "chromium_flags.h"
+#include "inspector_setting.h"
 
 #include <cassert>
 #include <iostream>
@@ -13,7 +14,23 @@ static electrobun::RemoteDebuggingDecision resolve(
     return electrobun::resolveRemoteDebugging(json, flags, environmentOverride);
 }
 
+static void testInspectorSetting() {
+    assert(electrobun::inspectorEnabled(""));
+    assert(electrobun::inspectorEnabled("not json"));
+    assert(electrobun::inspectorEnabled(R"({"buildEnvironment":"stable"})"));
+    assert(electrobun::inspectorEnabled(R"({"runtime":{"agentControl":true}})"));
+    assert(electrobun::inspectorEnabled(R"({"runtime":{"inspector":true}})"));
+    assert(!electrobun::inspectorEnabled(R"({"runtime":{"inspector":false}})"));
+    assert(!electrobun::inspectorEnabled(R"({ "runtime" : { "a" : [1, {"b":2}], "inspector" : false } })"));
+    assert(!electrobun::inspectorEnabled(R"({"note":"}{","runtime":{"note":""inspector":true","inspector":false}})"));
+    assert(electrobun::inspectorEnabled(R"({"inspector":false,"runtime":{}})"));
+    assert(electrobun::inspectorEnabled(R"({"runtime":{"nested":{"inspector":false}}})"));
+    assert(electrobun::inspectorEnabled(R"({"other":{"runtime":{"inspector":false}}})"));
+    assert(electrobun::inspectorEnabled(R"({"runtime":{"note":"inspector","inspector":true}})"));
+}
+
 int main() {
+    testInspectorSetting();
     const auto development = resolve(R"({"buildEnvironment":"dev"})");
     assert(development.enabled());
     assert(development.requestedPort == 9222);

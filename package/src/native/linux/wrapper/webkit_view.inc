@@ -69,7 +69,7 @@ public:
             fprintf(stderr, "ERROR: Failed to create WebKit settings\n");
             throw std::runtime_error("Failed to create WebKit settings");
         }
-        webkit_settings_set_enable_developer_extras(settings, TRUE);
+        webkit_settings_set_enable_developer_extras(settings, webInspectorEnabled());
         webkit_settings_set_enable_javascript(settings, TRUE);
         webkit_settings_set_javascript_can_access_clipboard(settings, FALSE);
         webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
@@ -1138,7 +1138,7 @@ public:
     }
 
     void openDevTools() override {
-        if (!WEBKIT_IS_WEB_VIEW(webview)) return;
+        if (!webInspectorEnabled() || !WEBKIT_IS_WEB_VIEW(webview)) return;
         
         WebKitWebInspector* inspector = webkit_web_view_get_inspector(WEBKIT_WEB_VIEW(webview));
         if (inspector) {
