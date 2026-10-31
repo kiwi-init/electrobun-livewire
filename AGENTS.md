@@ -32,7 +32,7 @@ These rules win over `CLAUDE.md`, which is upstream's.
 - Native behaviour needs Kitchen. Locally it runs in background mode by default (`ELECTROBUN_BACKGROUND=1`): windows never take the keyboard, cursor or focus, and the few tests that need the foreground are skipped. Never set `KITCHEN_FOREGROUND=1` on a machine a person is using. Still prefer CI for the full suite: the machine is shared and has 8 GB.
 
   ```sh
-  gh workflow run kitchen-test.yml --ref <branch> -f test="<test name>|all" -f runner=macos-14
+  gh workflow run kitchen-test.yml --ref <branch> -f test="<test name>|all" -f runner=macos-15
   gh workflow run kitchen-test.yml --ref <branch> -f test="<test name>" -f runner=ubuntu-24.04 -f display=wayland
   ```
 
