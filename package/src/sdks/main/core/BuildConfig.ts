@@ -14,6 +14,7 @@ export type BuildConfigType = {
 	isPackaged: boolean;
 	runtime?: {
 		exitOnLastWindowClosed?: boolean;
+		inspector?: boolean;
 		[key: string]: unknown;
 	};
 };

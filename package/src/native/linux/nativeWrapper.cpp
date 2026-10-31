@@ -70,6 +70,7 @@
 #include "../shared/views_url.h"
 #include "../shared/accelerator_parser.h"
 #include "../shared/chromium_flags.h"
+#include "../shared/inspector_setting.h"
 #include "../shared/cache_migration.h"
 #include "../shared/console_forwarding.h"
 #include "native_file_dialog.h"
@@ -165,6 +166,12 @@ using electrobun::OperationGuard;
 #include "wrapper/gtk3/runtime.inc"
 #include "wrapper/cef_app.inc"
 #include "wrapper/abstract_view.inc"
+static bool webInspectorEnabled() {
+    static const bool enabled = electrobun::inspectorEnabled(
+        electrobun::readFileToString(getExecutableDir() + "/../Resources/build.json"));
+    return enabled;
+}
+
 #include "wrapper/webkit_view.inc"
 #include "wrapper/wgpu_view.inc"
 #include "wrapper/cef_view.inc"

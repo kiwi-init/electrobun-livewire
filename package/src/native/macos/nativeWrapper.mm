@@ -75,6 +75,7 @@ static bool wgpuDebugEnabled() {
 #include "../shared/cache_migration.h"
 #include "../shared/callbacks.h"
 #include "../shared/chromium_flags.h"
+#include "../shared/inspector_setting.h"
 #include "../shared/config.h"
 #include "../shared/console_forwarding.h"
 #include "../shared/dialog_paths.h"
@@ -3432,6 +3433,21 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
 
 // ----------------------- WKWebViewImpl -----------------------
 
+static BOOL webInspectorEnabled() {
+  static const BOOL enabled = [] {
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"build"
+                                                     ofType:@"json"];
+    if (!path) {
+      return YES;
+    }
+    return electrobun::inspectorEnabled(
+               electrobun::readFileToString([path UTF8String]))
+               ? YES
+               : NO;
+  }();
+  return enabled;
+}
+
 @implementation WKWebViewImpl
 
 - (BOOL)shouldSuppressMirrorMode {
@@ -3478,7 +3494,7 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
       self.dataStorePartition =
           [NSString stringWithUTF8String:partitionIdentifier ?: ""];
 
-      [configuration.preferences setValue:@YES
+      [configuration.preferences setValue:@(webInspectorEnabled())
                                    forKey:@"developerExtrasEnabled"];
       [configuration.preferences setValue:@YES
                                    forKey:@"elementFullscreenEnabled"];
@@ -4117,6 +4133,9 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
 }
 
 - (void)openDevTools {
+  if (!webInspectorEnabled()) {
+    return;
+  }
   dispatch_async(dispatch_get_main_queue(), ^{
     // WebKit owns the inspected view's frame while its inspector is
     // docked. Restore the real view before WebKit computes that layout.
