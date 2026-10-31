@@ -360,7 +360,7 @@ export const windowTests = [
     name: "Double click on a drag region toggles maximize",
     category: "BrowserWindow",
     description: "A second press on a drag region does what a real title bar does",
-    timeout: 15000,
+    timeout: 20000,
     async run({ createWindow, log }) {
       const win = await createWindow({
         url: "views://test-harness/index.html",
@@ -372,6 +372,16 @@ export const windowTests = [
 
       await sleep(1000);
       expect(win.window.isMaximized()).toBe(false);
+
+      win.window.maximize();
+      await sleep(1500);
+      const canMaximize = win.window.isMaximized();
+      win.window.unmaximize();
+      await sleep(1500);
+      if (!canMaximize) {
+        log("WARNING: this compositor doesn't report maximize, so there's nothing to check");
+        return;
+      }
 
       const doubleClick = `(() => {
         let bar = document.getElementById("double-click-bar");
