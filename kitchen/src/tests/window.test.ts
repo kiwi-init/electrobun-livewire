@@ -357,6 +357,46 @@ export const windowTests = [
   }),
 
   defineTest({
+    name: "Double click on a drag region toggles maximize",
+    category: "BrowserWindow",
+    description: "A second press on a drag region does what a real title bar does",
+    timeout: 15000,
+    async run({ createWindow, log }) {
+      const win = await createWindow({
+        url: "views://test-harness/index.html",
+        title: "Title Bar Double Click Test",
+        width: 400,
+        height: 300,
+        renderer: "native",
+      });
+
+      await sleep(1000);
+      expect(win.window.isMaximized()).toBe(false);
+
+      const doubleClick = `(() => {
+        let bar = document.getElementById("double-click-bar");
+        if (!bar) {
+          bar = document.createElement("div");
+          bar.id = "double-click-bar";
+          bar.className = "electrobun-webkit-app-region-drag";
+          document.body.appendChild(bar);
+        }
+        bar.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, detail: 2 }));
+      })()`;
+
+      log("Double clicking the drag region");
+      win.webview.executeJavascript(doubleClick);
+      await sleep(1500);
+      expect(win.window.isMaximized()).toBe(true);
+
+      log("Double clicking it again");
+      win.webview.executeJavascript(doubleClick);
+      await sleep(1500);
+      expect(win.window.isMaximized()).toBe(false);
+    },
+  }),
+
+  defineTest({
     name: "Window fullscreen toggle",
     requires: { foreground: true },
     category: "BrowserWindow",

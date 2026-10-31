@@ -618,6 +618,44 @@ ELECTROBUN_EXPORT bool isWindowMaximized(void* window) {
     return result;
 }
 
+// GNOME keeps the choice in GSettings. KDE and the rest have no setting a client
+// can read this way, so they toggle maximize, which is also their default.
+static std::string titleBarDoubleClickAction() {
+    const char* desktop = getenv("XDG_CURRENT_DESKTOP");
+    if (!desktop || !strstr(desktop, "GNOME")) return "toggle-maximize";
+
+    static const char* schemaId = "org.gnome.desktop.wm.preferences";
+    GSettingsSchemaSource* source = g_settings_schema_source_get_default();
+    GSettingsSchema* schema = source ? g_settings_schema_source_lookup(source, schemaId, TRUE) : nullptr;
+    if (!schema) return "toggle-maximize";
+    const bool hasKey = g_settings_schema_has_key(schema, "action-double-click-titlebar");
+    g_settings_schema_unref(schema);
+    if (!hasKey) return "toggle-maximize";
+
+    GSettings* settings = g_settings_new(schemaId);
+    gchar* value = g_settings_get_string(settings, "action-double-click-titlebar");
+    std::string action = value ? value : "toggle-maximize";
+    g_free(value);
+    g_object_unref(settings);
+    return action;
+}
+
+ELECTROBUN_EXPORT void titleBarDoubleClick(void* window) {
+    if (!window) return;
+
+    const std::string action = titleBarDoubleClickAction();
+    if (action == "none" || action == "menu" || action == "lower") return;
+    if (action == "minimize") {
+        minimizeWindow(window);
+        return;
+    }
+    if (isWindowMaximized(window)) {
+        unmaximizeWindow(window);
+    } else {
+        maximizeWindow(window);
+    }
+}
+
 ELECTROBUN_EXPORT void setWindowFullScreen(void* window, bool fullScreen) {
     if (!window) return;
 

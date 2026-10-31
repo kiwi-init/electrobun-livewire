@@ -10185,6 +10185,29 @@ extern "C" void startWindowMove(NSWindow *window) {
                                             }];
 }
 
+// Does what a real title bar does with a double click, by the user's System
+// Settings choice. "Fill" has no public call, so it zooms, as "Maximize" does.
+extern "C" void titleBarDoubleClick(NSWindow *window) {
+  runOnMainThreadSyncVoid(^{
+    if (!window || (window.styleMask & NSWindowStyleMaskFullScreen)) {
+      return;
+    }
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *action = [defaults stringForKey:@"AppleActionOnDoubleClick"];
+    if ([action isEqualToString:@"None"]) {
+      return;
+    }
+    if ([action isEqualToString:@"Minimize"] ||
+        (!action && [defaults boolForKey:@"AppleMiniaturizeOnDoubleClick"])) {
+      [window miniaturize:nil];
+      return;
+    }
+    if (window.styleMask & NSWindowStyleMaskResizable) {
+      [window zoom:nil];
+    }
+  });
+}
+
 extern "C" BOOL moveToTrash(char *pathString) {
   NSString *path = [NSString stringWithUTF8String:pathString ?: ""];
   NSURL *fileURL = [NSURL fileURLWithPath:path];

@@ -2665,6 +2665,12 @@ fn handleInternalMessage(source_webview_id: u32, message_id: []const u8, payload
         return;
     }
 
+    if (std.mem.eql(u8, message_id, "titleBarDoubleClick")) {
+        const window_id = sourceWindowId(source_webview_id) orelse return;
+        windowTitleBarDoubleClick(window_id);
+        return;
+    }
+
     if (std.mem.eql(u8, message_id, "webviewTagSetTransparent")) {
         const webview_id = jsonU32(payload_object.get("id") orelse return) orelse return;
         if (!ownsWebviewTag(source_webview_id, webview_id)) return;
@@ -3462,6 +3468,14 @@ export fn endWindowMove() void {
     const StopWindowMoveFn = *const fn () callconv(.c) void;
     const stop_window_move = lookupNativeSymbol(StopWindowMoveFn, "stopWindowMove") orelse return;
     stop_window_move();
+}
+
+export fn windowTitleBarDoubleClick(window_id: u32) void {
+    clearLastError();
+    const TitleBarDoubleClickFn = *const fn (WindowPtr) callconv(.c) void;
+    const window = requireWindowPtr(window_id) orelse return;
+    const title_bar_double_click = lookupNativeSymbol(TitleBarDoubleClickFn, "titleBarDoubleClick") orelse return;
+    title_bar_double_click(window);
 }
 
 export fn createWebview(

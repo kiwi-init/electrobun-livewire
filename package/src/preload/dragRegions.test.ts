@@ -180,4 +180,105 @@ describe("drag-region DOM targeting", () => {
 			{ type: "stopWindowMove", payload: { id: 42 } },
 		]);
 	});
+
+	describe("double click on a drag region", () => {
+		type Press = {
+			target: EventTarget;
+			detail?: number;
+			button?: number;
+			screenX?: number;
+			screenY?: number;
+		};
+		const setup = () => {
+			const listeners = new Map<string, (event: Press) => void>();
+			const targetDocument = {
+				addEventListener(type: string, listener: (event: Press) => void) {
+					listeners.set(type, listener);
+				},
+			} as unknown as Document;
+			const sent: string[] = [];
+			const clock = { at: 1_000 };
+			const dragTarget = asEventTarget(
+				new TestElement({ computed: { "--electrobun-app-region": "drag" } }),
+			);
+			const noDragTarget = asEventTarget(new TestElement());
+			registerDragRegionListeners(
+				targetDocument,
+				() => 42,
+				(type) => sent.push(type),
+				readComputedStyle,
+				() => clock.at,
+			);
+			const press = (event: Partial<Press> = {}) =>
+				listeners.get("mousedown")?.({
+					target: dragTarget,
+					detail: 1,
+					button: 0,
+					screenX: 10,
+					screenY: 10,
+					...event,
+				});
+			return { sent, clock, press, noDragTarget };
+		};
+
+		test("the page's second click asks for the title bar action and starts no move", () => {
+			const { sent, press } = setup();
+			press();
+			press({ detail: 2 });
+			expect(sent).toEqual(["startWindowMove", "titleBarDoubleClick"]);
+		});
+
+		test("a second press the page calls a first still counts, close in time and place", () => {
+			const { sent, clock, press } = setup();
+			press();
+			clock.at += 300;
+			press({ screenX: 12, screenY: 8 });
+			expect(sent).toEqual(["startWindowMove", "titleBarDoubleClick"]);
+		});
+
+		test("a slow second press moves the window", () => {
+			const { sent, clock, press } = setup();
+			press();
+			clock.at += 501;
+			press();
+			expect(sent).toEqual(["startWindowMove", "startWindowMove"]);
+		});
+
+		test("a second press after the window moved away moves it again", () => {
+			const { sent, clock, press } = setup();
+			press();
+			clock.at += 300;
+			press({ screenX: 200 });
+			expect(sent).toEqual(["startWindowMove", "startWindowMove"]);
+		});
+
+		test("the press after a double click starts over", () => {
+			const { sent, clock, press } = setup();
+			press();
+			clock.at += 100;
+			press();
+			clock.at += 100;
+			press();
+			expect(sent).toEqual([
+				"startWindowMove",
+				"titleBarDoubleClick",
+				"startWindowMove",
+			]);
+		});
+
+		test("another button never counts", () => {
+			const { sent, press } = setup();
+			press({ detail: 2, button: 2 });
+			expect(sent).toEqual(["startWindowMove"]);
+		});
+
+		test("a press outside the drag region breaks the pair", () => {
+			const { sent, clock, press, noDragTarget } = setup();
+			press();
+			press({ target: noDragTarget });
+			clock.at += 100;
+			press();
+			expect(sent).toEqual(["startWindowMove", "startWindowMove"]);
+		});
+	});
 });

@@ -11710,6 +11710,19 @@ ELECTROBUN_EXPORT void unmaximizeWindow(NSWindow *window) {
     });
 }
 
+ELECTROBUN_EXPORT void titleBarDoubleClick(NSWindow *window) {
+    HWND hwnd = reinterpret_cast<HWND>(window);
+
+    if (!IsWindow(hwnd)) {
+        ::log("ERROR: Invalid window handle in titleBarDoubleClick");
+        return;
+    }
+
+    MainThreadDispatcher::dispatch_sync([=]() {
+        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+    });
+}
+
 ELECTROBUN_EXPORT bool isWindowMaximized(NSWindow *window) {
     HWND hwnd = reinterpret_cast<HWND>(window);
 

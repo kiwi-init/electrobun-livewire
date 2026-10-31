@@ -452,17 +452,44 @@ export function isAppRegionDragPoint(
 	);
 }
 
+const DOUBLE_CLICK_MS = 500;
+const DOUBLE_CLICK_SLOP_PX = 4;
+
 export function registerDragRegionListeners(
 	targetDocument: Document,
 	getWindowId: () => number,
 	sendMessage: DragRegionSender = send,
 	readComputedStyle: ComputedStyleReader = (element) =>
 		window.getComputedStyle(element),
+	now: () => number = Date.now,
 ) {
+	let lastPress: { at: number; x: number; y: number } | null = null;
+
+	// The window manager takes the pointer during a move drag on Linux, so the
+	// page may report the second press as a first one. Time and place decide then.
+	const isDoubleClick = (event: MouseEvent): boolean => {
+		if (event.button !== 0) return false;
+		if (event.detail === 2) return true;
+		if (event.detail !== 1 || !lastPress) return false;
+		return (
+			now() - lastPress.at <= DOUBLE_CLICK_MS &&
+			Math.abs(event.screenX - lastPress.x) <= DOUBLE_CLICK_SLOP_PX &&
+			Math.abs(event.screenY - lastPress.y) <= DOUBLE_CLICK_SLOP_PX
+		);
+	};
+
 	targetDocument.addEventListener("mousedown", (event) => {
-		if (isAppRegionDragTarget(event.target, readComputedStyle)) {
-			sendMessage("startWindowMove", { id: getWindowId() });
+		if (!isAppRegionDragTarget(event.target, readComputedStyle)) {
+			lastPress = null;
+			return;
 		}
+		if (isDoubleClick(event)) {
+			lastPress = null;
+			sendMessage("titleBarDoubleClick", { id: getWindowId() });
+			return;
+		}
+		lastPress = { at: now(), x: event.screenX, y: event.screenY };
+		sendMessage("startWindowMove", { id: getWindowId() });
 	});
 
 	targetDocument.addEventListener("mouseup", (event) => {

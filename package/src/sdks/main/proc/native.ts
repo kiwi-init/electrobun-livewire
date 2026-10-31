@@ -1004,6 +1004,10 @@ export const native = (() => {
 				args: [],
 				returns: FFIType.void,
 			},
+			titleBarDoubleClick: {
+				args: [FFIType.ptr],
+				returns: FFIType.void,
+			},
 			webviewSetTransparent: {
 				args: [FFIType.ptr, FFIType.bool],
 				returns: FFIType.void,
@@ -4379,6 +4383,13 @@ export const internalRpcHandlers = {
 		},
 		stopWindowMove: (_params: unknown) => {
 			native_.symbols.stopWindowMove();
+		},
+		// Always the sender's own window.
+		titleBarDoubleClick: (_params: unknown, senderId: number) => {
+			const windowId = BrowserView.getById(senderId)?.windowId;
+			const windowPtr = windowId === undefined ? null : getWindowPtr(windowId);
+			if (!windowPtr) return;
+			native_.symbols.titleBarDoubleClick(windowPtr);
 		},
 		webviewTagSetTransparent: forOwnWebviewTag((params: {
 			id: number;
