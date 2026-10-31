@@ -14,7 +14,7 @@ on:
         options:
           - ubuntu-24.04
           - ubuntu-24.04-arm
-          - macos-14
+          - macos-15
       appearance:
         description: System appearance (macOS)
         type: choice

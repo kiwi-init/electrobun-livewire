@@ -9,9 +9,8 @@ on:
       runner:
         description: Runner
         type: choice
-        default: macos-14
+        default: macos-15
         options:
-          - macos-14
           - macos-15
       shards:
         description: Parallel runners

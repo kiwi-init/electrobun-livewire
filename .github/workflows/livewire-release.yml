@@ -56,7 +56,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, platform: darwin, arch: arm64, platform_name: darwin }
+          - { os: macos-15, platform: darwin, arch: arm64, platform_name: darwin }
           - { os: macos-26-intel, platform: darwin, arch: x64, platform_name: darwin }
           - { os: ubuntu-24.04, platform: linux, arch: x64, platform_name: linux }
           - { os: ubuntu-24.04-arm, platform: linux, arch: arm64, platform_name: linux }
@@ -204,7 +204,7 @@ jobs:
   smoke:
     needs: [version, release]
     if: needs.version.outputs.publish == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
