@@ -27,6 +27,7 @@ static bool wgpuDebugEnabled() {
   return cached == 1;
 }
 #include "../shared/pending_resize_queue.h"
+#include "frame_policy.h"
 #include "inspector_layout.h"
 #include "rendering_rate.h"
 #include "spell_check.h"
@@ -2687,6 +2688,14 @@ static void schedulePendingResizeDrain() {
   }
 
   // Check navigation rules synchronously from native-stored rules
+  // The rules protect the owning document. An embedded frame has its own
+  // browser sandbox and must not be mistaken for replacing that document.
+  if (!electrobun::shouldApplyMainFrameNavigationRules(navigationAction)) {
+    decisionHandler(navigationAction.shouldPerformDownload
+                        ? WKNavigationActionPolicyDownload
+                        : WKNavigationActionPolicyAllow);
+    return;
+  }
   AbstractView *abstractView =
       [globalAbstractViews objectForKey:@(self.webviewId)];
   BOOL shouldAllow =
@@ -3279,6 +3288,14 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
       didReceiveScriptMessage:(WKScriptMessage *)message
                  replyHandler:
                      (void (^)(id _Nullable, NSString *_Nullable))replyHandler {
+  if (!electrobun::isMainFrameScriptMessage(message)) {
+    replyHandler(nil, @"Native messages are only available to the main frame");
+    return;
+  }
+  if (!self.zigCallback || ![message.body isKindOfClass:[NSString class]]) {
+    replyHandler(nil, @"Invalid native message");
+    return;
+  }
   NSString *body = message.body;
   const char *response = self.zigCallback(self.webviewId, body.UTF8String);
   NSString *responseNSString =
@@ -3290,7 +3307,10 @@ static BOOL isExternallyOpenableURL(NSURL *url) {
 @implementation MyScriptMessageHandler
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message {
-  if (!self.zigCallback || ![message.body isKindOfClass:[NSString class]])
+  // Native handlers are visible to child frames even without an injected
+  // preload. Check WebKit's frame identity before accepting any bridge call.
+  if (!electrobun::isMainFrameScriptMessage(message) ||
+      !self.zigCallback || ![message.body isKindOfClass:[NSString class]])
     return;
   if (self.mainFrameOnly) {
     if (!message.frameInfo.isMainFrame)
@@ -4007,7 +4027,7 @@ static BOOL webInspectorEnabled() {
   WKUserScript *script = [[WKUserScript alloc]
         initWithSource:code
          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-      forMainFrameOnly:false];
+      forMainFrameOnly:true];
   [self.webView.configuration.userContentController addUserScript:script];
 }
 

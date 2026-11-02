@@ -66,6 +66,7 @@ export default {
 			"scripts/test-webview2-permissions.ts",
 		],
 		"test:macos-inspector-layout": "scripts/test-macos-inspector-layout.sh",
+		"test:macos-frame-policy": "scripts/test-macos-frame-policy.sh",
 		"test:signing": "node scripts/run-bun-test.js scripts/verify-macho-code-signing.test.ts",
 		"test:deployment-target": "node scripts/run-bun-test.js scripts/verify-macho-deployment-target.test.ts",
 		"test:linux-xdg-portal": "scripts/test-linux-xdg-portal.sh",
