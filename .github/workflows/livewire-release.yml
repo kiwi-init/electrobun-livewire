@@ -10,7 +10,8 @@ name: Livewire release
 # Cut one: run `node package/scripts/set-livewire-version.mjs --next` (or an
 # explicit YYYY.M.PATCH), merge that PR, then dispatch this workflow on main.
 # From any other branch it's a dry run: everything is built and indexed, nothing
-# is published.
+# is published. A published release tells Channels, whose livewire-bump.yml opens
+# the PR that moves desktop/electrobun-pins.json to it.
 
 on:
   workflow_dispatch:
@@ -200,6 +201,26 @@ jobs:
             --notes "Livewire $VERSION, built from $GITHUB_SHA.
 
           Install with Hutch: set \`ELECTROBUN_RELEASES_BASE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download\` and \`electrobun: { version: \"$VERSION\" }\` in hutch.config.ts."
+
+  channels:
+    needs: [version, release]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.BUS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BUS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: channels
+          permission-contents: write
+      - name: Channels opens its bump PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: gh api "repos/${{ github.repository_owner }}/channels/dispatches" -f event_type=livewire-release -F "client_payload[version]=$VERSION"
 
   smoke:
     needs: [version, release]
