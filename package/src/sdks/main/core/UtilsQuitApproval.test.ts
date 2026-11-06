@@ -15,6 +15,8 @@ describe("quit approval handoff", () => {
 		expect(requestBody).toContain("response?.allow === false");
 		expect(consumeBody).not.toContain("events.app.beforeQuit");
 		expect(consumeBody).toContain("activeQuitApproval !== approval");
+		expect(consumeBody.indexOf("saveWindowStatesNow()")).toBeGreaterThan(-1);
+		expect(consumeBody.indexOf("saveWindowStatesNow()")).toBeLessThan(consumeBody.indexOf("quitGracefully"));
 		expect(source.slice(quitStart)).toContain("requestQuitApproval()");
 		expect(source.slice(quitStart)).toContain(
 			"quitAfterApproval(approval, code)",

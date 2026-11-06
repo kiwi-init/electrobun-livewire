@@ -21,7 +21,7 @@ const fake = installFakeFFI({
 	isWindowMinimized: ({ winId }) => windows.get(Number(winId))!.minimized,
 });
 const { BrowserWindow } = await import("../core/BrowserWindow");
-const { clampToDisplays } = await import("../core/windowState");
+const { clampToDisplays, saveWindowStatesNow } = await import("../core/windowState");
 const { Screen } = await import("../proc/native");
 const { default: electrobunEventEmitter } = await import("../events/eventEmitter");
 
@@ -94,6 +94,31 @@ describe("BrowserWindow windowState", () => {
 		expect(saved().frame).toEqual({ x: 10, y: 40, width: 300, height: 200 });
 		await Bun.sleep(700);
 		expect(saved().frame).toEqual({ x: 50, y: 60, width: 700, height: 500 });
+	});
+
+	test("a quit right after a move still saves it, before the delay is up", () => {
+		const win = open();
+		nativeResize(win, { frame: { x: 50, y: 60, width: 700, height: 500 } });
+		expect(saved().frame).toEqual({ x: 10, y: 40, width: 300, height: 200 });
+		saveWindowStatesNow();
+		expect(saved().frame).toEqual({ x: 50, y: 60, width: 700, height: 500 });
+		nativeClose(win);
+	});
+
+	test("a quit saves a move whose event hasn't arrived yet", () => {
+		const win = open();
+		windows.get(win.id)!.frame = { x: 80, y: 90, width: 640, height: 480 };
+		saveWindowStatesNow();
+		expect(saved().frame).toEqual({ x: 80, y: 90, width: 640, height: 480 });
+		nativeClose(win);
+	});
+
+	test("a closed window isn't read again on quit", () => {
+		const win = open();
+		nativeClose(win);
+		windows.get(win.id)!.frame = { x: 80, y: 90, width: 640, height: 480 };
+		saveWindowStatesNow();
+		expect(saved().frame).toEqual({ x: 10, y: 40, width: 300, height: 200 });
 	});
 
 	test("maximized: keeps the normal frame and maximizes on reopen", () => {

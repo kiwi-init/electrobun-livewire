@@ -35,6 +35,8 @@ const SAVE_DELAY_MS = 500;
 // Savers with a write still waiting, flushed if the app quits first.
 const pending = new Set<WindowStateSaver>();
 let flushOnExit = false;
+// Open windows, each reading its native state again when a quit goes ahead.
+const refreshers = new Set<() => void>();
 
 export function resolveWindowState(options: WindowStateOptions): { id: string; file: string } {
 	const { id, file } = typeof options === "string" ? { id: options, file: undefined } : options;
@@ -43,6 +45,30 @@ export function resolveWindowState(options: WindowStateOptions): { id: string; f
 	// Required lazily: Utils needs the app's runtime, which unit tests don't have.
 	const { paths } = require("./Utils") as typeof import("./Utils");
 	return { id, file: join(paths.userData, "window-state.json") };
+}
+
+// A window's way to read its native state again on quit; returns the undo.
+export function refreshOnQuit(refresh: () => void): () => void {
+	refreshers.add(refresh);
+	return () => refreshers.delete(refresh);
+}
+
+// Utils calls this when a quit goes ahead, because the native shutdown ends
+// the process without Bun's "exit". Each open window first reads its frame
+// again, so a move whose event hasn't arrived yet is saved too.
+export function saveWindowStatesNow() {
+	for (const refresh of [...refreshers]) {
+		try {
+			refresh();
+		} catch (error) {
+			console.error("[electrobun] couldn't read a window's state on quit:", error);
+		}
+	}
+	flushPending();
+}
+
+function flushPending() {
+	for (const saver of [...pending]) saver.flush();
 }
 
 export function loadWindowState(file: string, id: string): SavedWindowState | null {
@@ -79,9 +105,7 @@ export class WindowStateSaver {
 		pending.add(this);
 		if (!flushOnExit) {
 			flushOnExit = true;
-			process.on("exit", () => {
-				for (const saver of pending) saver.flush();
-			});
+			process.on("exit", flushPending);
 		}
 	}
 
