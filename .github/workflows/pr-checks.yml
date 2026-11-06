@@ -50,3 +50,9 @@ jobs:
       - name: Build (dev)
         working-directory: package
         run: hutch build:dev
+      - name: macOS frame policy
+        working-directory: package
+        run: hutch test:macos-frame-policy
+      - name: Core tests
+        working-directory: package/src/core
+        run: ../../vendors/zig/zig build test
