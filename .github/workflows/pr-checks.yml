@@ -55,4 +55,4 @@ jobs:
         run: hutch test:macos-frame-policy
       - name: Core tests
         working-directory: package/src/core
-        run: ../../vendors/zig/zig build test
+        run: ../../vendors/zig/zig build test --summary all
