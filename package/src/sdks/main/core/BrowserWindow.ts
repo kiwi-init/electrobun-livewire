@@ -10,6 +10,7 @@ import { allowsFullScreen, isBackgroundMode } from "./backgroundMode";
 import {
 	clampToDisplays,
 	loadWindowState,
+	refreshOnQuit,
 	resolveWindowState,
 	WindowStateSaver,
 	type WindowStateOptions,
@@ -262,7 +263,11 @@ export class BrowserWindow<T extends RPCWithTransport = RPCWithTransport> {
 			const save = () => this.saveState();
 			this.on("resize", save);
 			this.on("move", save);
-			this.on("close", () => this.stateSaver?.flush());
+			const stopRefresh = refreshOnQuit(save);
+			this.on("close", () => {
+				stopRefresh();
+				this.stateSaver?.flush();
+			});
 			if (saved && (saved.maximized || saved.fullScreen)) {
 				this.pendingRestore = { maximized: saved.maximized, fullScreen: saved.fullScreen };
 				// Maximizing or entering full screen would show a hidden window.

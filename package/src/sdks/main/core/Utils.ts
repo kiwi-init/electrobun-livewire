@@ -1,5 +1,6 @@
 import { ffi, native } from "../proc/native";
 import { electrobunEventEmitter } from "../events/eventEmitter";
+import { saveWindowStatesNow } from "./windowState";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
@@ -277,6 +278,7 @@ export const quitAfterApproval = (
 	}
 	activeQuitApproval = null;
 	isQuitting = true;
+	saveWindowStatesNow();
 	try {
 		if (native) {
 			ffi.request.quitGracefully({ code, timeoutMs: 5000 });
