@@ -191,6 +191,8 @@ const WebviewState = struct {
     transport_ready: bool,
     // Whether the view's scheme handler serves views:// (allowedProtocols).
     allow_views: bool = true,
+    // Sandboxed views have no bridge token; their event bridge stays unsigned.
+    sandbox: bool = false,
 };
 
 const BridgeToken = [32]u8;
@@ -612,7 +614,8 @@ fn hostBridgeQueueTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.
     enqueuePendingHostMessage(webview_id, message);
 }
 
-// Host and internal bridge messages must start with the view's bridge token.
+// Host and internal bridge messages, and a trusted view's event bridge messages
+// (see eventBridgePayload), must start with the view's bridge token.
 // Only the preload on the view's own allowed top-level page knows it (it's in
 // a closure inside the bridge wrappers), so messages posted straight to the
 // native bridges by subframes, pages outside bridgeOrigins or popups sharing
@@ -1860,6 +1863,7 @@ fn buildElectrobunPreload(
         \\    Object.defineProperty(signed, "__electrobunSigned", {{ value: true }});
         \\    return signed;
         \\  }}
+        \\  window.__electrobunEventBridge = sign(window.__electrobunEventBridge);
         \\  window.__electrobunInternalBridge = sign(window.__electrobunInternalBridge);
         \\  window.__electrobunHostBridge = sign(window.__electrobunHostBridge);
         \\  window.__electrobunBunBridge = sign(window.__electrobunBunBridge);
@@ -2865,10 +2869,35 @@ fn isValidEventBridgeMessage(source_webview_id: u32, message: []const u8) bool {
     return true;
 }
 
+fn unsignedEventAllowed(message: []const u8) bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, message, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const payload = parsed.value.object.get("payload") orelse return false;
+    if (payload != .object) return false;
+    const name = jsonString(payload.object.get("eventName") orelse return false) orelse return false;
+    return std.mem.eql(u8, name, "agent-eval-no-bridge");
+}
+
+// A trusted view's events must come from its own top page on a bridge origin,
+// which signs them with the bridge token like host and internal messages.
+// Otherwise a subframe (any frame on Linux, where WebKitGTK doesn't say which
+// frame posted) could report navigations, open windows or post host messages
+// as the view. Sandboxed views have no token and stay unsigned. The agent's
+// "no bridge here" note is the one event pages without the token still send.
+fn eventBridgePayload(state: WebviewState, message: [:0]const u8) ?[:0]const u8 {
+    if (state.sandbox) return message;
+    const token = &state.bridge_token;
+    if (message.len >= token.len and std.mem.eql(u8, message[0..token.len], token)) return message[token.len..];
+    if (unsignedEventAllowed(message)) return message;
+    incrementHostTransportDebug("unauthenticated_bridge_messages");
+    return null;
+}
+
 fn eventBridgeCoreTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.c) void {
     const state = lookupWebviewState(webview_id) orelse return;
     const handler = state.event_bridge_handler orelse return;
-    const message_slice = std.mem.span(message);
+    const message_slice = eventBridgePayload(state, std.mem.span(message)) orelse return;
     if (!isValidEventBridgeMessage(webview_id, message_slice)) return;
     dispatchRuntimePostMessage(handler, webview_id, message_slice);
 }
@@ -3583,6 +3612,7 @@ export fn createWebview(
         .socket_handle = null,
         .transport_ready = false,
         .allow_views = next_webview_allow_views,
+        .sandbox = sandbox,
     }) catch |err| {
         next_webview_allow_views = true;
         webview_registry_mutex.unlock(coreIo());
@@ -4932,6 +4962,21 @@ test "event bridge requires the native sender identity" {
         17,
         "{\"id\":\"webviewEvent\",\"type\":\"message\",\"payload\":{\"id\":17,\"eventName\":42,\"detail\":\"invalid\"}}",
     ));
+}
+
+test "a trusted view's event bridge takes only messages signed by its top page" {
+    var state = testWebviewState(1, null);
+    state.bridge_token = "0123456789abcdef0123456789abcdef".*;
+    const event = "{\"id\":\"webviewEvent\",\"type\":\"message\",\"payload\":{\"id\":1,\"eventName\":\"new-window-open\",\"detail\":\"https://example.com/\"}}";
+    const signed = "0123456789abcdef0123456789abcdef" ++ event;
+    try std.testing.expectEqualStrings(event, eventBridgePayload(state, signed).?);
+    try std.testing.expect(eventBridgePayload(state, event) == null);
+    const wrong = "fedcba9876543210fedcba9876543210" ++ event;
+    try std.testing.expect(eventBridgePayload(state, wrong) == null);
+    const note = "{\"id\":\"webviewEvent\",\"type\":\"message\",\"payload\":{\"id\":1,\"eventName\":\"agent-eval-no-bridge\",\"detail\":\"{}\"}}";
+    try std.testing.expectEqualStrings(note, eventBridgePayload(state, note).?);
+    state.sandbox = true;
+    try std.testing.expectEqualStrings(event, eventBridgePayload(state, event).?);
 }
 
 fn testWebviewState(window_id: u32, host_webview_id: ?u32) WebviewState {
