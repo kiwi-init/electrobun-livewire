@@ -56,3 +56,12 @@ jobs:
       - name: Core tests
         working-directory: package/src/core
         run: ../../vendors/zig/zig build test --summary all
+      # The updater's streaming and patch code: the SDK's unit tests, and the
+      # extractor's Zig tests with their recorded fixtures (compressed HTTP
+      # blocks, a patch whose Zstd FSE tables need the full input).
+      - name: Updater unit tests
+        working-directory: package
+        run: hutch test:updater-unit
+      - name: Extractor tests
+        working-directory: package/src/extractor
+        run: ../../vendors/zig/zig build test --summary all
