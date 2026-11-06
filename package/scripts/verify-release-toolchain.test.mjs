@@ -419,6 +419,14 @@ test("release CI verifies provenance before all six Kitchen builds", () => {
 	const pins = parseHutchPragma(
 		readFileSync(new URL("../hutch.config.ts", import.meta.url), "utf8"),
 	);
+	assert.deepEqual(
+		parseHutchPragma(
+			readFileSync(new URL("../../kitchen/hutch.config.ts", import.meta.url), "utf8"),
+			"kitchen/hutch.config.ts",
+		),
+		pins,
+		"kitchen toolchain pins must match package/hutch.config.ts before tagging; run node package/scripts/sync-release-toolchain-pins.mjs",
+	);
 	const exact = (version) => version.replaceAll(".", "\\.").replaceAll("+", "\\+");
 	assert.match(
 		workflow,

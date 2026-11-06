@@ -142,6 +142,15 @@ function atomicWriteFile(path, source) {
 	}
 }
 
+export function updateProjectToolchainPins(source, pins, label) {
+	assertExactVersion(pins.hutch, "canonical Hutch pin");
+	assertExactVersion(pins.cottontail, "canonical Cottontail pin");
+	parseHutchPragma(source, label);
+	// Replace only the validated first line, preserving the project's body and
+	// its original line endings, including CRLF checkouts on Windows.
+	return source.replace(/^[^\r\n]*/, `// @hutch cli=${pins.hutch} cottontail=${pins.cottontail}`);
+}
+
 export function syncReleaseToolchainPins(repositoryRoot = defaultRepositoryRoot, {
 	resolvePairedVersion = resolvePairedCottontailVersion,
 } = {}) {
@@ -184,6 +193,14 @@ export function syncReleaseToolchainPins(repositoryRoot = defaultRepositoryRoot,
 			source: readFileSync(resolverPath, "utf8"),
 			update: (source) => updateNpmResolverPin(source, pins.hutch),
 		},
+		...["kitchen"].map((project) => {
+			const path = join(root, project, "hutch.config.ts");
+			return {
+				path,
+				source: readFileSync(path, "utf8"),
+				update: (source) => updateProjectToolchainPins(source, pins, `${project}/hutch.config.ts`),
+			};
+		}),
 	].map((entry) => ({ ...entry, updated: entry.update(entry.source) }));
 
 	const changed = updates.filter(({ source, updated }) => source !== updated);

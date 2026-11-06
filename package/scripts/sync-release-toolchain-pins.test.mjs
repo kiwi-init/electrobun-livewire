@@ -16,6 +16,7 @@ import test from "node:test";
 import {
 	syncReleaseToolchainPins as syncPins,
 	updateNpmResolverPin,
+	updateProjectToolchainPins,
 	updateReleaseWorkflowPins,
 } from "./sync-release-toolchain-pins.mjs";
 
@@ -34,6 +35,10 @@ function workflow(pins = oldPins) {
 	return `name: Release\r\n\r\njobs:\r\n  build:\r\n    env:\r\n      EXPECTED_HUTCH_VERSION: '${pins.hutch}'\r\n      EXPECTED_COTTONTAIL_VERSION: '${pins.cottontail}'\r\n      EXPECTED_APP_COTTONTAIL_VERSION: '${pins.appCottontail}'\r\n      EXPECTED_PAIRED_COTTONTAIL_VERSION: '${pins.pairedCottontail}'\r\n`;
 }
 
+function projectConfig(project, pins = oldPins) {
+	return `// @hutch cli=${pins.hutch} cottontail=${pins.cottontail}\nexport default { name: "${project}" };\n`;
+}
+
 function resolver(version = oldPins.hutch) {
 	return `"use strict";\n\nconst PAIRED_HUTCH_VERSION = "${version}";\nconsole.log(PAIRED_HUTCH_VERSION);\n`;
 }
@@ -42,11 +47,13 @@ function createRepositoryFixture(t, options = {}) {
 	const root = mkdtempSync(join(tmpdir(), "electrobun-pin-sync-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const packageDir = join(root, "package");
+	const kitchenDir = join(root, "kitchen");
 	const sharedDir = join(packageDir, "src", "shared");
 	const workflowDir = join(root, ".github", "workflows");
 	const resolverDir = join(root, "npm", "electrobun", "bin");
 	for (const directory of [
 		packageDir,
+		kitchenDir,
 		sharedDir,
 		workflowDir,
 		resolverDir,
@@ -58,6 +65,7 @@ function createRepositoryFixture(t, options = {}) {
 		appVersion: join(sharedDir, "cottontail-version.ts"),
 		workflow: join(workflowDir, "release.yml"),
 		resolver: join(resolverDir, "resolve-hutch.cjs"),
+		kitchen: join(kitchenDir, "hutch.config.ts"),
 	};
 	writeFileSync(
 		paths.config,
@@ -70,6 +78,7 @@ function createRepositoryFixture(t, options = {}) {
 		options.appVersion ?? `export const COTTONTAIL_VERSION = "${newPins.appCottontail}";\n`,
 	);
 	writeFileSync(paths.resolver, options.resolver ?? resolver());
+	writeFileSync(paths.kitchen, options.kitchen ?? projectConfig("kitchen"));
 	chmodSync(paths.workflow, 0o640);
 	chmodSync(paths.resolver, 0o600);
 	return { root, paths };
@@ -86,6 +95,7 @@ test("pin synchronization is atomic per file and reaches a fixed point", (t) => 
 		changed: [
 			".github/workflows/release.yml",
 			"npm/electrobun/bin/resolve-hutch.cjs",
+			"kitchen/hutch.config.ts",
 		],
 	});
 	assert.equal(
@@ -96,6 +106,7 @@ test("pin synchronization is atomic per file and reaches a fixed point", (t) => 
 		readFileSync(fixture.paths.resolver, "utf8"),
 		resolver(newPins.hutch),
 	);
+	assert.equal(readFileSync(fixture.paths.kitchen, "utf8"), projectConfig("kitchen", newPins));
 	assert.equal(statSync(fixture.paths.workflow).mode & 0o777, workflowMode);
 	assert.equal(statSync(fixture.paths.resolver).mode & 0o777, resolverMode);
 	assert.equal(
@@ -131,10 +142,12 @@ test("prerelease and stable pins both synchronize the workflow and resolver", (t
 		changed: [
 			".github/workflows/release.yml",
 			"npm/electrobun/bin/resolve-hutch.cjs",
+			"kitchen/hutch.config.ts",
 		],
 	});
 	assert.equal(readFileSync(fixture.paths.workflow, "utf8"), workflow(prereleasePins));
 	assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver(prereleasePins.hutch));
+	assert.equal(readFileSync(fixture.paths.kitchen, "utf8"), projectConfig("kitchen", prereleasePins));
 	assert.deepEqual(syncReleaseToolchainPins(fixture.root, prereleasePins), {
 		pins: prereleasePins,
 		changed: [],
@@ -148,10 +161,12 @@ test("prerelease and stable pins both synchronize the workflow and resolver", (t
 		changed: [
 			".github/workflows/release.yml",
 			"npm/electrobun/bin/resolve-hutch.cjs",
+			"kitchen/hutch.config.ts",
 		],
 	});
 	assert.equal(readFileSync(fixture.paths.workflow, "utf8"), workflow(stablePins));
 	assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver(stablePins.hutch));
+	assert.equal(readFileSync(fixture.paths.kitchen, "utf8"), projectConfig("kitchen", stablePins));
 	assert.deepEqual(syncReleaseToolchainPins(fixture.root, stablePins), {
 		pins: stablePins,
 		changed: [],
@@ -202,6 +217,26 @@ test("pin synchronization validates every target before mutating any", (t) => {
 	);
 	assert.equal(readFileSync(fixture.paths.workflow, "utf8"), originalWorkflow);
 	assert.equal(readFileSync(fixture.paths.resolver, "utf8"), resolver("latest"));
+});
+
+test("project pin synchronization preserves file contents, modes, and Windows line endings", (t) => {
+	const suffix = '\r\n// Project-specific settings: café\r\nexport default { scripts: { build: "hutch build.ts" } };\r\n';
+	const source = `// @hutch cli=${oldPins.hutch} cottontail=${oldPins.cottontail}${suffix}`;
+	const fixture = createRepositoryFixture(t, { kitchen: source });
+	chmodSync(fixture.paths.kitchen, 0o640);
+	syncReleaseToolchainPins(fixture.root);
+	assert.equal(readFileSync(fixture.paths.kitchen, "utf8"),
+		`// @hutch cli=${newPins.hutch} cottontail=${newPins.cottontail}${suffix}`);
+	assert.equal(statSync(fixture.paths.kitchen).mode & 0o777, 0o640);
+});
+
+test("a malformed project pragma prevents every pin mutation", (t) => {
+	const fixture = createRepositoryFixture(t, { kitchen: projectConfig("kitchen", { ...oldPins, hutch: "latest" }) });
+	const originals = Object.entries(fixture.paths).map(([name, path]) => [name, readFileSync(path, "utf8")]);
+	assert.throws(() => syncReleaseToolchainPins(fixture.root), /Hutch pin must be an exact SemVer/);
+	for (const [name, source] of originals) assert.equal(readFileSync(fixture.paths[name], "utf8"), source);
+	assert.throws(() => updateProjectToolchainPins("export default {};\n", newPins, "kitchen/hutch.config.ts"),
+		/kitchen\/hutch.config.ts must start with an exact/);
 });
 
 test("pin synchronization rejects malformed canonical pragma pins", (t) => {

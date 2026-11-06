@@ -28,6 +28,15 @@ jobs:
       - name: Typecheck
         working-directory: package
         run: hutch typecheck
+      # The release scripts' tests, and the pins on this tree: package, kitchen,
+      # the npm resolver and the release provenance pins agree, so the sync
+      # leaves nothing to change.
+      - name: Release scripts and toolchain pins
+        working-directory: package
+        run: |
+          hutch test:version-bump
+          node scripts/sync-release-toolchain-pins.mjs
+          git diff --exit-code
       # Every symbol each platform's wrapper is bound with must exist in that
       # wrapper: one missing symbol makes bun:ffi reject the whole library (#94).
       - name: Native symbol contract
