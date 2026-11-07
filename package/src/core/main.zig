@@ -116,6 +116,7 @@ const URLOpenHandler = *const fn ([*:0]const u8) callconv(.c) void;
 const AppReopenHandler = *const fn () callconv(.c) void;
 const WebviewSnapshotHandler = *const fn (u32, ?[*:0]u8, ?[*:0]u8) callconv(.c) void;
 const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
+const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const WebviewSecretKey = [Aes256Gcm.key_length]u8;
 const websocket_magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const websocket_payload_limit: usize = 1024 * 1024 * 64;
@@ -184,8 +185,8 @@ const WebviewState = struct {
     event_bridge_handler: ?WebviewPostMessageHandler,
     internal_bridge_handler: ?WebviewPostMessageHandler,
     secret_key: WebviewSecretKey,
-    // Prefixed by the preload to every host/internal bridge message; see
-    // stripBridgeToken.
+    // The key the preload signs every bridge message with; see
+    // parseSignedBridgeMessage.
     bridge_token: BridgeToken,
     socket_handle: ?std.posix.socket_t,
     transport_ready: bool,
@@ -196,6 +197,31 @@ const WebviewState = struct {
 };
 
 const BridgeToken = [32]u8;
+const BridgeNonce = [32]u8;
+
+// The signed slots one page load has used: `top` is its highest seq so far and
+// bit i of `seen` is seq `top - i`. A slot is taken once. Up to 63 below `top`
+// still counts, for bridges delivered a little out of order; older is refused.
+const BridgeReplayWindow = struct {
+    top: u64 = 0,
+    seen: u64 = 0,
+
+    fn take(self: *BridgeReplayWindow, seq: u64) bool {
+        if (seq == 0) return false;
+        if (seq > self.top) {
+            const shift = seq - self.top;
+            self.seen = if (shift >= 64) 1 else (self.seen << @intCast(shift)) | 1;
+            self.top = seq;
+            return true;
+        }
+        const back = self.top - seq;
+        if (back >= 64) return false;
+        const bit = @as(u64, 1) << @intCast(back);
+        if (self.seen & bit != 0) return false;
+        self.seen |= bit;
+        return true;
+    }
+};
 
 const WgpuViewState = struct {
     ptr: WgpuViewPtr,
@@ -363,6 +389,7 @@ const HostTransportDebugState = struct {
     connections: u64 = 0,
     unauthenticated_connections: u64 = 0,
     unauthenticated_bridge_messages: u64 = 0,
+    replayed_bridge_messages: u64 = 0,
     frames_read: u64 = 0,
     frames_dispatched: u64 = 0,
     decrypt_ok: u64 = 0,
@@ -399,6 +426,8 @@ var window_registry = std.AutoHashMap(u32, WindowState).init(allocator);
 var window_registry_mutex: synchronization.Mutex = .init;
 var webview_registry = std.AutoHashMap(u32, WebviewState).init(allocator);
 var webview_registry_mutex: synchronization.Mutex = .init;
+// Each view's used bridge slots, per page load (guarded by webview_registry_mutex).
+var bridge_replay_windows = std.AutoHashMap(u32, std.AutoHashMapUnmanaged(BridgeNonce, BridgeReplayWindow)).init(allocator);
 // setNextWebviewAllowedProtocols' views flag, taken by the next createWebview
 // like the native side's (guarded by webview_registry_mutex).
 var next_webview_allow_views: bool = true;
@@ -615,25 +644,97 @@ fn hostBridgeQueueTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.
 }
 
 // Host and internal bridge messages, and a trusted view's event bridge messages
-// (see eventBridgePayload), must start with the view's bridge token.
-// Only the preload on the view's own allowed top-level page knows it (it's in
-// a closure inside the bridge wrappers), so messages posted straight to the
+// (see eventBridgePayload), must be signed by the preload on the view's own
+// allowed top-level page, the only page that knows the bridge token (it's in a
+// closure inside the bridge wrappers). Each one reads
+// `nonce tag seq ":" message`: nonce is 32 hex chars, random per page load; seq
+// counts that load's messages from 1; tag is the first 16 bytes of
+// HMAC-SHA256(token, nonce ++ seq), in hex. The token itself is never sent, so
+// a captured message can't be bent into a new one, and each (nonce, seq) is
+// taken once, so it can't be replayed either. Messages posted straight to the
 // native bridges by subframes, pages outside bridgeOrigins or popups sharing
-// the content manager are dropped. Returns the message without the token.
-fn stripBridgeToken(webview_id: u32, message: [*:0]const u8) ?[*:0]const u8 {
-    const state = lookupWebviewState(webview_id) orelse return null;
-    const text = std.mem.span(message);
-    if (text.len < state.bridge_token.len or
-        !std.mem.eql(u8, text[0..state.bridge_token.len], &state.bridge_token))
-    {
-        incrementHostTransportDebug("unauthenticated_bridge_messages");
-        return null;
+// the content manager are dropped.
+const SignedBridgeMessage = struct {
+    nonce: BridgeNonce,
+    seq: u64,
+    payload_start: usize,
+};
+
+fn parseSignedBridgeMessage(token: *const BridgeToken, message: []const u8) ?SignedBridgeMessage {
+    const nonce_len = @sizeOf(BridgeNonce);
+    const header = nonce_len + 32;
+    var end: usize = header;
+    var seq: u64 = 0;
+    while (end < message.len and message[end] != ':') : (end += 1) {
+        const digit = message[end];
+        if (digit < '0' or digit > '9' or end - header >= 20) return null;
+        const times_ten = @mulWithOverflow(seq, 10);
+        if (times_ten[1] != 0) return null;
+        const sum = @addWithOverflow(times_ten[0], @as(u64, digit - '0'));
+        if (sum[1] != 0) return null;
+        seq = sum[0];
     }
-    return message + state.bridge_token.len;
+    if (end == header or end >= message.len) return null;
+
+    var mac: [HmacSha256.mac_length]u8 = undefined;
+    var hmac = HmacSha256.init(token);
+    hmac.update(message[0..nonce_len]);
+    hmac.update(message[header..end]);
+    hmac.final(&mac);
+    const expected = std.fmt.bytesToHex(mac[0..16].*, .lower);
+    if (!std.crypto.timing_safe.eql([32]u8, expected, message[nonce_len..header].*)) return null;
+    return .{ .nonce = message[0..nonce_len].*, .seq = seq, .payload_start = end + 1 };
+}
+
+fn takeBridgeSlot(webview_id: u32, nonce: BridgeNonce, seq: u64) bool {
+    webview_registry_mutex.lockUncancelable(coreIo());
+    defer webview_registry_mutex.unlock(coreIo());
+    if (!webview_registry.contains(webview_id)) return false;
+    const loads = bridge_replay_windows.getOrPut(webview_id) catch return false;
+    if (!loads.found_existing) loads.value_ptr.* = .empty;
+    const window = loads.value_ptr.getOrPut(allocator, nonce) catch return false;
+    if (!window.found_existing) window.value_ptr.* = .{};
+    return window.value_ptr.take(seq);
+}
+
+// Caller holds webview_registry_mutex.
+fn forgetBridgeSlotsLocked(webview_id: u32) void {
+    if (bridge_replay_windows.fetchRemove(webview_id)) |removed| {
+        var loads = removed.value;
+        loads.deinit(allocator);
+    }
+}
+
+const BridgeSignature = union(enum) {
+    accepted: [:0]const u8,
+    replayed,
+    unsigned,
+};
+
+fn checkBridgeSignature(webview_id: u32, token: *const BridgeToken, message: [:0]const u8) BridgeSignature {
+    const signed = parseSignedBridgeMessage(token, message) orelse return .unsigned;
+    if (!takeBridgeSlot(webview_id, signed.nonce, signed.seq)) {
+        incrementHostTransportDebug("replayed_bridge_messages");
+        return .replayed;
+    }
+    return .{ .accepted = message[signed.payload_start..] };
+}
+
+// Returns the message without its signature.
+fn stripBridgeSignature(webview_id: u32, message: [*:0]const u8) ?[*:0]const u8 {
+    const state = lookupWebviewState(webview_id) orelse return null;
+    switch (checkBridgeSignature(webview_id, &state.bridge_token, std.mem.span(message))) {
+        .accepted => |payload| return payload.ptr,
+        .replayed => return null,
+        .unsigned => {
+            incrementHostTransportDebug("unauthenticated_bridge_messages");
+            return null;
+        },
+    }
 }
 
 fn hostBridgeCoreTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.c) void {
-    const payload = stripBridgeToken(webview_id, message) orelse return;
+    const payload = stripBridgeSignature(webview_id, message) orelse return;
     hostBridgeQueueTrampoline(webview_id, payload);
 }
 
@@ -854,6 +955,7 @@ export fn getHostTransportDebugJSON() ?[*:0]u8 {
         .connections = debug.connections,
         .unauthenticatedConnections = debug.unauthenticated_connections,
         .unauthenticatedBridgeMessages = debug.unauthenticated_bridge_messages,
+        .replayedBridgeMessages = debug.replayed_bridge_messages,
         .framesRead = debug.frames_read,
         .framesDispatched = debug.frames_dispatched,
         .decryptOk = debug.decrypt_ok,
@@ -1797,6 +1899,74 @@ fn httpOriginOf(url: []const u8) ?[]const u8 {
     return url[0..authority_end];
 }
 
+// The preload's bridge wrappers, called with the view's bridge token: they sign
+// every message as parseSignedBridgeMessage reads it.
+const bridge_signer_script =
+    \\function (key) {
+    \\  var K = [
+    \\    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    \\    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    \\    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    \\    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    \\    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    \\    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    \\    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    \\    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    \\  ];
+    \\  var W = new Int32Array(64);
+    \\  function compress(h, m) {
+    \\    var i, a, b;
+    \\    for (i = 0; i < 16; i++) W[i] = m[i];
+    \\    for (i = 16; i < 64; i++) {
+    \\      a = W[i - 15];
+    \\      b = W[i - 2];
+    \\      W[i] = (((a >>> 7) | (a << 25)) ^ ((a >>> 18) | (a << 14)) ^ (a >>> 3)) + (((b >>> 17) | (b << 15)) ^ ((b >>> 19) | (b << 13)) ^ (b >>> 10)) + W[i - 7] + W[i - 16];
+    \\    }
+    \\    var A = h[0], B = h[1], C = h[2], D = h[3], E = h[4], F = h[5], G = h[6], H = h[7];
+    \\    for (i = 0; i < 64; i++) {
+    \\      a = (H + (((E >>> 6) | (E << 26)) ^ ((E >>> 11) | (E << 21)) ^ ((E >>> 25) | (E << 7))) + ((E & F) ^ (~E & G)) + K[i] + W[i]) | 0;
+    \\      b = ((((A >>> 2) | (A << 30)) ^ ((A >>> 13) | (A << 19)) ^ ((A >>> 22) | (A << 10))) + ((A & B) ^ (A & C) ^ (B & C))) | 0;
+    \\      H = G; G = F; F = E; E = (D + a) | 0; D = C; C = B; B = A; A = (a + b) | 0;
+    \\    }
+    \\    return [(h[0] + A) | 0, (h[1] + B) | 0, (h[2] + C) | 0, (h[3] + D) | 0, (h[4] + E) | 0, (h[5] + F) | 0, (h[6] + G) | 0, (h[7] + H) | 0];
+    \\  }
+    \\  function block(text, pad, before) {
+    \\    var m = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], i;
+    \\    for (i = 0; i < text.length; i++) m[i >> 2] |= ((text.charCodeAt(i) ^ pad) & 255) << (24 - 8 * (i & 3));
+    \\    if (pad) {
+    \\      for (; i < 64; i++) m[i >> 2] |= pad << (24 - 8 * (i & 3));
+    \\      return m;
+    \\    }
+    \\    m[i >> 2] |= 0x80 << (24 - 8 * (i & 3));
+    \\    m[15] = (before + text.length) * 8;
+    \\    return m;
+    \\  }
+    \\  var IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    \\  var inner = compress(IV, block(key, 0x36)), outer = compress(IV, block(key, 0x5c));
+    \\  function tag(text) {
+    \\    var digest = compress(outer, compress(inner, block(text, 0, 64)).concat([0x80000000, 0, 0, 0, 0, 0, 0, 768])), hex = "", i;
+    \\    for (i = 0; i < 4; i++) hex += ("0000000" + (digest[i] >>> 0).toString(16)).slice(-8);
+    \\    return hex;
+    \\  }
+    \\  var random = new Uint8Array(16), nonce = "", seq = 0, i;
+    \\  crypto.getRandomValues(random);
+    \\  for (i = 0; i < 16; i++) nonce += (256 + random[i]).toString(16).slice(1);
+    \\  function sign(bridge) {
+    \\    if (!bridge || bridge.__electrobunSigned) return bridge;
+    \\    var signed = { postMessage: function (message) {
+    \\      seq++;
+    \\      bridge.postMessage(nonce + tag(nonce + seq) + seq + ":" + message);
+    \\    } };
+    \\    Object.defineProperty(signed, "__electrobunSigned", { value: true });
+    \\    return signed;
+    \\  }
+    \\  window.__electrobunEventBridge = sign(window.__electrobunEventBridge);
+    \\  window.__electrobunInternalBridge = sign(window.__electrobunInternalBridge);
+    \\  window.__electrobunHostBridge = sign(window.__electrobunHostBridge);
+    \\  window.__electrobunBunBridge = sign(window.__electrobunBunBridge);
+    \\}
+;
+
 fn buildElectrobunPreload(
     webview_id: u32,
     window_id: u32,
@@ -1856,18 +2026,7 @@ fn buildElectrobunPreload(
         \\window.__electrobunInternalBridge = window.__electrobunInternalBridge || window.webkit?.messageHandlers?.internalBridge || window.internalBridge || window.chrome?.webview?.hostObjects?.internalBridge;
         \\window.__electrobunHostBridge = window.__electrobunHostBridge || window.__electrobunBunBridge || window.webkit?.messageHandlers?.hostBridge || window.webkit?.messageHandlers?.bunBridge || window.hostBridge || window.bunBridge || window.chrome?.webview?.hostObjects?.hostBridge || window.chrome?.webview?.hostObjects?.bunBridge;
         \\window.__electrobunBunBridge = window.__electrobunBunBridge || window.webkit?.messageHandlers?.bunBridge || window.bunBridge || window.chrome?.webview?.hostObjects?.bunBridge;
-        \\(function (token) {{
-        \\  function sign(bridge) {{
-        \\    if (!bridge || bridge.__electrobunSigned) return bridge;
-        \\    var signed = {{ postMessage: function (message) {{ bridge.postMessage(token + message); }} }};
-        \\    Object.defineProperty(signed, "__electrobunSigned", {{ value: true }});
-        \\    return signed;
-        \\  }}
-        \\  window.__electrobunEventBridge = sign(window.__electrobunEventBridge);
-        \\  window.__electrobunInternalBridge = sign(window.__electrobunInternalBridge);
-        \\  window.__electrobunHostBridge = sign(window.__electrobunHostBridge);
-        \\  window.__electrobunBunBridge = sign(window.__electrobunBunBridge);
-        \\}})("{s}");
+        \\({s})("{s}");
         \\{s}
         \\}} else {{
         \\{s}
@@ -1881,6 +2040,7 @@ fn buildElectrobunPreload(
             webview_runtime_state.rpc_port,
             webview_runtime_state.rpc_port,
             std.mem.span(secret_key),
+            bridge_signer_script,
             bridge_token,
             preload_script,
             sandboxed_preload_script,
@@ -2838,7 +2998,7 @@ fn processInternalBridgeBatch(source_webview_id: u32, message_json: []const u8) 
 }
 
 fn internalBridgeCoreTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.c) void {
-    const payload = stripBridgeToken(webview_id, message) orelse return;
+    const payload = stripBridgeSignature(webview_id, message) orelse return;
     const state = lookupWebviewState(webview_id) orelse return;
     const message_slice = std.mem.span(payload);
     if (state.internal_bridge_handler) |handler| {
@@ -2880,15 +3040,19 @@ fn unsignedEventAllowed(message: []const u8) bool {
 }
 
 // A trusted view's events must come from its own top page on a bridge origin,
-// which signs them with the bridge token like host and internal messages.
-// Otherwise a subframe (any frame on Linux, where WebKitGTK doesn't say which
-// frame posted) could report navigations, open windows or post host messages
-// as the view. Sandboxed views have no token and stay unsigned. The agent's
-// "no bridge here" note is the one event pages without the token still send.
-fn eventBridgePayload(state: WebviewState, message: [:0]const u8) ?[:0]const u8 {
+// which signs them like host and internal messages (see
+// parseSignedBridgeMessage). Otherwise a subframe (any frame on Linux, where
+// WebKitGTK doesn't say which frame posted) could report navigations, open
+// windows or post host messages as the view. Sandboxed views have no token and
+// stay unsigned. The agent's "no bridge here" note is the one event pages
+// without the token still send.
+fn eventBridgePayload(webview_id: u32, state: WebviewState, message: [:0]const u8) ?[:0]const u8 {
     if (state.sandbox) return message;
-    const token = &state.bridge_token;
-    if (message.len >= token.len and std.mem.eql(u8, message[0..token.len], token)) return message[token.len..];
+    switch (checkBridgeSignature(webview_id, &state.bridge_token, message)) {
+        .accepted => |payload| return payload,
+        .replayed => return null,
+        .unsigned => {},
+    }
     if (unsignedEventAllowed(message)) return message;
     incrementHostTransportDebug("unauthenticated_bridge_messages");
     return null;
@@ -2897,7 +3061,7 @@ fn eventBridgePayload(state: WebviewState, message: [:0]const u8) ?[:0]const u8 
 fn eventBridgeCoreTrampoline(webview_id: u32, message: [*:0]const u8) callconv(.c) void {
     const state = lookupWebviewState(webview_id) orelse return;
     const handler = state.event_bridge_handler orelse return;
-    const message_slice = eventBridgePayload(state, std.mem.span(message)) orelse return;
+    const message_slice = eventBridgePayload(webview_id, state, std.mem.span(message)) orelse return;
     if (!isValidEventBridgeMessage(webview_id, message_slice)) return;
     dispatchRuntimePostMessage(handler, webview_id, message_slice);
 }
@@ -3896,6 +4060,7 @@ export fn webviewRemove(webview_id: u32) void {
 
     webview_registry_mutex.lockUncancelable(coreIo());
     const removed = webview_registry.fetchRemove(webview_id);
+    forgetBridgeSlotsLocked(webview_id);
     webview_registry_mutex.unlock(coreIo());
 
     const webview = if (removed) |entry| entry.value.ptr else null;
@@ -4965,18 +5130,68 @@ test "event bridge requires the native sender identity" {
 }
 
 test "a trusted view's event bridge takes only messages signed by its top page" {
+    const webview_id: u32 = 9301;
     var state = testWebviewState(1, null);
     state.bridge_token = "0123456789abcdef0123456789abcdef".*;
+    try webview_registry.put(webview_id, state);
+    defer {
+        _ = webview_registry.remove(webview_id);
+        forgetBridgeSlotsLocked(webview_id);
+    }
     const event = "{\"id\":\"webviewEvent\",\"type\":\"message\",\"payload\":{\"id\":1,\"eventName\":\"new-window-open\",\"detail\":\"https://example.com/\"}}";
-    const signed = "0123456789abcdef0123456789abcdef" ++ event;
-    try std.testing.expectEqualStrings(event, eventBridgePayload(state, signed).?);
-    try std.testing.expect(eventBridgePayload(state, event) == null);
-    const wrong = "fedcba9876543210fedcba9876543210" ++ event;
-    try std.testing.expect(eventBridgePayload(state, wrong) == null);
+    const load = "00112233445566778899aabbccddeeff";
+    const signed = load ++ "eda18b025c6ce8ec12b12a233e60bca2" ++ "1:" ++ event;
+    try std.testing.expectEqualStrings(event, eventBridgePayload(webview_id, state, signed).?);
+    try std.testing.expect(eventBridgePayload(webview_id, state, signed) == null);
+    try std.testing.expect(eventBridgePayload(webview_id, state, load ++ "eda18b025c6ce8ec12b12a233e60bca2" ++ "2:" ++ event) == null);
+    try std.testing.expect(eventBridgePayload(webview_id, state, load ++ "38eb38b12c434fa1e39c649fc84a8195" ++ "2:" ++ event) != null);
+    try std.testing.expect(eventBridgePayload(webview_id, state, "0123456789abcdef0123456789abcdef" ++ event) == null);
+    try std.testing.expect(eventBridgePayload(webview_id, state, event) == null);
+    try std.testing.expect(eventBridgePayload(webview_id, state, load ++ "48bce85a69791459fe48781f6ab3cf4a" ++ "3" ++ event) == null);
+
+    const next_load = "ffeeddccbbaa99887766554433221100";
+    try std.testing.expect(eventBridgePayload(webview_id, state, next_load ++ "b1474e4bff6160ae6f2e7ef4d7800363" ++ "1:" ++ event) != null);
+    try std.testing.expect(eventBridgePayload(webview_id, state, load ++ "48bce85a69791459fe48781f6ab3cf4a" ++ "3:" ++ event) != null);
+
+    var other_token = state;
+    other_token.bridge_token = "fedcba9876543210fedcba9876543210".*;
+    try std.testing.expect(eventBridgePayload(webview_id, other_token, load ++ "efc97bf3c8e6408fbb7cb8689222ee4e" ++ "70:" ++ event) == null);
+    try std.testing.expect(eventBridgePayload(webview_id + 1, state, load ++ "efc97bf3c8e6408fbb7cb8689222ee4e" ++ "70:" ++ event) == null);
+
     const note = "{\"id\":\"webviewEvent\",\"type\":\"message\",\"payload\":{\"id\":1,\"eventName\":\"agent-eval-no-bridge\",\"detail\":\"{}\"}}";
-    try std.testing.expectEqualStrings(note, eventBridgePayload(state, note).?);
+    try std.testing.expectEqualStrings(note, eventBridgePayload(webview_id, state, note).?);
     state.sandbox = true;
-    try std.testing.expectEqualStrings(event, eventBridgePayload(state, event).?);
+    try std.testing.expectEqualStrings(event, eventBridgePayload(webview_id, state, event).?);
+}
+
+test "a page load's bridge slots are taken once, a little out of order at most" {
+    var window: BridgeReplayWindow = .{};
+    try std.testing.expect(!window.take(0));
+    try std.testing.expect(window.take(1));
+    try std.testing.expect(!window.take(1));
+    try std.testing.expect(window.take(3));
+    try std.testing.expect(window.take(2));
+    try std.testing.expect(!window.take(2));
+    try std.testing.expect(window.take(70));
+    try std.testing.expect(!window.take(6));
+    try std.testing.expect(window.take(7));
+    try std.testing.expect(!window.take(7));
+    try std.testing.expect(!window.take(70));
+    try std.testing.expect(window.take(1000));
+    try std.testing.expect(!window.take(70));
+    try std.testing.expect(window.take(999));
+}
+
+test "the preload's signer and native agree on the signature" {
+    try std.testing.expect(std.mem.indexOf(u8, bridge_signer_script, "nonce + tag(nonce + seq) + seq + \":\" + message") != null);
+    var token: BridgeToken = "0123456789abcdef0123456789abcdef".*;
+    const parsed = parseSignedBridgeMessage(&token, "ffeeddccbbaa99887766554433221100b1474e4bff6160ae6f2e7ef4d78003631:{}").?;
+    try std.testing.expectEqualStrings("ffeeddccbbaa99887766554433221100", &parsed.nonce);
+    try std.testing.expectEqual(@as(u64, 1), parsed.seq);
+    try std.testing.expectEqual(@as(usize, 66), parsed.payload_start);
+    try std.testing.expect(parseSignedBridgeMessage(&token, "ffeeddccbbaa99887766554433221100b1474e4bff6160ae6f2e7ef4d780036399999999999999999999999:{}") == null);
+    try std.testing.expect(parseSignedBridgeMessage(&token, "ffeeddccbbaa99887766554433221100b1474e4bff6160ae6f2e7ef4d7800363:{}") == null);
+    try std.testing.expect(parseSignedBridgeMessage(&token, "short") == null);
 }
 
 fn testWebviewState(window_id: u32, host_webview_id: ?u32) WebviewState {

@@ -16,6 +16,7 @@ addEventListener("message", (e) => {
     }
   };
   const event = (eventName, detail) => JSON.stringify({ id: "webviewEvent", type: "message", payload: { id, eventName, detail } });
+  const head = replay && /^([0-9a-f]{64})(\\d+):/.exec(replay);
   parent.postMessage({
     forged: {
       bridge: !!bridge,
@@ -23,6 +24,8 @@ addEventListener("message", (e) => {
       domReady: post(event("dom-ready", "https://example.com/forged")),
       hostMessage: post(event("host-message", JSON.stringify({ from: "forged" }))),
       replay: replay ? post(replay) : null,
+      bumped: head ? post(head[1] + (Number(head[2]) + 1000) + replay.slice(head[0].length - 1)) : null,
+      asToken: replay ? post(replay.slice(0, 32) + event("host-message", JSON.stringify({ from: "forged" }))) : null,
     },
   }, "*");
 });
@@ -34,8 +37,8 @@ export const eventBridgeTests = [
     name: "a sandboxed subframe's forged events never reach the host",
     category: "Event bridge",
     description:
-      "A trusted view's sandboxed subframe posts unsigned new-window-open, dom-ready and host-message events and replays one its top page signed; none arrive, and the top page's own events still do",
-    timeout: 30000,
+      "A trusted view's sandboxed subframe posts unsigned new-window-open, dom-ready and host-message events, replays one its top page signed, bumps its counter and uses its head as a token; none arrive, the same from a reloaded top page doesn't either, and the top page's own events still do",
+    timeout: 40000,
     requires: { platform: ["darwin", "linux"], renderer: "native" },
     async run({ createWindow, log }) {
       const rpc = createTestHarnessRPC(5000);
@@ -84,6 +87,8 @@ export const eventBridgeTests = [
       expect(forged?.domReady).toBe(true);
       expect(forged?.hostMessage).toBe(true);
       expect(forged?.replay).toBe(true);
+      expect(forged?.bumped).toBe(true);
+      expect(forged?.asToken).toBe(true);
 
       await sleep(1000);
       await evaluate(`window.__electrobunSendToHost({ from: "top, after" }); return true;`);
@@ -94,6 +99,27 @@ export const eventBridgeTests = [
       expect(got.host.filter((m) => m?.from === "forged")).toHaveLength(0);
       expect(got.host.filter((m) => m?.from === "top")).toHaveLength(1);
       expect(got.host.filter((m) => m?.from === "top, after")).toHaveLength(1);
+
+      win.webview.loadURL("views://test-harness/index.html");
+      await sleep(1500);
+      const again = await evaluate(`
+        const raw = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.eventBridge;
+        const captured = ${JSON.stringify(signed.captured)};
+        const head = /^([0-9a-f]{64})(\\d+):/.exec(captured);
+        const forged = JSON.stringify({ id: "webviewEvent", type: "message", payload: { id: window.__electrobunWebviewId, eventName: "host-message", detail: JSON.stringify({ from: "forged" }) } });
+        raw.postMessage(captured);
+        raw.postMessage(head[1] + (Number(head[2]) + 2000) + captured.slice(head[0].length - 1));
+        raw.postMessage(captured.slice(0, 32) + forged);
+        window.__electrobunSendToHost({ from: "reloaded" });
+        return true;
+      `);
+      expect(again).toBe(true);
+      await sleep(1000);
+      log(`after a reload, host saw: dom-ready ${JSON.stringify(got.domReady)}, host-message ${JSON.stringify(got.host)}`);
+      expect(got.domReady.length).toBeGreaterThanOrEqual(1);
+      expect(got.host.filter((m) => m?.from === "forged")).toHaveLength(0);
+      expect(got.host.filter((m) => m?.from === "top")).toHaveLength(1);
+      expect(got.host.filter((m) => m?.from === "reloaded")).toHaveLength(1);
     },
   }),
 ];
