@@ -144,7 +144,7 @@ public:
                 // Window is transparent, make webview transparent too
                 GdkRGBA transparent_color = {0.0, 0.0, 0.0, 0.0};
                 webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(webview), &transparent_color);
-                printf("GTK WebKit: Applied transparent background to webview\n");
+                EB_DEBUG("GTK WebKit: Applied transparent background to webview\n");
             }
         }
         

@@ -376,7 +376,7 @@ void runCEFEventLoop() {
     // initializeCEF initializes GTK on this thread after disabling locale, and
     // Xlib thread support was already installed by the library constructor.
     ensureXlibThreadSupport();
-    printf("=== ELECTROBUN NATIVE WRAPPER VERSION 1.0.2 === CEF EVENT LOOP STARTED ===\n");
+    EB_DEBUG("=== ELECTROBUN NATIVE WRAPPER VERSION 1.0.2 === CEF EVENT LOOP STARTED ===\n");
     fflush(stdout);
 
     // Chromium's Linux message pump installs a GLib source that only blocks
@@ -407,7 +407,7 @@ void runCEFEventLoop() {
 void runGTKEventLoop() {
     // Initialize GTK on the main thread (this MUST be done here)
     initializeGTK();
-    printf("=== ELECTROBUN NATIVE WRAPPER VERSION 1.0.2 === GTK EVENT LOOP STARTED ===\n");
+    EB_DEBUG("=== ELECTROBUN NATIVE WRAPPER VERSION 1.0.2 === GTK EVENT LOOP STARTED ===\n");
 
     toolkit::runMainLoop();
     g_shutdownComplete.store(true);

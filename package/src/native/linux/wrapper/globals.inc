@@ -1,6 +1,36 @@
 // Ensure the exported functions have appropriate visibility
 #define ELECTROBUN_EXPORT __attribute__((visibility("default")))
 
+// Start-up and lifecycle chatter prints only with ELECTROBUN_DEBUG set (T7213),
+// so an app started from a terminal stays quiet.
+static bool ebDebug() {
+    static const bool enabled = g_getenv("ELECTROBUN_DEBUG") != nullptr;
+    return enabled;
+}
+
+#define EB_DEBUG(...) \
+    do { \
+        if (ebDebug()) printf(__VA_ARGS__); \
+    } while (0)
+
+// libenchant warns once for every spell-check backend the distro doesn't ship
+// (aspell, hspell, nuspell, voikko on Arch) even when Hunspell loads fine.
+// Drop only those "Error loading plugin" warnings; everything else from the
+// domain goes to GLib's default handler (T7213).
+static void quietEnchantPlugins(const gchar* domain, GLogLevelFlags level, const gchar* message, gpointer data) {
+    if (message && strstr(message, "Error loading plugin") != nullptr) return;
+    g_log_default_handler(domain, level, message, data);
+}
+
+static void installEnchantLogFilter() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+        g_log_set_handler("libenchant",
+                          static_cast<GLogLevelFlags>(G_LOG_LEVEL_MASK | G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION),
+                          quietEnchantPlugins, nullptr);
+    });
+}
+
 static std::once_flag g_xlibThreadsOnce;
 static std::atomic<bool> g_xlibThreadsInitialized{false};
 

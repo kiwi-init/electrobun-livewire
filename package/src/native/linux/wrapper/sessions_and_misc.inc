@@ -612,7 +612,7 @@ ELECTROBUN_EXPORT bool isDockIconVisible() {
 
 // Graceful shutdown function to coordinate cleanup
 ELECTROBUN_EXPORT void shutdownNativeWrapper() {
-    printf("Starting graceful shutdown of native wrapper...\n");
+    EB_DEBUG("Starting graceful shutdown of native wrapper...\n");
 
     // Use the same coordinated path as Utils.quit. Calling CefShutdown here
     // while browser close callbacks are pending can tear down profile services

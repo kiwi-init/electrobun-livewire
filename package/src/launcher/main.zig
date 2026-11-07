@@ -404,8 +404,12 @@ pub fn main(init: std.process.Init) !void {
     const exe_path = try std.process.executablePathAlloc(io, arena_alloc);
     const exe_dir = std.fs.path.dirname(exe_path) orelse return error.InvalidExePath;
 
-    std.debug.print("Launcher starting on {s}...\n", .{@tagName(builtin.os.tag)});
-    std.debug.print("Current directory: {s}\n", .{exe_dir});
+    // Start-up chatter only with ELECTROBUN_DEBUG set (T7213).
+    const debug = init.environ_map.get("ELECTROBUN_DEBUG") != null;
+    if (debug) {
+        std.debug.print("Launcher starting on {s}...\n", .{@tagName(builtin.os.tag)});
+        std.debug.print("Current directory: {s}\n", .{exe_dir});
+    }
 
     // Set up signal handlers (not on Windows)
     if (builtin.os.tag != .windows) {
@@ -533,7 +537,7 @@ pub fn main(init: std.process.Init) !void {
 
             const ld_preload = try std.mem.join(arena_alloc, ":", preload_libs.items);
             try env_map.put("LD_PRELOAD", ld_preload);
-            std.debug.print("Setting LD_PRELOAD: {s}\n", .{ld_preload});
+            if (debug) std.debug.print("Setting LD_PRELOAD: {s}\n", .{ld_preload});
         }
 
         // Set ICU_DATA for external ICU data file (Linux)
@@ -554,7 +558,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Spawning: {s} {s}\n", .{ argv[0], if (argv.len > 1) argv[1] else "" });
+    if (debug) std.debug.print("Spawning: {s} {s}\n", .{ argv[0], if (argv.len > 1) argv[1] else "" });
 
     // Check if console mode is forced via environment variable
     const force_console = if (env_map.get("ELECTROBUN_CONSOLE")) |val|
@@ -643,7 +647,7 @@ pub fn main(init: std.process.Init) !void {
         _ = win.CloseHandle(pi.hThread);
 
         if (wait_result != 0 or !has_exit_code) return error.ChildWaitFailed;
-        std.debug.print("Child process exited with code: {d}\n", .{exit_code});
+        if (debug or exit_code != 0) std.debug.print("Child process exited with code: {d}\n", .{exit_code});
         if (exit_code != 0) {
             windows_process_identity.exit(exit_code);
         }
@@ -671,7 +675,7 @@ pub fn main(init: std.process.Init) !void {
             windows_process_identity.logSpawn(child_pid)
         else
             null;
-        if (builtin.os.tag != .windows) std.debug.print("Child process spawned with PID {d}\n", .{child_pid});
+        if (debug and builtin.os.tag != .windows) std.debug.print("Child process spawned with PID {d}\n", .{child_pid});
 
         // Zig's Windows Child.wait returns only u8 and closes its HANDLE. Retain
         // the exact child object so crash statuses cannot become misleading 9
@@ -700,7 +704,7 @@ pub fn main(init: std.process.Init) !void {
                 return err;
             };
             windows_process_identity.logExit(identity, code);
-            std.debug.print("Child process exited with code: {d}\n", .{code});
+            if (debug or code != 0) std.debug.print("Child process exited with code: {d}\n", .{code});
             // ExitProcess does not run Zig defers; close our duplicate first.
             windows_process_identity.close(retained_handle.?);
             windows_process_identity.exit(code);

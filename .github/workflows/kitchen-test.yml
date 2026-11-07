@@ -113,8 +113,21 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: '1'
           WEBKIT_DISABLE_DMABUF_RENDERER: '1'
         run: |
+          set -o pipefail
           export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
-          dbus-run-session -- xvfb-run -a -s '-screen 0 1920x1080x24' bash -e -c 'openbox > /dev/null 2>&1 & hutch electrobun dev'
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1920x1080x24' bash -e -c 'openbox > /dev/null 2>&1 & hutch electrobun dev' 2>&1 | tee "$RUNNER_TEMP/kitchen-x11.log"
+      - name: A plain start prints no start-up chatter (Linux, T7213)
+        if: always() && runner.os == 'Linux' && inputs.display == 'x11'
+        run: |
+          log="$RUNNER_TEMP/kitchen-x11.log"
+          if [ ! -s "$log" ]; then echo "::error::the Kitchen run left no output to check"; exit 1; fi
+          if [ -n "${ELECTROBUN_DEBUG:-}" ]; then echo "ELECTROBUN_DEBUG is set for this run, so the chatter is expected"; exit 0; fi
+          pattern='Launcher starting on|^Current directory:|^Spawning: |Setting LD_PRELOAD|Child process spawned with PID|Child process exited with code: 0|\[LAUNCHER\] (Loaded identifier|Loading app code|Read [0-9]+ bytes|Wrote app entrypoint|Deleted temp file)|ELECTROBUN NATIVE WRAPPER|setJSUtils called|^GlobalShortcut: |GlobalShortcut (registered|unregistered)|Application menus are not supported|GTK WebKit: Applied|graceful shutdown of native wrapper|Error loading plugin'
+          if grep -nE "$pattern" "$log"; then
+            echo "::error::a start without ELECTROBUN_DEBUG printed the lines above (T7213)"
+            exit 1
+          fi
+          echo "none of the start-up lines printed ($(wc -l < "$log") lines checked)"
       - name: Run the test (Linux, headless Wayland)
         if: runner.os == 'Linux' && inputs.display == 'wayland'
         working-directory: kitchen
