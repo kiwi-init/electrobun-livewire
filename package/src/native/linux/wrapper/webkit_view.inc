@@ -843,17 +843,17 @@ public:
             PermissionStatus cachedStatus = getPermissionFromCache(origin, PermissionType::USER_MEDIA);
             
             if (cachedStatus == PermissionStatus::ALLOWED) {
-                printf("Using cached permission: User previously allowed camera/microphone access for %s\n", origin.c_str());
+                EB_DEBUG("Using cached permission: User previously allowed camera/microphone access for %s\n", origin.c_str());
                 webkit_permission_request_allow(request);
                 return TRUE;
             } else if (cachedStatus == PermissionStatus::DENIED) {
-                printf("Using cached permission: User previously blocked camera/microphone access for %s\n", origin.c_str());
+                EB_DEBUG("Using cached permission: User previously blocked camera/microphone access for %s\n", origin.c_str());
                 webkit_permission_request_deny(request);
                 return TRUE;
             }
             
             // No cached permission, show dialog
-            printf("No cached permission found for %s, showing dialog\n", origin.c_str());
+            EB_DEBUG("No cached permission found for %s, showing dialog\n", origin.c_str());
             
             // Create camera/microphone permission dialog
             std::string message = "This page wants to access your camera and/or microphone.\n\nDo you want to allow this?";
@@ -890,11 +890,11 @@ public:
             if (response == GTK_RESPONSE_YES) {
                 webkit_permission_request_allow(request);
                 cachePermission(origin, PermissionType::USER_MEDIA, PermissionStatus::ALLOWED);
-                printf("User allowed camera/microphone access for %s (cached)\n", origin.c_str());
+                EB_DEBUG("User allowed camera/microphone access for %s (cached)\n", origin.c_str());
             } else {
                 webkit_permission_request_deny(request);
                 cachePermission(origin, PermissionType::USER_MEDIA, PermissionStatus::DENIED);
-                printf("User blocked camera/microphone access for %s (cached)\n", origin.c_str());
+                EB_DEBUG("User blocked camera/microphone access for %s (cached)\n", origin.c_str());
             }
             
             return TRUE;
@@ -932,10 +932,10 @@ public:
         
         if (response == GTK_RESPONSE_YES) {
             webkit_permission_request_allow(request);
-            printf("User allowed permission request\n");
+            EB_DEBUG("User allowed permission request\n");
         } else {
             webkit_permission_request_deny(request);
-            printf("User blocked permission request\n");
+            EB_DEBUG("User blocked permission request\n");
         }
         
         return TRUE;

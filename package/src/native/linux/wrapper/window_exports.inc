@@ -111,7 +111,7 @@ ELECTROBUN_EXPORT void* createGTKWindow(uint32_t windowId, double x, double y, d
                     return FALSE;  // Continue with default drawing
                 }), nullptr);
                 
-                printf("GTK: Created transparent window\n");
+                EB_DEBUG("GTK: Created transparent window\n");
             } else {
                 printf("GTK WARNING: Transparency not supported (no RGBA visual or compositor)\n");
             }

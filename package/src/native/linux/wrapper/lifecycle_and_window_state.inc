@@ -25,7 +25,7 @@ ELECTROBUN_EXPORT void stopEventLoop() {
         return;
     }
     g_shuttingDown.store(true);
-    printf("[stopEventLoop] Initiating clean event loop exit\n");
+    EB_DEBUG("[stopEventLoop] Initiating clean event loop exit\n");
 
     runOnMainThreadAsyncVoid([]() {
         wayland_screen_capture::shutdown();

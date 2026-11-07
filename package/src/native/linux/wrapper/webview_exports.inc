@@ -439,7 +439,7 @@ static gboolean onWindowDragButtonRelease(GtkWidget* widget, GdkEventButton* eve
     }
     
     if (event->button == 1) { // Left mouse button
-        printf("Button release detected, stopping window move\n");
+        EB_DEBUG("Button release detected, stopping window move\n");
         fflush(stdout);
         stopWindowMove();
     }
@@ -507,7 +507,7 @@ ELECTROBUN_EXPORT void startWindowMove(void *window) {
       gtk_window_begin_move_drag(GTK_WINDOW(gtkWindow), GDK_BUTTON_PRIMARY,
                                  rootX, rootY, gtk_get_current_event_time());
 
-      printf("Window drag started\n");
+      EB_DEBUG("Window drag started\n");
       fflush(stdout);
     }
   });
@@ -516,7 +516,7 @@ ELECTROBUN_EXPORT void startWindowMove(void *window) {
 ELECTROBUN_EXPORT void stopWindowMove() {
   // gtk_window_begin_move_drag is handled entirely by the WM/compositor —
   // there's nothing to clean up on our side.
-  printf("stopWindowMove called\n");
+  EB_DEBUG("stopWindowMove called\n");
   fflush(stdout);
 }
 
