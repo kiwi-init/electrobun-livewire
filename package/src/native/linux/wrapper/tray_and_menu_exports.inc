@@ -243,10 +243,10 @@ extern "C" void setWebviewHTMLContent(uint32_t webviewId, const char* htmlConten
     std::lock_guard<std::mutex> lock(webviewHTMLMutex);
     if (htmlContent) {
         webviewHTMLContent[webviewId] = std::string(htmlContent);
-        printf("setWebviewHTMLContent: Set HTML for webview %u\n", webviewId);
+        EB_DEBUG("setWebviewHTMLContent: Set HTML for webview %u\n", webviewId);
     } else {
         webviewHTMLContent.erase(webviewId);
-        printf("setWebviewHTMLContent: Cleared HTML for webview %u\n", webviewId);
+        EB_DEBUG("setWebviewHTMLContent: Cleared HTML for webview %u\n", webviewId);
     }
     fflush(stdout);
 }
@@ -256,7 +256,7 @@ const char* getWebviewHTMLContent(uint32_t webviewId) {
     auto it = webviewHTMLContent.find(webviewId);
     if (it != webviewHTMLContent.end()) {
         char* result = strdup(it->second.c_str());
-        printf("getWebviewHTMLContent: Retrieved HTML for webview %u\n", webviewId);
+        EB_DEBUG("getWebviewHTMLContent: Retrieved HTML for webview %u\n", webviewId);
         fflush(stdout);
         return result;
     } else {

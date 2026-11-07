@@ -407,6 +407,33 @@ export const windowTests = [
   }),
 
   defineTest({
+    name: "A window from HTML, with its drag region pressed and released",
+    category: "BrowserWindow",
+    description: "Loads a page from an HTML string and presses and releases its drag region: the paths whose Linux logs print only with ELECTROBUN_DEBUG",
+    timeout: 15000,
+    async run({ createWindow, log }) {
+      const win = await createWindow({
+        html: '<!doctype html><div id="bar" class="electrobun-webkit-app-region-drag" style="height:40px"></div><p>From an HTML string</p>',
+        title: "HTML And Drag Test",
+        width: 400,
+        height: 300,
+        renderer: "native",
+      });
+
+      await sleep(1500);
+      log("Pressing and releasing the drag region");
+      win.webview.executeJavascript(`(() => {
+        const bar = document.getElementById("bar");
+        bar.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, detail: 1 }));
+        bar.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, detail: 1 }));
+      })()`);
+      await sleep(1000);
+      expect(win.window.isMaximized()).toBe(false);
+      log("The drag region took a press and a release");
+    },
+  }),
+
+  defineTest({
     name: "Window fullscreen toggle",
     requires: { foreground: true },
     category: "BrowserWindow",

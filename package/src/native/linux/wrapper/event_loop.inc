@@ -25,7 +25,7 @@ static gboolean drainCEFForShutdown(gpointer) {
         return G_SOURCE_CONTINUE;
     }
 
-    printf("[stopEventLoop] All CEF browsers closed\n");
+    EB_DEBUG("[stopEventLoop] All CEF browsers closed\n");
     CefQuitMessageLoop();
     return G_SOURCE_REMOVE;
 }
@@ -470,7 +470,7 @@ void* createX11Window(uint32_t windowId, double x, double y, double width, doubl
                     attr_mask |= CWBackPixel;
                     attrs.border_pixel = 0;
                     attr_mask |= CWBorderPixel;
-                    printf("X11: Created transparent window with 32-bit ARGB visual\n");
+                    EB_DEBUG("X11: Created transparent window with 32-bit ARGB visual\n");
                 } else {
                     printf("WARNING: 32-bit visual not available, using dark background fallback\n");
                     attrs.background_pixel = 0x101010;  // Very dark gray fallback
