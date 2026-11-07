@@ -17,6 +17,7 @@ import { renderingRateTests } from "./rendering-rate.test";
 import { pageClipboardTests } from "./page-clipboard.test";
 import { fileDragTests } from "./file-drag.test";
 import { internalBridgeTests } from "./internal-bridge.test";
+import { eventBridgeTests } from "./event-bridge.test";
 import { utilsTests } from "./utils.test";
 import { screenTests } from "./screen.test";
 import { sessionTests } from "./session.test";
@@ -70,6 +71,7 @@ export const allTests: TestDefinition[] = [
   ...pageClipboardTests,
   ...fileDragTests,
   ...internalBridgeTests,
+  ...eventBridgeTests,
   ...utilsTests,
   ...screenTests,
   ...sessionTests,
