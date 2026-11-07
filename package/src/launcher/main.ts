@@ -5,6 +5,9 @@ import { tmpdir } from "os";
 import { spawn } from "child_process";
 import { isBuildEnvironment } from "../shared/naming";
 
+// Start-up chatter only with ELECTROBUN_DEBUG set (T7213); warnings and errors always print.
+const debug = !!process.env["ELECTROBUN_DEBUG"];
+
 // Since main.js now runs from Resources, we need to find libraries in the MacOS directory
 const pathToMacOS = dirname(process.argv0);
 const coreLibFileName =
@@ -43,9 +46,10 @@ function main() {
 			} else if (versionInfo.channel !== undefined) {
 				throw new Error(`Invalid Electrobun channel: ${versionInfo.channel}`);
 			}
-			console.log(
-				`[LAUNCHER] Loaded identifier: ${identifier}, name: ${name}, channel: ${channel}`,
-			);
+			if (debug)
+				console.log(
+					`[LAUNCHER] Loaded identifier: ${identifier}, name: ${name}, channel: ${channel}`,
+				);
 		}
 	} catch (error) {
 		console.error(`[LAUNCHER] Warning: Could not read version.json:`, error);
@@ -138,7 +142,7 @@ function main() {
 
 	// Check if ASAR archive exists
 	if (existsSync(asarPath)) {
-		console.log(`[LAUNCHER] Loading app code from ASAR: ${asarPath}`);
+		if (debug) console.log(`[LAUNCHER] Loading app code from ASAR: ${asarPath}`);
 
 		// Load ASAR functions via FFI
 		// Use standalone libasar in the bundle on every platform.
@@ -194,7 +198,7 @@ function main() {
 		}
 
 		const fileSize = Number(sizeBuffer[0]);
-		console.log(`[LAUNCHER] Read ${fileSize} bytes from ASAR for ${filePath}`);
+		if (debug) console.log(`[LAUNCHER] Read ${fileSize} bytes from ASAR for ${filePath}`);
 
 		// Copy data from the FFI pointer to a Buffer using toArrayBuffer
 		const arrayBuffer = toArrayBuffer(fileDataPtr, 0, fileSize);
@@ -217,7 +221,7 @@ setTimeout(() => {
         } else if (typeof require === "function") {
             require("fs").unlinkSync(__tempFilePath);
         }
-        console.log("[LAUNCHER] Deleted temp file:", __tempFilePath);
+        if (globalThis.process?.env?.ELECTROBUN_DEBUG) console.log("[LAUNCHER] Deleted temp file:", __tempFilePath);
     } catch (error) {
         console.warn("[LAUNCHER] Failed to delete temp file:", error.message);
     }
@@ -227,7 +231,7 @@ ${fileData.toString("utf8")}
 `;
 
 		writeFileSync(appEntrypointPath, wrappedFileData);
-		console.log(`[LAUNCHER] Wrote app entrypoint to: ${appEntrypointPath}`);
+		if (debug) console.log(`[LAUNCHER] Wrote app entrypoint to: ${appEntrypointPath}`);
 
 		// Free the buffer
 		asarLib.symbols.asar_free_buffer(fileDataPtr, BigInt(fileSize));
@@ -236,7 +240,7 @@ ${fileData.toString("utf8")}
 		asarLib.symbols.asar_close(asarArchive);
 	} else {
 		// Fallback to flat file system (for non-ASAR builds)
-		console.log(`[LAUNCHER] Loading app code from flat files`);
+		if (debug) console.log(`[LAUNCHER] Loading app code from flat files`);
 		appEntrypointPath = join(appFolderPath, "bun", "index.js");
 	}
 

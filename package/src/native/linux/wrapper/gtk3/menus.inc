@@ -123,7 +123,7 @@ GtkWidget* createApplicationMenuBar(const std::vector<MenuJsonValue>& items, Zig
 // like on Windows/macOS, which interferes with OOPIF positioning and masking.
 // Developers should implement menu UI directly in their HTML instead.
 void applyApplicationMenuToWindow(GtkWidget* window) {
-    printf("Application menus are not supported on Linux. Implement menu UI in your webview HTML instead.\n");
+    EB_DEBUG("Application menus are not supported on Linux. Implement menu UI in your webview HTML instead.\n");
     fflush(stdout);
 }
 
@@ -133,7 +133,7 @@ void applyApplicationMenuToWindow(GtkWidget* window) {
 // that could interfere with OOPIF layering and maskJSON cutout mechanisms.
 // Developers should implement menu UI directly in their HTML instead.
 void applyApplicationMenuToX11Window(X11Window* x11win) {
-    printf("Application menus are not supported on Linux. Implement menu UI in your webview HTML instead.\n");
+    EB_DEBUG("Application menus are not supported on Linux. Implement menu UI in your webview HTML instead.\n");
     fflush(stdout);
 }
 

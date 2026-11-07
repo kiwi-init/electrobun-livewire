@@ -6,6 +6,7 @@ void disableSetlocale() {
 }
 
 void init() {
+    installEnchantLogFilter();
     gtk_init(nullptr, nullptr);
 }
 

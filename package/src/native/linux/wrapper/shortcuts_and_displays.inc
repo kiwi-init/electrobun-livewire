@@ -112,7 +112,7 @@ static void shortcutEventLoop() {
         return;
     }
     
-    printf("GlobalShortcut: X11 display opened successfully for shortcuts\n");
+    EB_DEBUG("GlobalShortcut: X11 display opened successfully for shortcuts\n");
 
     Window root = DefaultRootWindow(g_shortcutDisplay);
 
@@ -145,14 +145,14 @@ static void shortcutEventLoop() {
 
 // Set the callback for global shortcut events
 ELECTROBUN_EXPORT void setGlobalShortcutCallback(GlobalShortcutCallback callback) {
-    printf("GlobalShortcut: Setting callback (callback=%p)\n", callback);
+    EB_DEBUG("GlobalShortcut: Setting callback (callback=%p)\n", callback);
     g_globalShortcutCallback = callback;
 
     if (g_shortcutsUsePortal) return;
     if (callback && !g_shortcutThreadRunning && g_getenv("WAYLAND_DISPLAY") &&
         electrobun::xdg_portal::GlobalShortcuts::available()) {
         g_shortcutsUsePortal = true;
-        printf("GlobalShortcut: using the xdg-desktop-portal GlobalShortcuts interface\n");
+        EB_DEBUG("GlobalShortcut: using the xdg-desktop-portal GlobalShortcuts interface\n");
         dispatch_async_main_void([]() {
             g_portalShortcuts = new electrobun::xdg_portal::GlobalShortcuts();
             g_portalShortcuts->start([](const std::string& id) {
@@ -164,7 +164,7 @@ ELECTROBUN_EXPORT void setGlobalShortcutCallback(GlobalShortcutCallback callback
 
     // Start the event loop thread if not running
     if (!g_shortcutThreadRunning && callback) {
-        printf("GlobalShortcut: Starting event loop thread\n");
+        EB_DEBUG("GlobalShortcut: Starting event loop thread\n");
         g_shortcutThreadRunning = true;
         g_shortcutThread = std::thread(shortcutEventLoop);
         // Wait for display to be opened
@@ -174,7 +174,7 @@ ELECTROBUN_EXPORT void setGlobalShortcutCallback(GlobalShortcutCallback callback
             attempts++;
         }
         if (g_shortcutDisplay) {
-            printf("GlobalShortcut: Event loop ready\n");
+            EB_DEBUG("GlobalShortcut: Event loop ready\n");
         } else {
             fprintf(stderr, "ERROR: GlobalShortcut event loop failed to initialize\n");
         }
@@ -202,14 +202,14 @@ static bool registerPortalShortcut(const std::string& accelerator) {
     dispatch_async_main_void([accelerator, trigger]() {
         if (g_portalShortcuts) g_portalShortcuts->set(accelerator, accelerator, trigger);
     });
-    printf("GlobalShortcut registered with the portal: %s (preferred trigger %s)\n",
+    EB_DEBUG("GlobalShortcut registered with the portal: %s (preferred trigger %s)\n",
            accelerator.c_str(), trigger.c_str());
     return true;
 }
 
 // Register a global keyboard shortcut
 ELECTROBUN_EXPORT bool registerGlobalShortcut(const char* accelerator) {
-    printf("GlobalShortcut: registerGlobalShortcut called for '%s'\n", accelerator ? accelerator : "(null)");
+    EB_DEBUG("GlobalShortcut: registerGlobalShortcut called for '%s'\n", accelerator ? accelerator : "(null)");
     
     if (!accelerator) {
         fprintf(stderr, "ERROR: Cannot register shortcut - accelerator is null\n");
@@ -273,7 +273,7 @@ ELECTROBUN_EXPORT bool registerGlobalShortcut(const char* accelerator) {
     info.modifiers = modifiers;
     g_globalShortcuts[accelStr] = info;
 
-    printf("GlobalShortcut registered: %s (keycode: %d, modifiers: 0x%X)\n",
+    EB_DEBUG("GlobalShortcut registered: %s (keycode: %d, modifiers: 0x%X)\n",
            accelerator, keycode, modifiers);
     return true;
 }
@@ -314,7 +314,7 @@ ELECTROBUN_EXPORT bool unregisterGlobalShortcut(const char* accelerator) {
         XFlush(g_shortcutDisplay);
 
         g_globalShortcuts.erase(it);
-        printf("GlobalShortcut unregistered: %s\n", accelerator);
+        EB_DEBUG("GlobalShortcut unregistered: %s\n", accelerator);
         return true;
     }
 
@@ -355,7 +355,7 @@ ELECTROBUN_EXPORT void unregisterAllGlobalShortcuts() {
     XFlush(g_shortcutDisplay);
 
     g_globalShortcuts.clear();
-    printf("GlobalShortcut: Unregistered all shortcuts\n");
+    EB_DEBUG("GlobalShortcut: Unregistered all shortcuts\n");
 }
 
 // Check if a shortcut is registered

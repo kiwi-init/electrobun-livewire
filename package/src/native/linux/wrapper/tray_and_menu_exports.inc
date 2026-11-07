@@ -233,7 +233,7 @@ ELECTROBUN_EXPORT bool getWebviewSnapshot(AbstractView* abstractView, uint32_t r
 }
 
 void setJSUtils(void* getMimeType, void* getHTMLForWebviewSync) {
-    printf("setJSUtils called but using map-based approach instead of callbacks\n");
+    EB_DEBUG("setJSUtils called but using map-based approach instead of callbacks\n");
     fflush(stdout);
 }
 
