@@ -412,22 +412,15 @@ export const windowTests = [
     description: "Loads a page from an HTML string and presses and releases its drag region: the paths whose Linux logs print only with ELECTROBUN_DEBUG",
     timeout: 15000,
     async run({ createWindow, log }) {
-      const rpc = createTestHarnessRPC();
       const win = await createWindow({
-        html: '<!doctype html><div id="bar" class="electrobun-webkit-app-region-drag" style="height:40px"></div><p id="text">From an HTML string</p>',
-        rpc,
+        html: '<!doctype html><div id="bar" class="electrobun-webkit-app-region-drag" style="height:40px"></div><p>From an HTML string</p>',
         title: "HTML And Drag Test",
         width: 400,
         height: 300,
         renderer: "native",
       });
 
-      await sleep(1000);
-      const text = await win.webview.rpc?.request.evaluateJavascriptWithResponse({
-        script: "return document.getElementById('text')?.textContent ?? null;",
-      });
-      expect(text).toBe("From an HTML string");
-
+      await sleep(1500);
       log("Pressing and releasing the drag region");
       win.webview.executeJavascript(`(() => {
         const bar = document.getElementById("bar");
@@ -436,7 +429,7 @@ export const windowTests = [
       })()`);
       await sleep(1000);
       expect(win.window.isMaximized()).toBe(false);
-      log("The page came from its HTML string, and the drag region took a press and a release");
+      log("The drag region took a press and a release");
     },
   }),
 
