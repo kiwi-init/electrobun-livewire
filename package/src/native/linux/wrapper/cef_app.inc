@@ -469,6 +469,7 @@ private:
     std::function<void()> load_commit_callback_;  // Callback after a main-frame commit
     std::atomic<bool> owner_detached_{false};
     std::atomic<bool> initial_browser_creation_pending_{false};
+    electrobun::DeferredNavigation navigation_;
     guint layout_interval_source_id_ = 0;
     
     // OSR (Off-Screen Rendering) members for transparency
@@ -538,6 +539,36 @@ public:
         return browser_;
     }
 
+    void QueueNavigation(const std::string& url) {
+        CEF_REQUIRE_UI_THREAD();
+        if (owner_detached_.load() || g_shuttingDown.load()) return;
+
+        class NavigationTask : public CefTask {
+        public:
+            explicit NavigationTask(electrobun::DeferredNavigation::Action action)
+                : action_(std::move(action)) {}
+            void Execute() override { action_(); }
+        private:
+            electrobun::DeferredNavigation::Action action_;
+            IMPLEMENT_REFCOUNTING(NavigationTask);
+        };
+
+        // CEF locks navigation during OnAfterCreated and posts a LoadURL made
+        // there for later. An inline LoadURL from our GLib source can overtake
+        // that task, letting the stale constructor URL overwrite the new one.
+        // Put both initial and subsequent requests on CEF's task queue, and
+        // discard a queued request when a newer one supersedes it.
+        CefRefPtr<ElectrobunClient> self(this);
+        navigation_.request(url, [](electrobun::DeferredNavigation::Action action) {
+            return CefPostTask(TID_UI, new NavigationTask(std::move(action)));
+        }, [self](const std::string& nextUrl) {
+            if (self->owner_detached_.load() || g_shuttingDown.load() || !self->browser_) return;
+            auto frame = self->browser_->GetMainFrame();
+            if (!frame) return;
+            frame->LoadURL(nextUrl);
+        });
+    }
+
     void MarkInitialBrowserCreationPending() {
         bool expected = false;
         if (initial_browser_creation_pending_.compare_exchange_strong(expected, true)) {
@@ -581,6 +612,7 @@ public:
 
     void DetachOwnerCallbacks() {
         owner_detached_.store(true);
+        navigation_.cancel();
         CancelLayoutInterval();
         DisableOSR();
         browser_created_callback_ = nullptr;
@@ -1192,6 +1224,7 @@ public:
 
     // Critical: Handle browser cleanup to prevent use-after-free
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
+        navigation_.cancel();
         printf("CEF: OnBeforeClose called for browser %d\n", browser->GetIdentifier());
         CancelLayoutInterval();
 

@@ -37,6 +37,7 @@
 #include <cmath>
 #include <atomic>
 #include "../shared/pending_resize_queue.h"
+#include "../shared/deferred_navigation.h"
 #include <gio/gio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -138,6 +139,7 @@ using electrobun::OperationGuard;
 #include "include/cef_client.h"
 #include "include/views/cef_display.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_task.h"
 #include "include/cef_request_handler.h"
 #include "include/cef_context_menu_handler.h"
 #include "include/cef_keyboard_handler.h"

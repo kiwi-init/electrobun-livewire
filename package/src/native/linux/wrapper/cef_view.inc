@@ -353,7 +353,7 @@ public:
 
             // Creation is asynchronous: loadURL/loadHTML may have replaced the
             // initial URL before this callback. Start only the latest request.
-            browser->GetMainFrame()->LoadURL(CefString(this->deferredUrl));
+            client->QueueNavigation(this->deferredUrl);
             this->deferredUrl.clear();
         });
         
@@ -555,7 +555,7 @@ public:
         
         std::lock_guard<std::mutex> lock(g_cefBrowserMutex);
         if (browser) {
-            browser->GetMainFrame()->LoadURL(CefString(urlString));
+            client->QueueNavigation(urlString);
         } else {
             deferredUrl = urlString;
         }
