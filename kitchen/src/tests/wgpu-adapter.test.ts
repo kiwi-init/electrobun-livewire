@@ -35,6 +35,7 @@ export const wgpuAdapterTests = [
         try {
           ctx = webgpu.createContext(win);
         } catch (surfaceError) {
+          if (!process.env["KITCHEN_HEADLESS_WAYLAND"]) throw surfaceError;
           expect(String(surfaceError)).toBe(
             "Error: WGPU surface needs an X11 window; Wayland is not supported yet",
           );

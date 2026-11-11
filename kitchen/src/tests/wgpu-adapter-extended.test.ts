@@ -24,6 +24,7 @@ async function createDeviceWithContext(win: GpuWindow) {
   try {
     ctx = webgpu.createContext(win);
   } catch (err) {
+    if (!process.env["KITCHEN_HEADLESS_WAYLAND"]) throw err;
     expect(String(err)).toBe(
       "Error: WGPU surface needs an X11 window; Wayland is not supported yet",
     );

@@ -1150,10 +1150,14 @@ export const native = (() => {
 				args: [FFIType.ptr, FFIType.ptr],
 				returns: FFIType.ptr,
 			},
-			wgpuGetLastSurfaceError: {
-				args: [],
-				returns: FFIType.cstring,
-			},
+			...(process.platform === "linux"
+				? {
+					wgpuGetLastSurfaceError: {
+						args: [],
+						returns: FFIType.cstring,
+					},
+				}
+				: {}),
 			// Global keyboard shortcuts
 			setGlobalShortcutCallback: {
 				args: [FFIType.function],
