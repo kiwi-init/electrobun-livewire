@@ -687,8 +687,12 @@ ELECTROBUN_EXPORT void* wgpuCreateSurfaceForView(void* wgpuInstance, AbstractVie
     if (!ensureWgpuSymbols()) return nullptr;
 
     return runOnMainThreadSyncPtr([&]() -> void* {
+        g_wgpuSurfaceError[0] = '\0';
         WGPUViewImpl* view = dynamic_cast<WGPUViewImpl*>(abstractView);
-        if (!view) return nullptr;
+        if (!view) {
+            snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface creation failed: not a WGPUView");
+            return nullptr;
+        }
 
         Display* display = nullptr;
         Window window = 0;
@@ -698,24 +702,21 @@ ELECTROBUN_EXPORT void* wgpuCreateSurfaceForView(void* wgpuInstance, AbstractVie
             window = view->xWindow;
         } else if (view->viewWidget) {
             GdkWindow* gdkWindow = gtk_widget_get_window(view->viewWidget);
-            if (!gdkWindow) {
+            GdkDisplay* gdkDisplay = gdkWindow ? gdk_window_get_display(gdkWindow) : nullptr;
+            if (gdkDisplay && !GDK_IS_X11_DISPLAY(gdkDisplay)) {
                 snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface needs an X11 window; Wayland is not supported yet");
                 return nullptr;
             }
-            GdkDisplay* gdkDisplay = gdk_window_get_display(gdkWindow);
-            if (!GDK_IS_X11_DISPLAY(gdkDisplay)) {
-                snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface needs an X11 window; Wayland is not supported yet");
-                return nullptr;
+            if (gdkDisplay) {
+                display = gdk_x11_display_get_xdisplay(gdkDisplay);
+                window = GDK_WINDOW_XID(gdkWindow);
             }
-            display = gdk_x11_display_get_xdisplay(gdkDisplay);
-            window = GDK_WINDOW_XID(gdkWindow);
         }
 
         if (!display || !window) {
-            snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface needs an X11 window; Wayland is not supported yet");
+            snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface creation failed: no X11 window to attach to");
             return nullptr;
         }
-        g_wgpuSurfaceError[0] = '\0';
 
         WGPUSurfaceSourceXlibWindow xlibSource = {};
         xlibSource.chain.sType = WGPUSType_SurfaceSourceXlibWindow;

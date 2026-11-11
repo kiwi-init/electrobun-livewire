@@ -118,6 +118,11 @@ jobs:
           export HUTCH_ELECTROBUN_DEVKIT_ROOT="$GITHUB_WORKSPACE/package/dist"
           read -r -a extra_env <<< "$EXTRA_ENV"
           dbus-run-session -- env "${extra_env[@]}" xvfb-run -a -s '-screen 0 1920x1080x24' bash -e -c 'openbox > /dev/null 2>&1 & hutch electrobun dev' 2>&1 | tee "$RUNNER_TEMP/kitchen-x11.log"
+          if ! grep -qE '[0-9]+ failed, [0-9]+ passed(, [0-9]+ skipped)?' "$RUNNER_TEMP/kitchen-x11.log"; then
+            echo "::error::the Kitchen app exited without its result summary; the log may be truncated"
+            tail -20 "$RUNNER_TEMP/kitchen-x11.log" || true
+            exit 1
+          fi
       - name: A plain start prints no start-up chatter (Linux, T7213, T8833)
         if: always() && runner.os == 'Linux' && inputs.display == 'x11'
         env:

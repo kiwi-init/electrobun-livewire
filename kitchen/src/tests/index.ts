@@ -8,6 +8,7 @@ import { wgpuAdapterTests } from "./wgpu-adapter.test";
 import { babylonAdapterTests } from "./babylon-adapter.test";
 import { wgpuAdapterExtendedTests } from "./wgpu-adapter-extended.test";
 import { wgpuRefusalScopeTests } from "./wgpu-refusal-scope.test";
+import { kitchenX11GuardTests } from "./kitchen-x11-guard.test";
 import { rpcTests } from "./rpc.test";
 import { windowTests } from "./window.test";
 import { navigationTests } from "./navigation.test";
@@ -91,6 +92,7 @@ export const allTests: TestDefinition[] = [
   ...babylonAdapterTests,
   ...wgpuAdapterExtendedTests,
 	wgpuRefusalScopeTests,
+	kitchenX11GuardTests,
 
   // Interactive tests (run sequentially, require user)
   ...dialogTests,
