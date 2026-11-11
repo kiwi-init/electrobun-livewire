@@ -670,7 +670,9 @@ export class WgpuTagRenderer {
 			view.ptr as number,
 		) as number;
 		if (!surface) {
-			throw new Error("Failed to create WGPU surface for view");
+			throw new Error(
+				WGPUBridge.lastSurfaceError?.() || "Failed to create WGPU surface for view",
+			);
 		}
 
 		const adapterDevice = new BigUint64Array(2);
