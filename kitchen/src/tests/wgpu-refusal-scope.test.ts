@@ -49,6 +49,7 @@ describe("the real GPU test bodies' refusal contract (mocked surface)", () => {
 
   test("an unrelated surface error under Wayland fails every body", async () => {
     process.env.KITCHEN_HEADLESS_WAYLAND = "sway";
+    mock.restore();
     mock.module("electrobun/main", () => ({
       GpuWindow: class {
         close() {}
@@ -61,10 +62,8 @@ describe("the real GPU test bodies' refusal contract (mocked surface)", () => {
         },
       },
     }));
-    const { wgpuAdapterTests: a2 } = await import("./wgpu-adapter.test.ts?unrelated");
-    const { wgpuAdapterExtendedTests: e2 } = await import("./wgpu-adapter-extended.test.ts?unrelated");
     const accepted: string[] = [];
-    for (const entry of [a2[0], ...e2]) {
+    for (const entry of sixBodies()) {
       try {
         await entry.run({ log() {} } as never);
         accepted.push(entry.name);
