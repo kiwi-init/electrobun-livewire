@@ -21,6 +21,9 @@ export function getTestSkipReason(
   if (test.requires?.display === "wayland" && (platform !== "linux" || !env["WAYLAND_DISPLAY"])) {
     return "requires a Wayland session (Linux with WAYLAND_DISPLAY set)";
   }
+  if (test.requires?.display === "x11" && env["KITCHEN_HEADLESS_WAYLAND"]) {
+    return test.requires.x11SkipReason ?? "requires an X11 window; Wayland is not supported yet";
+  }
   const requiredRenderer = test.requires?.renderer;
   if (!requiredRenderer || availableRenderers.includes(requiredRenderer)) {
     return undefined;

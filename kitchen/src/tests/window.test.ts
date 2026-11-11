@@ -943,6 +943,7 @@ export const windowTests = [
   defineTest({
     name: "Window setPosition",
     category: "BrowserWindow",
+    requires: { display: "x11", x11SkipReason: "absolute positioning is compositor-owned under Wayland (xdg-shell has no position request)" },
     description: "Test programmatically moving a window",
     async run({ createWindow, log }) {
       const win = await createWindow({
@@ -961,10 +962,6 @@ export const windowTests = [
       const initialFrame = win.window.getFrame();
       log(`Initial position: (${initialFrame.x}, ${initialFrame.y})`);
 
-      if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
-        log("absolute positioning is skipped under Wayland: the compositor owns window placement (xdg-shell has no position request)");
-        return;
-      }
 
       log("Moving window to (200, 200)");
       win.window.setPosition(200, 200);
@@ -1034,13 +1031,10 @@ export const windowTests = [
   defineTest({
     name: "Window omitted position centers on primary display",
     category: "BrowserWindow",
+    requires: { display: "x11", x11SkipReason: "absolute positioning is compositor-owned under Wayland (xdg-shell has no position request)" },
     description: "Omitting either frame coordinate centers the window on the primary work area",
     async run({ log }) {
       const workArea = Screen.getPrimaryDisplay().workArea;
-      if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
-        log("absolute positioning is skipped under Wayland: the compositor owns window placement (xdg-shell has no position request)");
-        return;
-      }
       const width = 420;
       const height = 280;
       const cases = [

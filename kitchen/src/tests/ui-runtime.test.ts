@@ -22,13 +22,10 @@ export const uiRuntimeTests = [
 	defineTest({
 		name: "UIWindow mounts, lays out, and disposes",
 		category: "Electrobun UI",
+		requires: { display: "x11", x11SkipReason: "UIWindow needs an X11 GPU surface; Wayland is not supported yet" },
 		description:
 			"createUIWindow renders a retained tree sized to the window and tears down cleanly.",
 		async run({ log }) {
-		if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
-			log("UIWindow needs an X11 GPU surface; Wayland is not supported yet");
-			return;
-		}
 			let headerId = 0;
 			const uiWindow = await createUIWindow(
 				{ title: "ui-test-mount", width: 420, height: 320 },
@@ -58,13 +55,10 @@ export const uiRuntimeTests = [
 	defineTest({
 		name: "Reactive props update the mounted tree",
 		category: "Electrobun UI",
+		requires: { display: "x11", x11SkipReason: "UIWindow needs an X11 GPU surface; Wayland is not supported yet" },
 		description:
 			"A signal-backed prop becomes a fine-grained effect writing one tree prop; text thunks re-render.",
 		async run({ log }) {
-		if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
-			log("UIWindow needs an X11 GPU surface; Wayland is not supported yet");
-			return;
-		}
 			const [bg, setBg] = signal("#111111");
 			const [label, setLabel] = signal("before");
 			let boxId = 0;
@@ -95,13 +89,10 @@ export const uiRuntimeTests = [
 	defineTest({
 		name: "Hit testing resolves the innermost hittable node",
 		category: "Electrobun UI",
+		requires: { display: "x11", x11SkipReason: "UIWindow needs an X11 GPU surface; Wayland is not supported yet" },
 		description:
 			"hitChain over the laid-out tree returns the dispatch chain for pointer coordinates.",
 		async run({ log }) {
-		if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
-			log("UIWindow needs an X11 GPU surface; Wayland is not supported yet");
-			return;
-		}
 			let buttonId = 0;
 			const uiWindow = await createUIWindow(
 				{ title: "ui-test-hit", width: 300, height: 200 },

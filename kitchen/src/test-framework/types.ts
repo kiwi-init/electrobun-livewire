@@ -46,7 +46,8 @@ export interface TestRequirements {
    * The app must be running on a native Wayland display (Linux with
    * WAYLAND_DISPLAY set), for behavior only Wayland has.
    */
-  display?: 'wayland';
+  display?: 'wayland' | 'x11';
+  x11SkipReason?: string;
 }
 
 export interface TestSuiteDefinition {
