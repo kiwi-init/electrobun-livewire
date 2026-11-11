@@ -54,6 +54,7 @@ case "$compositor" in
     cat > "$work/sway.config" <<CONFIG
 xwayland disable
 output * resolution 1920x1080 position 0 0 scale $scale
+for_window [app_id=".*"] floating enable
 CONFIG
     sway --config "$work/sway.config" > "$compositor_log" 2>&1 &
     ;;
