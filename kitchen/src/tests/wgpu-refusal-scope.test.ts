@@ -47,8 +47,9 @@ describe("the real GPU test bodies' refusal contract (mocked surface)", () => {
     delete process.env.KITCHEN_HEADLESS_WAYLAND;
   });
 
-  test("an unrelated surface error under Wayland fails every body", async () => {
+  test("an unrelated surface error under Wayland fails every body, with the mock provably reached", async () => {
     process.env.KITCHEN_HEADLESS_WAYLAND = "sway";
+    let mockReached = 0;
     mock.restore();
     mock.module("electrobun/main", () => ({
       GpuWindow: class {
@@ -58,18 +59,30 @@ describe("the real GPU test bodies' refusal contract (mocked surface)", () => {
       webgpu: {
         install() {},
         createContext() {
+          mockReached += 1;
           throw new Error("WGPU instance creation failed");
         },
       },
     }));
     const accepted: string[] = [];
+    const propagated: string[] = [];
     for (const entry of sixBodies()) {
       try {
         await entry.run({ log() {} } as never);
         accepted.push(entry.name);
-      } catch {}
+      } catch (error) {
+        const text = String(error);
+        if (text.includes("WGPU instance creation failed") || text.includes("WGPU surface needs an X11 window")) {
+          propagated.push(entry.name);
+        } else {
+          propagated.push(entry.name + " (unexpected: " + text.slice(0, 60) + ")");
+        }
+      }
     }
+    expect(mockReached).toBeGreaterThan(0);
     expect(accepted).toEqual([]);
+    expect(propagated.filter((n) => n.includes("(unexpected:"))).toEqual([]);
+    expect(propagated.length).toBe(sixBodies().length);
     delete process.env.KITCHEN_HEADLESS_WAYLAND;
   });
 });
