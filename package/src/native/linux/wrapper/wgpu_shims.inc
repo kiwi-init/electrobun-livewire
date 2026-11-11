@@ -676,6 +676,12 @@ ELECTROBUN_EXPORT void* wgpuInstanceCreateSurfaceMainThread(void* instance, void
     });
 }
 
+static char g_wgpuSurfaceError[256] = "";
+
+ELECTROBUN_EXPORT const char* wgpuGetLastSurfaceError() {
+    return g_wgpuSurfaceError;
+}
+
 ELECTROBUN_EXPORT void* wgpuCreateSurfaceForView(void* wgpuInstance, AbstractView* abstractView) {
     if (!wgpuInstance || !abstractView) return nullptr;
     if (!ensureWgpuSymbols()) return nullptr;
@@ -692,12 +698,24 @@ ELECTROBUN_EXPORT void* wgpuCreateSurfaceForView(void* wgpuInstance, AbstractVie
             window = view->xWindow;
         } else if (view->viewWidget) {
             GdkWindow* gdkWindow = gtk_widget_get_window(view->viewWidget);
-            if (!gdkWindow) return nullptr;
-            display = gdk_x11_display_get_xdisplay(gdk_window_get_display(gdkWindow));
+            if (!gdkWindow) {
+                snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface needs an X11 window; Wayland is not supported yet");
+                return nullptr;
+            }
+            GdkDisplay* gdkDisplay = gdk_window_get_display(gdkWindow);
+            if (!GDK_IS_X11_DISPLAY(gdkDisplay)) {
+                snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface needs an X11 window; Wayland is not supported yet");
+                return nullptr;
+            }
+            display = gdk_x11_display_get_xdisplay(gdkDisplay);
             window = GDK_WINDOW_XID(gdkWindow);
         }
 
-        if (!display || !window) return nullptr;
+        if (!display || !window) {
+            snprintf(g_wgpuSurfaceError, sizeof(g_wgpuSurfaceError), "WGPU surface needs an X11 window; Wayland is not supported yet");
+            return nullptr;
+        }
+        g_wgpuSurfaceError[0] = '\0';
 
         WGPUSurfaceSourceXlibWindow xlibSource = {};
         xlibSource.chain.sType = WGPUSType_SurfaceSourceXlibWindow;

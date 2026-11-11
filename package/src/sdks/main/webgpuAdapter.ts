@@ -2738,6 +2738,7 @@ function createContext(view: WGPUView | GpuWindow) {
 			WGPUNative.symbols.wgpuSurfaceRelease(surfacePtr as any),
 		releaseInstance: (instancePtr: number) =>
 			WGPUNative.symbols.wgpuInstanceRelease(instancePtr as any),
+		lastSurfaceError: () => WGPUBridge.lastSurfaceError(),
 	};
 
 	const created = createNativeWebgpuContext(nativeOps, ({ instance, surface }) => {

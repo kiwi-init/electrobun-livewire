@@ -47,6 +47,7 @@ export class WebgpuContextRegistry<T> {
 export interface WebgpuNativeCreateOps {
 	createInstance(): number;
 	createSurface(instance: number): number;
+	lastSurfaceError?(): string;
 	unconfigureSurface(surface: number): void;
 	releaseSurface(surface: number): void;
 	releaseInstance(instance: number): void;
@@ -66,7 +67,10 @@ export function createNativeWebgpuContext<T>(
 	let surface = 0;
 	try {
 		surface = Number(ops.createSurface(instance));
-		if (!surface) throw new Error("Failed to create WGPU surface");
+		if (!surface) {
+			const reason = ops.lastSurfaceError?.() ?? "";
+			throw new Error(reason || "Failed to create WGPU surface");
+		}
 		return initialize({ instance, surface });
 	} catch (error) {
 		releaseNativeWebgpuContext({ instance, surface }, ops);

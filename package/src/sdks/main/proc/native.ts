@@ -1150,6 +1150,10 @@ export const native = (() => {
 				args: [FFIType.ptr, FFIType.ptr],
 				returns: FFIType.ptr,
 			},
+			wgpuGetLastSurfaceError: {
+				args: [],
+				returns: FFIType.cstring,
+			},
 			// Global keyboard shortcuts
 			setGlobalShortcutCallback: {
 				args: [FFIType.function],
@@ -2927,6 +2931,11 @@ export const WGPUBridge = {
 	createSurfaceForView: (instancePtr: Pointer, viewPtr: Pointer): Pointer | null => {
 		if (!native?.symbols?.wgpuCreateSurfaceForView) return null;
 		return native_.symbols.wgpuCreateSurfaceForView(instancePtr as any, viewPtr as any) as Pointer;
+	},
+	lastSurfaceError: (): string => {
+		const sym = (native_ as any).symbols?.wgpuGetLastSurfaceError;
+		if (!sym) return "";
+		return ffiCStringToString(sym() as unknown as Pointer) ?? "";
 	},
 	releaseSurfaceForView: (surfacePtr: Pointer): boolean =>
 		!!core_.symbols.wgpuReleaseSurfaceForView(surfacePtr as any),
