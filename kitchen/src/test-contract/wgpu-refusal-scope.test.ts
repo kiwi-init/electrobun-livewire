@@ -15,8 +15,8 @@ mock.module("electrobun/main", () => ({
   },
 }));
 
-const { wgpuAdapterTests } = await import("./wgpu-adapter.test.ts");
-const { wgpuAdapterExtendedTests } = await import("./wgpu-adapter-extended.test.ts");
+const { wgpuAdapterTests } = await import("../tests/wgpu-adapter.test.ts");
+const { wgpuAdapterExtendedTests } = await import("../tests/wgpu-adapter-extended.test.ts");
 
 const sixBodies = () => [wgpuAdapterTests[0], ...wgpuAdapterExtendedTests];
 

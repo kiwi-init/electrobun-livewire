@@ -37,7 +37,7 @@ describe("the X11 step's missing-summary guard", () => {
   });
 
   test("the workflow carries the guard after the X11 run step", async () => {
-    const wf = await Bun.file("../.github/workflows/kitchen-test.yml").text();
+    const wf = await Bun.file(new URL("../../../.github/workflows/kitchen-test.yml", import.meta.url).pathname).text();
     const run = wf.indexOf("Run the test (Linux, Xvfb + openbox)");
     const guard = wf.indexOf("without its result summary");
     expect(run).toBeGreaterThan(-1);
