@@ -2614,7 +2614,15 @@ class GPUCanvasContext {
 		const texPtr = Number(surfaceTexture.view.getBigUint64(8, true));
 		if (status !== 1 && status !== 2) {
 			if (texPtr) WGPUNative.symbols.wgpuTextureRelease(texPtr);
-			throw new Error(`Surface status ${status}`);
+			const named: Record<number, string> = {
+				0x3: "Timeout",
+				0x4: "Outdated",
+				0x5: "Lost",
+				0x6: "Error",
+			};
+			throw new Error(
+				`Surface status ${status} (${named[status] ?? "unknown"}); surface ${this.surfacePtr}, frame context: getCurrentTexture after configure`,
+			);
 		}
 		if (!texPtr) throw new Error("WebGPU surface returned a null texture");
 		this._currentTexture = new GPUTexture(texPtr, this.format, this);
