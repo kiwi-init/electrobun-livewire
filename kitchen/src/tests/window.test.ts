@@ -961,6 +961,11 @@ export const windowTests = [
       const initialFrame = win.window.getFrame();
       log(`Initial position: (${initialFrame.x}, ${initialFrame.y})`);
 
+      if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
+        log("absolute positioning is skipped under Wayland: the compositor owns window placement (xdg-shell has no position request)");
+        return;
+      }
+
       log("Moving window to (200, 200)");
       win.window.setPosition(200, 200);
       await sleep(500);
@@ -984,7 +989,11 @@ export const windowTests = [
     requires: { platform: ["darwin", "linux"] },
     async run({ createWindow, log }) {
       const near = (a: { x: number; y: number; width: number; height: number }, b: typeof a, label: string) => {
-        for (const key of ["x", "y", "width", "height"] as const) {
+        const keys = process.env["KITCHEN_HEADLESS_WAYLAND"]
+          ? (["width", "height"] as const)
+          : (["x", "y", "width", "height"] as const);
+        if (process.env["KITCHEN_HEADLESS_WAYLAND"]) log("position keys skipped under Wayland: compositor-owned placement");
+        for (const key of keys) {
           expect(Math.abs(a[key] - b[key]), `${label} ${key}: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`).toBeLessThan(3);
         }
       };
@@ -1028,6 +1037,10 @@ export const windowTests = [
     description: "Omitting either frame coordinate centers the window on the primary work area",
     async run({ log }) {
       const workArea = Screen.getPrimaryDisplay().workArea;
+      if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
+        log("absolute positioning is skipped under Wayland: the compositor owns window placement (xdg-shell has no position request)");
+        return;
+      }
       const width = 420;
       const height = 280;
       const cases = [
@@ -1176,8 +1189,12 @@ export const windowTests = [
       log(`New frame: (${newFrame.x}, ${newFrame.y}) ${newFrame.width}x${newFrame.height}`);
 
       // Allow some tolerance for window manager decorations
-      expect(Math.abs(newFrame.x - 300)).toBeLessThan(50);
-      expect(Math.abs(newFrame.y - 250)).toBeLessThan(50);
+      if (process.env["KITCHEN_HEADLESS_WAYLAND"]) {
+        log("frame position skipped under Wayland: compositor-owned placement");
+      } else {
+        expect(Math.abs(newFrame.x - 300)).toBeLessThan(50);
+        expect(Math.abs(newFrame.y - 250)).toBeLessThan(50);
+      }
       expect(Math.abs(newFrame.width - 500)).toBeLessThan(50);
       expect(Math.abs(newFrame.height - 400)).toBeLessThan(50);
 
