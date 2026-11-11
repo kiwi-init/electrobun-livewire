@@ -16,9 +16,19 @@ const TextureUsage = {
 };
 
 
+class WaylandSurfaceRefused extends Error {}
+
 async function createDeviceWithContext(win: GpuWindow) {
   webgpu.install();
-  const ctx = webgpu.createContext(win);
+  let ctx: ReturnType<typeof webgpu.createContext>;
+  try {
+    ctx = webgpu.createContext(win);
+  } catch (err) {
+    expect(String(err)).toBe(
+      "Error: WGPU surface needs an X11 window; Wayland is not supported yet",
+    );
+    throw new WaylandSurfaceRefused();
+  }
   const adapter = await webgpu.navigator.requestAdapter({
     compatibleSurface: ctx.context,
   });
@@ -39,6 +49,7 @@ export const wgpuAdapterExtendedTests = [
     description: "Create texture views with mip settings",
     timeout: 12000,
     async run({ log }) {
+      try {
       if (!webgpu?.createContext) {
         log("WebGPU adapter not available; skipping test");
         return;
@@ -63,6 +74,13 @@ export const wgpuAdapterExtendedTests = [
       } finally {
         win.close();
       }
+      } catch (refusal) {
+        if (refusal instanceof WaylandSurfaceRefused) {
+          log("surface refused by name under Wayland");
+          return;
+        }
+        throw refusal;
+      }
     },
   }),
 
@@ -72,6 +90,7 @@ export const wgpuAdapterExtendedTests = [
     description: "Render pass with depth texture",
     timeout: 12000,
     async run({ log }) {
+      try {
       if (!webgpu?.createContext) {
         log("WebGPU adapter not available; skipping test");
         return;
@@ -118,6 +137,13 @@ export const wgpuAdapterExtendedTests = [
       } finally {
         win.close();
       }
+      } catch (refusal) {
+        if (refusal instanceof WaylandSurfaceRefused) {
+          log("surface refused by name under Wayland");
+          return;
+        }
+        throw refusal;
+      }
     },
   }),
 
@@ -127,6 +153,7 @@ export const wgpuAdapterExtendedTests = [
     description: "Create bind group layout and bind group",
     timeout: 12000,
     async run({ log }) {
+      try {
       if (!webgpu?.createContext) {
         log("WebGPU adapter not available; skipping test");
         return;
@@ -169,6 +196,13 @@ export const wgpuAdapterExtendedTests = [
       } finally {
         win.close();
       }
+      } catch (refusal) {
+        if (refusal instanceof WaylandSurfaceRefused) {
+          log("surface refused by name under Wayland");
+          return;
+        }
+        throw refusal;
+      }
     },
   }),
 
@@ -178,6 +212,7 @@ export const wgpuAdapterExtendedTests = [
     description: "Create sampler with filtering",
     timeout: 12000,
     async run({ log }) {
+      try {
       if (!webgpu?.createContext) {
         log("WebGPU adapter not available; skipping test");
         return;
@@ -202,6 +237,13 @@ export const wgpuAdapterExtendedTests = [
       } finally {
         win.close();
       }
+      } catch (refusal) {
+        if (refusal instanceof WaylandSurfaceRefused) {
+          log("surface refused by name under Wayland");
+          return;
+        }
+        throw refusal;
+      }
     },
   }),
 
@@ -211,6 +253,7 @@ export const wgpuAdapterExtendedTests = [
     description: "Copy from mapped buffer into texture",
     timeout: 12000,
     async run({ log }) {
+      try {
       if (!webgpu?.createContext) {
         log("WebGPU adapter not available; skipping test");
         return;
@@ -258,6 +301,13 @@ export const wgpuAdapterExtendedTests = [
         log("copyBufferToTexture submitted");
       } finally {
         win.close();
+      }
+      } catch (refusal) {
+        if (refusal instanceof WaylandSurfaceRefused) {
+          log("surface refused by name under Wayland");
+          return;
+        }
+        throw refusal;
       }
     },
   }),
