@@ -78,8 +78,7 @@ static int fail_kind(const GError *e) {
         switch (e->code) {
         case G_IO_ERROR_CONNECTION_REFUSED: return HTTP_FAIL_REFUSED;
         case G_IO_ERROR_TIMED_OUT: return HTTP_FAIL_TIMEOUT;
-        case G_IO_ERROR_CONNECTION_CLOSED:
-        case G_IO_ERROR_BROKEN_PIPE: return HTTP_FAIL_RESET;
+        case G_IO_ERROR_CONNECTION_CLOSED: return HTTP_FAIL_RESET; // also G_IO_ERROR_BROKEN_PIPE
         case G_IO_ERROR_HOST_NOT_FOUND: return HTTP_FAIL_DNS;
         default: break;
         }
