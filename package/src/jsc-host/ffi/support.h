@@ -165,8 +165,9 @@ static jsr_runtime *g_ffi_rt;
 static _Atomic int g_ffi_in_native;
 static _Thread_local int t_ffi_borrowed; // this thread is running JS it borrowed
 static pthread_mutex_t g_ffi_borrow_lock = PTHREAD_MUTEX_INITIALIZER;
-static inline void ffi_enter_native(void) { atomic_fetch_add(&g_ffi_in_native, 1); }
-static inline void ffi_leave_native(void) { atomic_fetch_sub(&g_ffi_in_native, 1); }
+// Only the main runtime's JS can be borrowed; a Worker's native calls don't count.
+static inline void ffi_enter_native(void) { if (jsr_on_js_thread(g_ffi_rt)) atomic_fetch_add(&g_ffi_in_native, 1); }
+static inline void ffi_leave_native(void) { if (jsr_on_js_thread(g_ffi_rt)) atomic_fetch_sub(&g_ffi_in_native, 1); }
 static inline bool ffi_runs_js_here(void) { return t_ffi_borrowed > 0 || jsr_on_js_thread(g_ffi_rt); }
 
 static void ffi_free_call(ffi_call *call) {

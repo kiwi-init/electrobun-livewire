@@ -26,11 +26,19 @@ static char g_exe_dir[PATH_MAX];
 static int g_argc;
 static const char **g_argv;
 
-static void *js_main(void *arg) {
-    (void)arg;
-    jsr_runtime *rt = jsr_create(g_argc, g_argv);
+// Natives every runtime gets: this one and each Worker's.
+static void install_natives(jsr_runtime *rt) {
     ffi_install(rt);
     node_install(rt);
+    sqlite_install(rt);
+    worker_install(rt);
+}
+
+static void *js_main(void *arg) {
+    (void)arg;
+    jsr_set_runtime_init(install_natives);
+    jsr_runtime *rt = jsr_create(g_argc, g_argv);
+    install_natives(rt);
     char app[PATH_MAX + 64];
     snprintf(app, sizeof app, "%s/../Resources/app/bun/index.js", g_exe_dir);
     if (jsr_eval_file(rt, app)) jsr_run(rt, false);

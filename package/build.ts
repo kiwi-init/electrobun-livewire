@@ -1016,12 +1016,12 @@ async function copyToDist() {
 	if (OS === "macos") await buildJscHost(".dylib");
 	else if (OS === "linux") {
 		// Optional on Linux: needs WebKitGTK's JavaScriptCore headers
-		// (libjavascriptcoregtk-4.1-dev), GLib and libgcrypt (libgcrypt20-dev).
+		// (libjavascriptcoregtk-4.1-dev), GLib, SQLite (libsqlite3-dev) and libgcrypt (libgcrypt20-dev).
 		// Without them, or if the host fails to build, the devkit ships no JSC host.
 		const has = (command: string, args: string[]) => spawnSync(command, args).status === 0;
-		const deps = has("pkg-config", ["--exists", "javascriptcoregtk-4.1", "glib-2.0"]) &&
+		const deps = has("pkg-config", ["--exists", "javascriptcoregtk-4.1", "glib-2.0", "sqlite3"]) &&
 			(has("pkg-config", ["--exists", "libgcrypt"]) || has("libgcrypt-config", ["--version"]));
-		if (!deps) console.warn("JSC host: no javascriptcoregtk-4.1/glib-2.0/libgcrypt headers, so this devkit has no JSC host");
+		if (!deps) console.warn("JSC host: no javascriptcoregtk-4.1/glib-2.0/sqlite3/libgcrypt headers, so this devkit has no JSC host");
 		else {
 			try {
 				await buildJscHost(".so");

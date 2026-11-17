@@ -77,6 +77,7 @@ NATIVE(n_open) {
 NATIVE(n_callback_create) {
     NATIVE_UNUSED;
     if (argc < 2 || !JSValueIsObject(ctx, argv[1])) return ffi_throw(ctx, exc, "callbackCreate(sig, fn, threadsafe)");
+    if (jsr_from_context(ctx) != g_ffi_rt) return ffi_throw(ctx, exc, "JSCallback isn't available in a Worker on the JSC runtime");
     char *key = jsr_to_utf8(ctx, argv[0]);
     for (size_t i = 0; i < sizeof ffi_callback_sigs / sizeof ffi_callback_sigs[0]; i++) {
         const ffi_callback_sig *sig = &ffi_callback_sigs[i];
@@ -173,7 +174,7 @@ NATIVE(n_read) {
 
 #include "ffi.h"
 void ffi_install(jsr_runtime *rt) {
-    g_ffi_rt = rt;
+    if (!g_ffi_rt) g_ffi_rt = rt; // JSCallbacks run on the main runtime
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef ffi = JSObjectMake(ctx, NULL, NULL);
     jsr_set_function(ctx, ffi, "signatures", n_signatures);

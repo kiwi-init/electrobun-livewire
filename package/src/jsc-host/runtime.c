@@ -17,6 +17,7 @@
 #endif
 #include <dlfcn.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
@@ -75,11 +76,43 @@ struct jsr_runtime {
     int exit_code;
     int argc;
     const char **argv;
+    bool exiting;              // 'exit' listeners have run
+    bool until_idle;
+    double last_gc;            // monotonic seconds of the last idle collection
+    struct jsr_worker *worker; // set in a Worker's runtime (worker.c)
+    _Atomic int terminating;   // a Worker asked to stop: the watchdog ends running JS
+    bool dead;                 // a finished Worker's: its context is gone
+    struct jsr_runtime *next_runtime;
 };
 
-static jsr_runtime *g_runtime; // one runtime per process for now
+// Runtimes: the process's main one, then one per Worker, each on its own
+// thread. Natives find theirs from their context; loop callbacks run on the
+// runtime's own thread.
+static jsr_runtime *g_main_runtime;
+static _Thread_local jsr_runtime *t_runtime;
+static pthread_mutex_t g_runtimes_lock = PTHREAD_MUTEX_INITIALIZER;
+static jsr_runtime *g_runtimes;
+static jsr_init_fn g_runtime_init;
 
-jsr_runtime *jsr_from_context(JSContextRef ctx) { (void)ctx; return g_runtime; }
+void jsr_set_runtime_init(jsr_init_fn fn) { g_runtime_init = fn; }
+struct jsr_worker *jsr_worker_of(jsr_runtime *rt) { return rt ? rt->worker : NULL; }
+void jsr_worker_terminating(jsr_runtime *rt) { atomic_store(&rt->terminating, 1); }
+int jsr_argc(jsr_runtime *rt) { return rt->argc; }
+const char **jsr_argv(jsr_runtime *rt) { return rt->argv; }
+jsr_runtime *jsr_main_runtime(void) { return g_main_runtime; }
+jsr_runtime *jsr_current(void) { return t_runtime ? t_runtime : g_main_runtime; }
+
+jsr_runtime *jsr_from_context(JSContextRef ctx) {
+    if (!ctx) return jsr_current();
+    JSGlobalContextRef global = JSContextGetGlobalContext(ctx);
+    if (t_runtime && t_runtime->ctx == global) return t_runtime;
+    if (g_main_runtime && g_main_runtime->ctx == global) return g_main_runtime;
+    pthread_mutex_lock(&g_runtimes_lock);
+    jsr_runtime *rt = g_runtimes;
+    while (rt && rt->ctx != global) rt = rt->next_runtime;
+    pthread_mutex_unlock(&g_runtimes_lock);
+    return rt ? rt : g_main_runtime;
+}
 JSGlobalContextRef jsr_context(jsr_runtime *rt) { return rt->ctx; }
 JSObjectRef jsr_internal(jsr_runtime *rt) { return rt->internal; }
 bool jsr_on_js_thread(jsr_runtime *rt) { return pthread_equal(pthread_self(), rt->thread); }
@@ -119,12 +152,21 @@ static void set_value(JSContextRef ctx, JSObjectRef obj, const char *name, JSVal
 // process.exit() and fatal errors end the process right there, as in Node and
 // Bun: 'exit' listeners run once, stdio is flushed, and nothing after the call
 // runs. A process.exit() inside an 'exit' listener exits at once.
-static bool g_exiting;
 static void emit_exit(jsr_runtime *rt) {
-    if (g_exiting || !rt->dispatch_fn) return;
-    g_exiting = true;
+    if (rt->exiting || !rt->dispatch_fn) return;
+    rt->exiting = true;
     JSValueRef args[2] = {jsr_string(rt->ctx, "exit"), JSValueMakeNumber(rt->ctx, rt->exit_code)};
     JSObjectCallAsFunction(rt->ctx, rt->dispatch_fn, NULL, 2, args, NULL);
+}
+static void loop_wake(jsr_runtime *rt);
+// In a Worker, "the process" is the Worker: its 'exit' listeners run and its
+// loop stops; JS still on the stack unwinds through the watchdog (worker.c).
+static void stop_worker(jsr_runtime *rt, int code) {
+    rt->exit_code = code;
+    emit_exit(rt);
+    rt->stopped = true;
+    atomic_store(&rt->terminating, 1);
+    loop_wake(rt);
 }
 _Noreturn static void exit_now(jsr_runtime *rt, int code) {
     rt->exit_code = code;
@@ -150,12 +192,19 @@ static void print_error(jsr_runtime *rt, const char *prefix, JSValueRef error) {
 // With no 'uncaughtException' listener, an uncaught error ends the process
 // with 1, as in Node and Bun.
 void jsr_report_exception(jsr_runtime *rt, JSValueRef exception) {
+    if (atomic_load(&rt->terminating)) return; // a Worker unwinding after exit/terminate
     // Let process.on('uncaughtException') handle it when the prelude is up.
     if (rt->dispatch_fn) {
         JSValueRef args[2] = {jsr_string(rt->ctx, "uncaughtException"), exception};
         JSValueRef inner = NULL;
         JSValueRef handled = JSObjectCallAsFunction(rt->ctx, rt->dispatch_fn, NULL, 2, args, &inner);
         if (!inner && handled && JSValueToBoolean(rt->ctx, handled)) return;
+    }
+    if (rt->worker) {
+        // The parent's Worker gets an 'error' event, and the Worker ends.
+        jsr_worker_error(rt, exception);
+        stop_worker(rt, 1);
+        return;
     }
     print_error(rt, "Uncaught ", exception);
     exit_now(rt, 1);
@@ -246,6 +295,11 @@ void jsr_post(jsr_runtime *rt, jsr_task_fn fn, void *data) {
     task->fn = fn;
     task->data = data;
     pthread_mutex_lock(&rt->lock);
+    if (rt->dead) { // a finished Worker: nothing will run it
+        pthread_mutex_unlock(&rt->lock);
+        free(task);
+        return;
+    }
     if (rt->tail) rt->tail->next = task; else rt->head = task;
     rt->tail = task;
 #ifdef __APPLE__
@@ -288,7 +342,6 @@ static void loop_wake(jsr_runtime *rt) {
 
 typedef void (*jsr_sync_gc_fn)(JSContextRef);
 static jsr_sync_gc_fn g_sync_gc;
-static double g_last_gc = -1e9;
 
 static double monotonic_s(void) {
     struct timespec ts;
@@ -297,14 +350,14 @@ static double monotonic_s(void) {
 }
 
 // Seconds until the next idle collection may run.
-static double idle_gc_delay(void) {
-    double wait = g_last_gc + IDLE_GC_INTERVAL - monotonic_s();
+static double idle_gc_delay(jsr_runtime *rt) {
+    double wait = rt->last_gc + IDLE_GC_INTERVAL - monotonic_s();
     return wait > IDLE_GC_DELAY ? wait : IDLE_GC_DELAY;
 }
 
 static void idle_gc(jsr_runtime *rt) {
     rt->ran_js = false;
-    g_last_gc = monotonic_s();
+    rt->last_gc = monotonic_s();
     // JSSynchronousGarbageCollectForDebugging is SPI (exported, no public
     // header): a Mac App Store build may want only JSGarbageCollect's hint.
     if (g_sync_gc) g_sync_gc(rt->ctx); else JSGarbageCollect(rt->ctx);
@@ -320,7 +373,7 @@ static void loop_activity(CFRunLoopObserverRef observer, CFRunLoopActivity activ
     (void)observer;
     jsr_runtime *rt = info;
     if (activity == kCFRunLoopAfterWaiting) rt->ran_js = true;
-    else if (rt->ran_js) CFRunLoopTimerSetNextFireDate(rt->gc_timer, CFAbsoluteTimeGetCurrent() + idle_gc_delay());
+    else if (rt->ran_js) CFRunLoopTimerSetNextFireDate(rt->gc_timer, CFAbsoluteTimeGetCurrent() + idle_gc_delay(rt));
 }
 #else
 static gboolean gc_source_fired(gpointer info) {
@@ -336,19 +389,18 @@ static void arm_idle_gc(jsr_runtime *rt) {
         g_source_destroy(rt->gc_source);
         g_source_unref(rt->gc_source);
     }
-    rt->gc_source = g_timeout_source_new((guint)(idle_gc_delay() * 1000));
+    rt->gc_source = g_timeout_source_new((guint)(idle_gc_delay(rt) * 1000));
     g_source_set_callback(rt->gc_source, gc_source_fired, rt, NULL);
     g_source_attach(rt->gc_source, rt->gctx);
 }
 #endif
 
-static bool g_until_idle;
 static void maybe_stop_when_idle(jsr_runtime *rt) {
-    if (g_until_idle && rt->refs == 0 && queue_empty(rt)) loop_wake(rt);
+    if (rt->until_idle && rt->refs == 0 && queue_empty(rt)) loop_wake(rt);
 }
 
 void jsr_run(jsr_runtime *rt, bool until_idle) {
-    g_until_idle = until_idle;
+    rt->until_idle = until_idle;
     while (!rt->stopped) {
         if (until_idle && rt->refs == 0 && queue_empty(rt)) break;
 #ifdef __APPLE__
@@ -393,7 +445,7 @@ static void free_timer(jsr_runtime *rt, uint32_t id) {
 }
 
 static void timer_fired_id(uint32_t id) {
-    jsr_runtime *rt = g_runtime;
+    jsr_runtime *rt = t_runtime; // timers fire on their runtime's thread
     jsr_timer *t = find_timer(rt, id, NULL);
     if (!t) return;
     JSObjectRef fn = t->fn;
@@ -421,7 +473,7 @@ static gboolean timer_fired(gpointer info) {
 // after the timers already being run.
 static JSValueRef rt_set_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
-    jsr_runtime *rt = g_runtime;
+    jsr_runtime *rt = jsr_from_context(ctx);
     if (argc < 1 || !JSValueIsObject(ctx, argv[0])) return JSValueMakeNumber(ctx, 0);
     double ms = argc > 1 ? JSValueToNumber(ctx, argv[1], NULL) : 0;
     bool repeat = argc > 2 && JSValueToBoolean(ctx, argv[2]);
@@ -452,13 +504,13 @@ static JSValueRef rt_set_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self
 }
 static JSValueRef rt_clear_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
-    if (argc > 0) free_timer(g_runtime, (uint32_t)JSValueToNumber(ctx, argv[0], NULL));
+    if (argc > 0) free_timer(jsr_from_context(ctx), (uint32_t)JSValueToNumber(ctx, argv[0], NULL));
     return JSValueMakeUndefined(ctx);
 }
 // __rt.refTimer(id, bool)
 static JSValueRef rt_ref_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
-    jsr_runtime *rt = g_runtime;
+    jsr_runtime *rt = jsr_from_context(ctx);
     jsr_timer *t = argc > 1 ? find_timer(rt, (uint32_t)JSValueToNumber(ctx, argv[0], NULL), NULL) : NULL;
     if (t) {
         bool want = JSValueToBoolean(ctx, argv[1]);
@@ -483,22 +535,33 @@ static JSValueRef rt_write(JSContextRef ctx, JSObjectRef f, JSObjectRef self, si
 }
 static JSValueRef rt_exit(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
-    jsr_runtime *rt = g_runtime;
+    jsr_runtime *rt = jsr_from_context(ctx);
     int code = argc > 0 ? (int)JSValueToNumber(ctx, argv[0], NULL) : rt->exit_code;
-    if (g_exiting) { fflush(stdout); fflush(stderr); exit(code); }
+    if (rt->worker) {
+        if (rt->exiting) rt->exit_code = code;
+        else stop_worker(rt, code);
+        *exc = jsr_string(ctx, "livewire:worker-exit"); // unwinds; the watchdog ends what catches it
+        return JSValueMakeUndefined(ctx);
+    }
+    if (rt->exiting) { fflush(stdout); fflush(stderr); exit(code); }
     exit_now(rt, code);
 }
 // __rt.fatal(prefix, error): print it and exit 1 (an unhandled rejection).
 static JSValueRef rt_fatal(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
+    jsr_runtime *rt = jsr_from_context(ctx);
+    if (rt->worker) {
+        jsr_report_exception(rt, argc > 1 ? argv[1] : JSValueMakeUndefined(ctx));
+        return JSValueMakeUndefined(ctx);
+    }
     char *prefix = argc > 0 ? jsr_to_utf8(ctx, argv[0]) : strdup("");
-    print_error(g_runtime, prefix, argc > 1 ? argv[1] : JSValueMakeUndefined(ctx));
+    print_error(rt, prefix, argc > 1 ? argv[1] : JSValueMakeUndefined(ctx));
     free(prefix);
-    exit_now(g_runtime, 1);
+    exit_now(rt, 1);
 }
 static JSValueRef rt_set_exit_code(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
-    if (argc > 0) g_runtime->exit_code = (int)JSValueToNumber(ctx, argv[0], NULL);
+    if (argc > 0) jsr_from_context(ctx)->exit_code = (int)JSValueToNumber(ctx, argv[0], NULL);
     return JSValueMakeUndefined(ctx);
 }
 static JSValueRef rt_cwd(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
@@ -560,7 +623,7 @@ static void deliver_signal(jsr_runtime *rt, void *data) {
 static gboolean signal_fired(gpointer data) {
     signal_task *task = malloc(sizeof *task);
     task->signo = (int)(intptr_t)data;
-    deliver_signal(g_runtime, task);
+    deliver_signal(g_main_runtime, task);
     return G_SOURCE_CONTINUE;
 }
 #endif
@@ -569,11 +632,11 @@ static JSValueRef rt_watch_signal(JSContextRef ctx, JSObjectRef f, JSObjectRef s
     char *name = argc > 0 ? jsr_to_utf8(ctx, argv[0]) : strdup("");
     int signo = !strcmp(name, "SIGINT") ? SIGINT : !strcmp(name, "SIGTERM") ? SIGTERM : !strcmp(name, "SIGHUP") ? SIGHUP : 0;
     free(name);
-    if (!signo) return JSValueMakeBoolean(ctx, false);
+    if (!signo || jsr_from_context(ctx)->worker) return JSValueMakeBoolean(ctx, false); // signals go to the main thread
 #ifndef __APPLE__
     GSource *src = g_unix_signal_source_new(signo);
     g_source_set_callback(src, signal_fired, (void *)(intptr_t)signo, NULL);
-    g_source_attach(src, g_runtime->gctx); // lives for the process
+    g_source_attach(src, g_main_runtime->gctx); // lives for the process
     g_source_unref(src);
     return JSValueMakeBoolean(ctx, true);
 #else
@@ -582,11 +645,21 @@ static JSValueRef rt_watch_signal(JSContextRef ctx, JSObjectRef f, JSObjectRef s
     dispatch_source_set_event_handler(src, ^{
         signal_task *task = malloc(sizeof *task);
         task->signo = signo;
-        jsr_post(g_runtime, deliver_signal, task);
+        jsr_post(g_main_runtime, deliver_signal, task);
     });
     dispatch_resume(src); // lives for the process
     return JSValueMakeBoolean(ctx, true);
 #endif
+}
+
+// __rt.refLoop(bool): a handle the prelude keeps (a Worker, a port with a
+// listener) holds the loop open.
+static JSValueRef rt_ref_loop(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
+    (void)f; (void)self; (void)exc;
+    jsr_runtime *rt = jsr_from_context(ctx);
+    if (argc > 0 && JSValueToBoolean(ctx, argv[0])) jsr_ref(rt);
+    else { jsr_unref(rt); maybe_stop_when_idle(rt); }
+    return JSValueMakeUndefined(ctx);
 }
 
 static JSObjectRef make_env(JSContextRef ctx) {
@@ -601,15 +674,74 @@ static JSObjectRef make_env(JSContextRef ctx) {
     return env;
 }
 
-jsr_runtime *jsr_create(int argc, const char **argv) {
+// JSC's watchdog (SPI, exported without a public header) ends a Worker's
+// running JS once it's been told to stop: terminate() from the parent, or its
+// own process.exit() that the code caught.
+typedef bool (*jsr_should_terminate_fn)(JSContextRef, void *);
+typedef void (*jsr_set_time_limit_fn)(JSContextGroupRef, double, jsr_should_terminate_fn, void *);
+static jsr_set_time_limit_fn g_set_time_limit;
+#define WORKER_WATCHDOG_S 0.1
+// Asked after each WORKER_WATCHDOG_S of JS running without a break. JSC stops
+// asking once it gets false, so the limit is armed again each time. JIT code
+// only checks with polling traps (create_runtime turns them on); the default
+// signal-based ones never stop it on the system JavaScriptCore.
+static bool worker_should_terminate(JSContextRef ctx, void *info) {
+    if (atomic_load(&((jsr_runtime *)info)->terminating)) return true;
+    g_set_time_limit(JSContextGetGroup(ctx), WORKER_WATCHDOG_S, worker_should_terminate, info);
+    return false;
+}
+
+static jsr_runtime *create_runtime(int argc, const char **argv, struct jsr_worker *worker);
+jsr_runtime *jsr_create(int argc, const char **argv) { return create_runtime(argc, argv, NULL); }
+jsr_runtime *jsr_create_worker(int argc, const char **argv, struct jsr_worker *worker) {
+    jsr_runtime *rt = create_runtime(argc, argv, worker);
+    if (!g_set_time_limit) g_set_time_limit = (jsr_set_time_limit_fn)dlsym(RTLD_DEFAULT, "JSContextGroupSetExecutionTimeLimit");
+    if (g_set_time_limit) g_set_time_limit(JSContextGetGroup(rt->ctx), WORKER_WATCHDOG_S, worker_should_terminate, rt);
+    if (g_runtime_init) g_runtime_init(rt);
+    return rt;
+}
+
+// A finished Worker's runtime: its timers and context go; the struct stays,
+// marked dead, because natives on other threads may still post to it.
+void jsr_destroy(jsr_runtime *rt) {
+    while (rt->timers) free_timer(rt, rt->timers->id);
+    pthread_mutex_lock(&rt->lock);
+    rt->dead = true;
+    jsr_task *task = rt->head;
+    rt->head = rt->tail = NULL;
+    pthread_mutex_unlock(&rt->lock);
+    while (task) { jsr_task *next = task->next; free(task); task = next; }
+    pthread_mutex_lock(&g_runtimes_lock);
+    for (jsr_runtime **link = &g_runtimes; *link; link = &(*link)->next_runtime)
+        if (*link == rt) { *link = rt->next_runtime; break; }
+    pthread_mutex_unlock(&g_runtimes_lock);
+#ifdef __APPLE__
+    CFRunLoopTimerInvalidate(rt->gc_timer);
+    CFRelease(rt->gc_timer);
+    CFRunLoopSourceInvalidate(rt->source);
+#else
+    if (rt->gc_source) { g_source_destroy(rt->gc_source); g_source_unref(rt->gc_source); rt->gc_source = NULL; }
+#endif
+    if (rt->dispatch_fn) JSValueUnprotect(rt->ctx, rt->dispatch_fn);
+    JSValueUnprotect(rt->ctx, rt->internal);
+    JSGlobalContextRelease(rt->ctx);
+    rt->ctx = NULL;
+    if (t_runtime == rt) t_runtime = NULL;
+}
+
+static jsr_runtime *create_runtime(int argc, const char **argv, struct jsr_worker *worker) {
     jsr_runtime *rt = calloc(1, sizeof *rt);
-    g_runtime = rt;
+    if (!g_main_runtime) g_main_runtime = rt;
+    t_runtime = rt;
+    rt->worker = worker;
+    rt->last_gc = -1e9;
     rt->argc = argc;
     rt->argv = argv;
     rt->thread = pthread_self();
     pthread_mutex_init(&rt->lock, NULL);
 #ifdef __APPLE__
     rt->loop = CFRunLoopGetCurrent();
+    CFRetain(rt->loop); // kept past a Worker's thread: jsr_post may still wake it
     CFRunLoopSourceContext sctx = {0};
     sctx.info = rt;
     sctx.perform = drain_tasks;
@@ -632,7 +764,16 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     rt->gctx = g_main_context_new();
 #endif
 
-    rt->ctx = JSGlobalContextCreate(NULL);
+    // JSC reads its options once, when the first VM is made: polling traps let
+    // the watchdog stop a Worker's JIT code (see worker_should_terminate).
+    bool set_traps = g_main_runtime == rt && !getenv("JSC_usePollingTraps");
+    if (set_traps) setenv("JSC_usePollingTraps", "true", 0);
+    rt->ctx = JSGlobalContextCreate(NULL); // its own context group: a VM per thread
+    if (set_traps) unsetenv("JSC_usePollingTraps"); // not passed on to child processes
+    pthread_mutex_lock(&g_runtimes_lock);
+    rt->next_runtime = g_runtimes;
+    g_runtimes = rt;
+    pthread_mutex_unlock(&g_runtimes_lock);
     rt->ran_js = true;
     // A full collection now, not the hint JSGarbageCollect gives; exported
     // without a public header on macOS and WebKitGTK, so looked up.
@@ -677,6 +818,8 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     set_value(ctx, rt->internal, "argv", JSObjectMakeArray(ctx, (size_t)argc, args, NULL));
     free(args);
     set_value(ctx, rt->internal, "pid", JSValueMakeNumber(ctx, getpid()));
+    set_value(ctx, rt->internal, "isWorker", JSValueMakeBoolean(ctx, worker != NULL));
+    jsr_set_function(ctx, rt->internal, "refLoop", rt_ref_loop);
     set_value(ctx, JSContextGetGlobalObject(ctx), "__rt", rt->internal);
 
     jsr_eval(rt, (const char *)jsr_prelude_js, "livewire:prelude");

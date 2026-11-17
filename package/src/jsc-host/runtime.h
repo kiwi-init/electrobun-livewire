@@ -10,8 +10,16 @@
 typedef struct jsr_runtime jsr_runtime;
 
 // Creates the context and installs globals on the calling thread, which
-// becomes the JS thread. argv is exposed as process.argv.
+// becomes the JS thread. argv is exposed as process.argv. The first runtime
+// created is the process's main one; each Worker gets another (worker.c).
 jsr_runtime *jsr_create(int argc, const char **argv);
+// What a host installs on every runtime it doesn't create itself (a Worker's):
+// its natives (ffi_install, node_install).
+typedef void (*jsr_init_fn)(jsr_runtime *rt);
+void jsr_set_runtime_init(jsr_init_fn fn);
+jsr_runtime *jsr_main_runtime(void);
+// The calling thread's runtime, else the main one.
+jsr_runtime *jsr_current(void);
 JSGlobalContextRef jsr_context(jsr_runtime *rt);
 
 // Evaluates a classic script. Returns false (and reports) on an uncaught error.
@@ -49,4 +57,18 @@ void jsr_set_function(JSContextRef ctx, JSObjectRef obj, const char *name, JSObj
 JSObjectRef jsr_internal(jsr_runtime *rt);
 char *jsr_to_utf8(JSContextRef ctx, JSValueRef value);
 JSValueRef jsr_string(JSContextRef ctx, const char *utf8);
+// The runtime a context belongs to (NULL: jsr_current()).
 jsr_runtime *jsr_from_context(JSContextRef ctx);
+
+// Workers (worker.c). A Worker's runtime runs on its own thread with its own
+// loop and JavaScriptCore VM; messages are copied between runtimes.
+struct jsr_worker;
+jsr_runtime *jsr_create_worker(int argc, const char **argv, struct jsr_worker *worker);
+void jsr_destroy(jsr_runtime *rt);
+struct jsr_worker *jsr_worker_of(jsr_runtime *rt); // NULL in the main runtime
+void jsr_worker_terminating(jsr_runtime *rt);       // thread-safe: the watchdog ends its JS
+void jsr_worker_error(jsr_runtime *rt, JSValueRef exception);
+int jsr_argc(jsr_runtime *rt);
+const char **jsr_argv(jsr_runtime *rt);
+// The Worker natives on __rt; hosts call it on every runtime.
+void worker_install(jsr_runtime *rt);

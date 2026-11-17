@@ -24,6 +24,7 @@ if (!entry || !outfile) {
 }
 const shims: Record<string, string> = {
 	"bun:ffi": join(here, "ffi/bun-ffi.js"),
+	"bun:sqlite": join(here, "node/sqlite.js"),
 	fs: join(here, "node/fs.js"),
 	"fs/promises": join(here, "node/fs-promises.js"),
 	os: join(here, "node/os.js"),
@@ -35,11 +36,12 @@ const shims: Record<string, string> = {
 	readline: join(here, "node/readline.js"),
 	"stream/promises": join(here, "node/stream-promises.js"),
 	url: join(here, "node/url.js"),
+	worker_threads: join(here, "node/worker_threads.js"),
 };
 const shimFor = (specifier: string) => shims[specifier.replace(/^node:/, "")];
 // For target "bun", builtins never reach a plugin's onResolve, so imports
 // are rewritten in the source as it loads.
-const importPattern = /(from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)(["'])((?:node:)?[a-z_/]+|bun:ffi)\2/g;
+const importPattern = /(from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)(["'])((?:node:)?[a-z_/]+|bun:ffi|bun:sqlite)\2/g;
 
 const result = await Bun.build({
 	entrypoints: [join(here, "node/entry.js")],
@@ -68,7 +70,7 @@ export const appEnginePageScript = "";`,
 						loader: "js",
 					};
 				});
-				build.onResolve({ filter: /^(node:)?[a-z_/]+$|^bun:ffi$/ }, (args: OnResolveArgs) => {
+				build.onResolve({ filter: /^(node:)?[a-z_/]+$|^bun:(ffi|sqlite)$/ }, (args: OnResolveArgs) => {
 					// A shim's own import of the builtin gets Bun's browser polyfill.
 					if (Object.values(shims).includes(args.importer)) return undefined;
 					const shim = shimFor(args.path);

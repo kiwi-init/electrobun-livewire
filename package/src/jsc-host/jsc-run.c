@@ -50,14 +50,21 @@ static JSValueRef t_pipe(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size
     return JSObjectMakeArray(ctx, 2, pair, NULL);
 }
 
+static void install_natives(jsr_runtime *rt) {
+    ffi_install(rt);
+    node_install(rt);
+    sqlite_install(rt);
+    worker_install(rt);
+}
+
 int main(int argc, const char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: jsc-run <script.js> [args...]\n");
         return 2;
     }
+    jsr_set_runtime_init(install_natives);
     jsr_runtime *rt = jsr_create(argc, argv);
-    ffi_install(rt);
-    node_install(rt);
+    install_natives(rt);
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef test = JSObjectMake(ctx, NULL, NULL);
     jsr_set_function(ctx, test, "postFromThread", t_post_from_thread);

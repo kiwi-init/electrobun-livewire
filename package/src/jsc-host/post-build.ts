@@ -1,7 +1,8 @@
 // Livewire: moves a Hutch-built app's main process from Bun to the system
 // JavaScriptCore. Hutch builds the app as usual (mainProcess "bun"), then runs
 // this postBuild hook from the devkit, before it signs and packages. The hook:
-// - bundles the app's main entry for the JSC host (bundle.ts);
+// - bundles the app's main entry for the JSC host (bundle.ts), and any worker
+//   scripts next to it;
 // - puts the devkit's prebuilt host at MacOS/main and removes Bun;
 // - sets build.json's mainProcess to "jsc", which the launcher runs as a
 //   native main process;
@@ -80,6 +81,24 @@ const bundled = Bun.spawnSync(
 	{ cwd: projectDir, stdout: "inherit", stderr: "inherit" },
 );
 if (bundled.exitCode !== 0) fail("bundling " + entry + " failed");
+
+// 1b. Workers: any other script in app/bun (a `new Worker(file)` target the
+// app's build put there) is a Bun bundle too, so each is bundled again for the
+// host, in place, with the same runtime globals and shims.
+const bunDir = join(app.resources, "app", "bun");
+for (const name of readdirSync(bunDir)) {
+	if (name === "index.js" || !/\.(js|mjs)$/.test(name)) continue;
+	const file = join(bunDir, name);
+	const out = join(mkdtempSync(join(tmpdir(), "livewire-jsc-worker-")), name);
+	const worker = Bun.spawnSync([process.execPath, join(here, "bundle.ts"), file, out, "--minify", ...aliases, "--preload-dir", app.resources], {
+		cwd: projectDir,
+		stdout: "inherit",
+		stderr: "inherit",
+	});
+	if (worker.exitCode !== 0) fail("bundling the worker " + name + " failed");
+	copyFileSync(out, file);
+	rmSync(join(out, ".."), { recursive: true, force: true });
+}
 
 // 2. The host in place of Bun.
 const main = join(app.exeDir, "main");
