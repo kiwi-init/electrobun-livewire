@@ -1015,10 +1015,21 @@ async function copyToDist() {
 
 	if (OS === "macos") await buildJscHost(".dylib");
 	else if (OS === "linux") {
-		// Needs WebKitGTK's JavaScriptCore headers (libjavascriptcoregtk-4.1-dev),
-		// GLib and libgcrypt; without them the devkit ships no JSC host.
-		if (spawnSync("pkg-config", ["--exists", "javascriptcoregtk-4.1"]).status === 0) await buildJscHost(".so");
-		else console.warn("No javascriptcoregtk-4.1 (pkg-config): this devkit has no JSC host");
+		// Optional on Linux: needs WebKitGTK's JavaScriptCore headers
+		// (libjavascriptcoregtk-4.1-dev), GLib and libgcrypt (libgcrypt20-dev).
+		// Without them, or if the host fails to build, the devkit ships no JSC host.
+		const has = (command: string, args: string[]) => spawnSync(command, args).status === 0;
+		const deps = has("pkg-config", ["--exists", "javascriptcoregtk-4.1", "glib-2.0"]) &&
+			(has("pkg-config", ["--exists", "libgcrypt"]) || has("libgcrypt-config", ["--version"]));
+		if (!deps) console.warn("JSC host: no javascriptcoregtk-4.1/glib-2.0/libgcrypt headers, so this devkit has no JSC host");
+		else {
+			try {
+				await buildJscHost(".so");
+			} catch (error) {
+				rmSync(join("dist", "api", "jsc-host"), { recursive: true, force: true });
+				console.warn("JSC host: the Linux host failed to build, so this devkit has none:", error);
+			}
+		}
 	}
 
 	const nativeDevkitManifest = createNativeDevkitManifest({
