@@ -1,16 +1,27 @@
 #!/bin/sh
-# Runs the runtime's tests: each tests/*.test.js must print what its
+# Runs the runtime's tests: each tests/**/*.test.js (a classic script) or
+# *.test.mjs (bundled first, as an app would be) must print what its
 # "// expect:" lines say, in order, exiting with "// exit:" (default 0).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${1:-$(mktemp -d)}
 "$HERE/build.sh" "$OUT" || exit 1
+# Not JSC_*: JavaScriptCore reads JSC_-prefixed variables as engine options.
+export LIVEWIRE_TESTLIB="$OUT/libjsctest.dylib"
+mkdir -p "$OUT/bundled"
 fail=0
-for t in "$HERE"/tests/*.test.js; do
+for t in "$HERE"/tests/*.test.js "$HERE"/tests/*/*.test.mjs; do
+  [ -e "$t" ] || continue
+  run=$t
+  case $t in
+    *.mjs)
+      run="$OUT/bundled/$(basename "$t" .mjs).js"
+      bun build "$t" --target=browser --format=iife --outfile "$run" >/dev/null || { echo "FAIL $(basename "$t") (bundle)"; fail=1; continue; } ;;
+  esac
   expected=$(sed -n 's|^// expect: ||p' "$t")
   want_code=$(sed -n 's|^// exit: ||p' "$t")
   want_code=${want_code:-0}
-  actual=$("$OUT/jsc-run" "$t" 2>&1)
+  actual=$("$OUT/jsc-run" "$run" 2>&1)
   code=$?
   if [ $code -ne "$want_code" ] || [ "$actual" != "$expected" ]; then
     echo "FAIL $(basename "$t") (exit $code)"
