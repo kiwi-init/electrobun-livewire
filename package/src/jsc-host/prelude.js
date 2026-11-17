@@ -213,6 +213,119 @@
 			}
 		};
 	}
+// --- URL / URLSearchParams (JSC alone has neither) -----------------------
+	if (typeof g.URLSearchParams !== "function") {
+		const enc = (s) => encodeURIComponent(s).replace(/%20/g, "+").replace(/[!'()~]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+		const dec = (s) => { try { return decodeURIComponent(s.replace(/\+/g, " ")); } catch { return s; } };
+		g.URLSearchParams = class URLSearchParams {
+			constructor(init = "") {
+				this._list = [];
+				if (typeof init === "string") {
+					for (const part of init.replace(/^\?/, "").split("&")) {
+						if (!part) continue;
+						const i = part.indexOf("=");
+						this._list.push(i < 0 ? [dec(part), ""] : [dec(part.slice(0, i)), dec(part.slice(i + 1))]);
+					}
+				} else if (init && typeof init[Symbol.iterator] === "function") {
+					for (const [k, v] of init) this._list.push([String(k), String(v)]);
+				} else if (init && typeof init === "object") {
+					for (const k of Object.keys(init)) this._list.push([k, String(init[k])]);
+				}
+			}
+			_changed() { if (this._url) this._url._search = this._list.length ? "?" + this.toString() : ""; }
+			append(k, v) { this._list.push([String(k), String(v)]); this._changed(); }
+			delete(k) { this._list = this._list.filter(([n]) => n !== k); this._changed(); }
+			get(k) { const e = this._list.find(([n]) => n === k); return e ? e[1] : null; }
+			getAll(k) { return this._list.filter(([n]) => n === k).map(([, v]) => v); }
+			has(k) { return this._list.some(([n]) => n === k); }
+			set(k, v) {
+				const i = this._list.findIndex(([n]) => n === k);
+				if (i < 0) this._list.push([String(k), String(v)]);
+				else { this._list[i][1] = String(v); this._list = this._list.filter(([n], j) => n !== k || j === i); }
+				this._changed();
+			}
+			sort() { this._list.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)); this._changed(); }
+			forEach(fn, thisArg) { for (const [k, v] of this._list) fn.call(thisArg, v, k, this); }
+			keys() { return this._list.map(([k]) => k)[Symbol.iterator](); }
+			values() { return this._list.map(([, v]) => v)[Symbol.iterator](); }
+			entries() { return this._list.map((e) => [e[0], e[1]])[Symbol.iterator](); }
+			[Symbol.iterator]() { return this.entries(); }
+			get size() { return this._list.length; }
+			toString() { return this._list.map(([k, v]) => enc(k) + "=" + enc(v)).join("&"); }
+		};
+	}
+	if (typeof g.URL !== "function") {
+		const special = { "http:": "80", "https:": "443", "ws:": "80", "wss:": "443", "ftp:": "21", "file:": "" };
+		const normalizePath = (path) => {
+			const out = [];
+			for (const seg of path.split("/")) {
+				if (seg === "..") { if (out.length > 1) out.pop(); }
+				else if (seg !== ".") out.push(seg);
+			}
+			const joined = out.join("/");
+			return (path.endsWith("/.") || path.endsWith("/..")) && !joined.endsWith("/") ? joined + "/" : joined;
+		};
+		const pattern = /^([a-zA-Z][a-zA-Z0-9+.-]*:)(?:\/\/(?:([^:@\/?#]*)(?::([^@\/?#]*))?@)?(\[[^\]]*\]|[^:\/?#]*)(?::(\d*))?)?([^?#]*)(\?[^#]*)?(#.*)?$/;
+		class URL {
+			constructor(input, base) {
+				input = String(input).trim();
+				let m = input.match(pattern);
+				if (!m || (m && base !== undefined && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(input))) m = null;
+				if (!m) {
+					if (base === undefined) throw new TypeError("Invalid URL: " + input);
+					const b = base instanceof URL ? base : new URL(base);
+					let path, search = "", hash = "";
+					const h = input.indexOf("#");
+					if (h >= 0) { hash = input.slice(h); input = input.slice(0, h); }
+					const q = input.indexOf("?");
+					if (q >= 0) { search = input.slice(q); input = input.slice(0, q); }
+					if (input.startsWith("//")) return new URL(b.protocol + input + search + hash);
+					if (input.startsWith("/")) path = input;
+					else if (input === "") { path = b.pathname; if (!search && q < 0) search = b.search; }
+					else path = b.pathname.slice(0, b.pathname.lastIndexOf("/") + 1) + input;
+					m = (b.protocol + (b._hasAuthority ? "//" + (b.username ? b.username + (b.password ? ":" + b.password : "") + "@" : "") + b.host : "") + normalizePath(path) + search + hash).match(pattern);
+				}
+				this._protocol = m[1].toLowerCase();
+				this._hasAuthority = m[4] !== undefined || input.slice(m[1].length).startsWith("//");
+				this.username = m[2] || "";
+				this.password = m[3] || "";
+				this._hostname = (m[4] || "").toLowerCase();
+				this._port = m[5] && special[this._protocol] !== m[5] ? m[5] : "";
+				let path = m[6] || "";
+				if (this._hasAuthority && path === "" && this._protocol in special) path = "/";
+				this._pathname = this._hasAuthority ? normalizePath(path) : path;
+				this._search = m[7] && m[7] !== "?" ? m[7] : "";
+				this._hash = m[8] && m[8] !== "#" ? m[8] : "";
+				this._params = new g.URLSearchParams(this._search);
+				this._params._url = this;
+			}
+			get protocol() { return this._protocol; }
+			set protocol(v) { this._protocol = String(v).replace(/:?$/, ":").toLowerCase(); }
+			get hostname() { return this._hostname; }
+			set hostname(v) { this._hostname = String(v).toLowerCase(); }
+			get port() { return this._port; }
+			set port(v) { this._port = String(v); }
+			get host() { return this._hostname + (this._port ? ":" + this._port : ""); }
+			set host(v) { const [h, p] = String(v).split(":"); this._hostname = h.toLowerCase(); this._port = p || ""; }
+			get pathname() { return this._pathname; }
+			set pathname(v) { v = String(v); this._pathname = this._hasAuthority && !v.startsWith("/") ? "/" + v : v; }
+			get search() { return this._search; }
+			set search(v) { v = String(v); this._search = v && v !== "?" ? (v.startsWith("?") ? v : "?" + v) : ""; this._params = new g.URLSearchParams(this._search); this._params._url = this; }
+			get searchParams() { return this._params; }
+			get hash() { return this._hash; }
+			set hash(v) { v = String(v); this._hash = v && v !== "#" ? (v.startsWith("#") ? v : "#" + v) : ""; }
+			get origin() { return this._protocol in special && this._protocol !== "file:" ? this._protocol + "//" + this.host : "null"; }
+			get href() {
+				const auth = this.username ? this.username + (this.password ? ":" + this.password : "") + "@" : "";
+				return this._protocol + (this._hasAuthority ? "//" + auth + this.host : "") + this._pathname + this._search + this._hash;
+			}
+			set href(v) { Object.assign(this, new URL(v)); }
+			toString() { return this.href; }
+			toJSON() { return this.href; }
+			static canParse(input, base) { try { new URL(input, base); return true; } catch { return false; } }
+		}
+		g.URL = URL;
+	}
 	g.global = g;
 	g.self = g.self || g;
 })(globalThis.__rt);

@@ -16,12 +16,13 @@ for t in "$HERE"/tests/*.test.js "$HERE"/tests/*/*.test.mjs; do
   case $t in
     *.mjs)
       run="$OUT/bundled/$(basename "$t" .mjs).js"
-      bun build "$t" --target=browser --format=iife --outfile "$run" >/dev/null || { echo "FAIL $(basename "$t") (bundle)"; fail=1; continue; } ;;
+      bun "$HERE/bundle.ts" "$t" "$run" || { echo "FAIL $(basename "$t") (bundle)"; fail=1; continue; } ;;
   esac
   expected=$(sed -n 's|^// expect: ||p' "$t")
   want_code=$(sed -n 's|^// exit: ||p' "$t")
   want_code=${want_code:-0}
-  actual=$("$OUT/jsc-run" "$run" 2>&1)
+  # A 10 s limit per test, so a loop that never goes idle fails instead of hanging.
+  actual=$(perl -e 'alarm 10; exec @ARGV' "$OUT/jsc-run" "$run" 2>&1)
   code=$?
   if [ $code -ne "$want_code" ] || [ "$actual" != "$expected" ]; then
     echo "FAIL $(basename "$t") (exit $code)"
