@@ -1,6 +1,7 @@
 // jsc-run: runs a script on the Livewire JSC runtime until the loop is idle,
 // exiting with process.exitCode. Used by the runtime's own tests.
 #include "runtime.h"
+#include "ffi/ffi.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -45,6 +46,7 @@ int main(int argc, const char **argv) {
         return 2;
     }
     jsr_runtime *rt = jsr_create(argc, argv);
+    ffi_install(rt);
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef test = JSObjectMake(ctx, NULL, NULL);
     jsr_set_function(ctx, test, "postFromThread", t_post_from_thread);
