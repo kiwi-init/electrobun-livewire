@@ -21,9 +21,9 @@ CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$GEN -I$HERE -I$HERE/ffi"
 SOURCES="$HERE/runtime.c $HERE/node.c $GEN/ffi_glue.c $HERE/app-host.c"
 if [ "$(uname -s)" = "Darwin" ]; then
   # shellcheck disable=SC2086
-  clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -Wl,-rpath,@executable_path -o "$OUT" $SOURCES
+  clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -framework Security -lz -Wl,-rpath,@executable_path -o "$OUT" $SOURCES
 else
   # shellcheck disable=SC2086
   "${CC:-cc}" $CFLAGS $(pkg-config --cflags javascriptcoregtk-4.1 glib-2.0) -Wl,-rpath,'$ORIGIN' -o "$OUT" $SOURCES \
-    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -ldl -lpthread
+    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -lz -ldl -lpthread
 fi
