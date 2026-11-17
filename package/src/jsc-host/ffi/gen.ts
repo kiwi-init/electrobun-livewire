@@ -18,6 +18,8 @@ const flagValues = (name: string): string[] =>
 		return arg === name && value ? [value] : [];
 	});
 const extras = flagValues("--extra");
+// --sdk <dir>: the SDK's sdks/main to read (default: this checkout's).
+const sdkDir = flagValues("--sdk")[0] ?? join(here, "../../sdks/main");
 // --check-lib <dylib>: fail when the SDK declares a symbol that library (same
 // file name) doesn't export.
 const checkLibs = flagValues("--check-lib");
@@ -28,7 +30,7 @@ if (!outDir) {
 mkdirSync(outDir, { recursive: true });
 
 // 1. dlopen tables: recorded by running proc/native.ts against the recorder.
-const extracted = Bun.spawnSync(["bun", join(here, "extract.ts")], { stderr: "inherit" });
+const extracted = Bun.spawnSync(["bun", join(here, "extract.ts"), sdkDir], { stderr: "inherit" });
 if (extracted.exitCode !== 0) process.exit(1);
 type Decl = { args?: string[]; returns?: string };
 const record = JSON.parse(extracted.stdout.toString()) as { libraries: { path: string; symbols: Record<string, Decl> }[] };
@@ -51,20 +53,25 @@ for (const libPath of checkLibs) {
 }
 
 // 2. JSCallback signatures: read from the source, since some are created
-// lazily (tray, wgpu input) and never run during extraction.
-const nativeSource = readFileSync(join(here, "../../sdks/main/proc/native.ts"), "utf8");
+// lazily (tray, wgpu input) and never run during extraction. Every SDK file
+// that creates one is read (proc/native.ts, webgpuAdapter.ts, ...).
 type CallbackSig = { args: string[]; returns: string };
 const callbackSigs = new Map<string, CallbackSig>();
-const lines = nativeSource.split("\n");
-const sites = lines.flatMap((line, i) => (line.includes("new JSCallback(") && !line.trim().startsWith("//") ? [i] : []));
-for (const [n, start] of sites.entries()) {
-	const end = sites[n + 1] ?? lines.length;
-	const chunk = lines.slice(start, end).join("\n");
-	const m = chunk.match(/args:\s*\[([^\]]*)\]\s*,\s*returns:\s*([^,\n}]+)/s);
-	if (!m) throw new Error("gen: can't read the JSCallback signature at native.ts:" + (start + 1));
-	const norm = (t: string) => t.replace(/\/\/.*$/gm, "").trim().replace(/^FFIType\./, "").replace(/["']/g, "");
-	const sig = { args: (m[1] ?? "").split(",").map(norm).filter(Boolean), returns: norm(m[2] ?? "void") };
-	callbackSigs.set(sigKey(sig.args, sig.returns), sig);
+for (const file of new Bun.Glob("**/*.ts").scanSync(sdkDir)) {
+	if (/\.test\.ts$|(^|\/)__tests__\//.test(file)) continue;
+	const source = readFileSync(join(sdkDir, file), "utf8");
+	if (!source.includes("new JSCallback(")) continue;
+	const lines = source.split("\n");
+	const sites = lines.flatMap((line, i) => (line.includes("new JSCallback(") && !line.trim().startsWith("//") ? [i] : []));
+	for (const [n, start] of sites.entries()) {
+		const end = sites[n + 1] ?? lines.length;
+		const chunk = lines.slice(start, end).join("\n");
+		const m = chunk.match(/args:\s*\[([^\]]*)\]\s*,\s*returns:\s*([^,\n}]+)/s);
+		if (!m) throw new Error(`gen: can't read the JSCallback signature at ${file}:${start + 1}`);
+		const norm = (t: string) => t.replace(/\/\/.*$/gm, "").trim().replace(/^FFIType\./, "").replace(/["']/g, "");
+		const sig = { args: (m[1] ?? "").split(",").map(norm).filter(Boolean), returns: norm(m[2] ?? "void") };
+		callbackSigs.set(sigKey(sig.args, sig.returns), sig);
+	}
 }
 for (const extraPath of extras) {
 	for (const sig of JSON.parse(readFileSync(extraPath, "utf8")).callbacks ?? []) {

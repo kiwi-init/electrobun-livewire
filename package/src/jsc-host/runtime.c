@@ -8,12 +8,15 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 extern char **environ;
 
@@ -340,6 +343,19 @@ static JSValueRef rt_set_exit_code(JSContextRef ctx, JSObjectRef f, JSObjectRef 
     if (argc > 0) g_runtime->exit_code = (int)JSValueToNumber(ctx, argv[0], NULL);
     return JSValueMakeUndefined(ctx);
 }
+static JSValueRef rt_cwd(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
+    (void)f; (void)self; (void)argc; (void)argv; (void)exc;
+    char buf[PATH_MAX];
+    return getcwd(buf, sizeof buf) ? jsr_string(ctx, buf) : jsr_string(ctx, "/");
+}
+static JSValueRef rt_chdir(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
+    (void)f; (void)self;
+    char *path = argc > 0 ? jsr_to_utf8(ctx, argv[0]) : NULL;
+    int failed = !path || chdir(path) != 0;
+    free(path);
+    if (failed) *exc = jsr_string(ctx, "chdir failed");
+    return JSValueMakeUndefined(ctx);
+}
 static JSValueRef rt_now(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)argc; (void)argv; (void)exc;
     static mach_timebase_info_data_t tb;
@@ -415,6 +431,14 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     jsr_set_function(ctx, rt->internal, "fatal", rt_fatal);
     jsr_set_function(ctx, rt->internal, "setExitCode", rt_set_exit_code);
     jsr_set_function(ctx, rt->internal, "now", rt_now);
+    jsr_set_function(ctx, rt->internal, "cwd", rt_cwd);
+    jsr_set_function(ctx, rt->internal, "chdir", rt_chdir);
+    {
+        char exe[PATH_MAX], real[PATH_MAX];
+        uint32_t size = sizeof exe;
+        if (_NSGetExecutablePath(exe, &size) == 0 && realpath(exe, real))
+            set_value(ctx, rt->internal, "execPath", jsr_string(ctx, real));
+    }
     jsr_set_function(ctx, rt->internal, "watchSignal", rt_watch_signal);
     set_value(ctx, rt->internal, "env", make_env(ctx));
     JSValueRef *args = calloc((size_t)argc + 1, sizeof *args);

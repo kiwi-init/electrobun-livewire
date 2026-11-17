@@ -3,11 +3,21 @@
 // pointed at its shims, and the runtime's globals (Buffer, Bun.file)
 // evaluated before the app's code. Runs with Bun at build time.
 //   bun package/src/jsc-host/bundle.ts <entry> <outfile> [--minify]
+//     [--alias electrobun/bun=/path/to/sdks/main/index.ts ...]
+//     [--preload-dir <dir with preload-full.js and preload-sandboxed.js>]
 import type { OnLoadArgs, OnResolveArgs, PluginBuilder } from "bun";
 import { join, resolve } from "node:path";
 
 const here = import.meta.dir;
-const [entry, outfile] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const flag = (name: string): string[] =>
+	process.argv.flatMap((arg, i) => {
+		const value = process.argv[i + 1];
+		return arg === name && value ? [value] : [];
+	});
+const valueFlags = new Set(["--alias", "--preload-dir"]);
+const [entry, outfile] = process.argv.slice(2).filter((a, i, all) => !a.startsWith("--") && !valueFlags.has(all[i - 1] ?? ""));
+const aliases = Object.fromEntries(flag("--alias").map((pair) => pair.split("=") as [string, string]));
+const preloadDir = flag("--preload-dir")[0];
 if (!entry || !outfile) {
 	console.error("usage: bundle.ts <entry> <outfile> [--minify]");
 	process.exit(2);
@@ -20,6 +30,10 @@ const shims: Record<string, string> = {
 	crypto: join(here, "node/crypto.js"),
 	net: join(here, "node/net.js"),
 	child_process: join(here, "node/child_process.js"),
+	path: join(here, "node/path.js"),
+	zlib: join(here, "node/zlib.js"),
+	readline: join(here, "node/readline.js"),
+	url: join(here, "node/url.js"),
 };
 const shimFor = (specifier: string) => shims[specifier.replace(/^node:/, "")];
 // For target "bun", builtins never reach a plugin's onResolve, so imports
@@ -37,13 +51,32 @@ const result = await Bun.build({
 			name: "livewire-jsc",
 			setup(build: PluginBuilder) {
 				build.onResolve({ filter: /^livewire-jsc-app$/ }, () => ({ path: resolve(entry) }));
+				for (const [name, target] of Object.entries(aliases)) {
+					const escaped = name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+					build.onResolve({ filter: new RegExp("^" + escaped + "$") }, () => ({ path: resolve(target) }));
+				}
+				// The SDK's generated preload module, from a release's preload files.
+				build.onResolve({ filter: /preload\/\.generated\/compiled(\.ts)?$/ }, () => ({ path: "compiled", namespace: "livewire-preload" }));
+				build.onLoad({ filter: /.*/, namespace: "livewire-preload" }, async () => {
+					if (!preloadDir) throw new Error("bundle.ts: the SDK needs --preload-dir");
+					const read = (name: string) => Bun.file(join(preloadDir, name)).text();
+					return {
+						contents: `export const preloadScript = ${JSON.stringify(await read("preload-full.js"))};
+export const preloadScriptSandboxed = ${JSON.stringify(await read("preload-sandboxed.js"))};
+export const appEnginePageScript = "";`,
+						loader: "js",
+					};
+				});
 				build.onResolve({ filter: /^(node:)?[a-z_/]+$|^bun:ffi$/ }, (args: OnResolveArgs) => {
+					// A shim's own import of the builtin gets Bun's browser polyfill.
+					if (Object.values(shims).includes(args.importer)) return undefined;
 					const shim = shimFor(args.path);
 					// Others (path, events, buffer, util, url) use Bun's browser fallbacks.
 					return shim ? { path: shim } : undefined;
 				});
 				build.onLoad({ filter: /\.(ts|tsx|js|mjs)$/ }, async (args: OnLoadArgs) => {
 					const source = await Bun.file(args.path).text();
+					if (Object.values(shims).includes(args.path)) return { contents: source, loader: "js" };
 					const contents = source.replace(importPattern, (match: string, lead: string, quote: string, specifier: string) => {
 						const shim = shimFor(specifier);
 						return shim ? lead + quote + shim + quote : match;
