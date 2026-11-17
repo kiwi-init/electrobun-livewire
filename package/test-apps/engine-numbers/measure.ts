@@ -40,11 +40,11 @@ function memory(pid: number) {
 		const m = fp.match(/Footprint:\s+([\d.]+)\s*(KB|MB|GB)/);
 		const footprint = m ? Number(m[1]) * { KB: 1 / 1024, MB: 1, GB: 1024 }[m[2] as "KB"] : NaN;
 		const rss = Number(Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]).stdout.toString().trim()) / 1024;
-		return { private_mb: footprint, rss_mb: rss };
+		return { private_mb: footprint, dirty_mb: footprint, rss_mb: rss };
 	}
 	const rollup = readFileSync(`/proc/${pid}/smaps_rollup`, "utf8");
 	const kb = (k: string) => Number(rollup.match(new RegExp("^" + k + ":\\s+(\\d+)", "m"))?.[1] ?? NaN);
-	return { private_mb: (kb("Private_Clean") + kb("Private_Dirty")) / 1024, rss_mb: kb("Rss") / 1024 };
+	return { private_mb: (kb("Private_Clean") + kb("Private_Dirty")) / 1024, dirty_mb: kb("Private_Dirty") / 1024, rss_mb: kb("Rss") / 1024 };
 }
 
 async function runOnce(cmd: string[]) {
@@ -88,8 +88,9 @@ for (const engine of ["bun", "jsc"]) {
 		shipped_mb: sizeMb(mains[`${engine}-idle`][0]),
 		launch_ms: median(idle.map((r) => r.boot)),
 		idle_private_mb: median(idle.map((r) => r.private_mb)),
+		idle_dirty_mb: median(idle.map((r) => r.dirty_mb)),
 		idle_rss_mb: median(idle.map((r) => r.rss_mb)),
-		after_work_private_mb: median(work.map((r) => r.private_mb)),
+		after_work_dirty_mb: median(work.map((r) => r.dirty_mb)),
 	};
 	for (const k of ["json_ms", "loop_ms", "string_ms", "objects_ms", "native_call_us"]) row[k] = median(work.map((r) => Number(r.result[k])));
 	row.check = [...new Set(work.map((r) => String(r.result.check)))].join(" | ");
@@ -103,9 +104,11 @@ const os = process.platform === "darwin"
 const labels: [string, string][] = [
 	["shipped_mb", "Runtime shipped in the app (MB)"],
 	["launch_ms", "Launch to first JS line (ms, median of 5)"],
-	["idle_private_mb", process.platform === "darwin" ? "Idle memory, phys footprint (MB)" : "Idle memory, private (MB)"],
+	...(process.platform === "darwin"
+		? ([["idle_dirty_mb", "Idle memory, phys footprint (MB)"]] as [string, string][])
+		: ([["idle_dirty_mb", "Idle memory, private dirty (MB)"], ["idle_private_mb", "Idle private incl. library pages (MB)"]] as [string, string][])),
 	["idle_rss_mb", "Idle RSS (MB)"],
-	["after_work_private_mb", "Memory after the workload (MB)"],
+	["after_work_dirty_mb", "Memory after the workload, no GC yet (MB)"],
 	["json_ms", "JSON: 1.4 MB parse x10 (ms)"],
 	["loop_ms", "Loop: 5M iterations (ms)"],
 	["string_ms", "Strings and regex (ms)"],
