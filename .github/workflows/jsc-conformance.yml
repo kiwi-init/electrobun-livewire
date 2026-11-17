@@ -1,0 +1,54 @@
+name: JSC host conformance
+
+# mainProcess "jsc" (#226, T240): every OS's JSC host must behave like the
+# runtime apps run on today. Each conformance test runs on Bun (Node for
+# sockets) and on the host built here; any difference in output or exit code
+# fails the job.
+on:
+  pull_request:
+    paths:
+      - 'package/src/jsc-host/**'
+      - '.github/workflows/jsc-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jsc-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Intel macOS: hosted arm64 runners went unacquired for long stretches
+        # (#287); the host is plain C on a system framework either way.
+        os: [macos-26-intel, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.1'
+      - name: System JavaScriptCore, GLib and libgcrypt (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev xxd pkg-config
+      - name: Conformance against Bun and Node
+        run: |
+          echo "bun $(bun --version), node $(node --version)"
+          bun package/src/jsc-host/conformance/run.ts "$RUNNER_TEMP/jsc" | tee "$RUNNER_TEMP/conformance.txt"
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### JSC host conformance on ${{ matrix.os }}"
+            echo '```'
+            grep -E '^(ok|FAIL|  |all |[0-9]+ of)' "$RUNNER_TEMP/conformance.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
