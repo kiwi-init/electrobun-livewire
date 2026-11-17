@@ -7,6 +7,8 @@ on:
   pull_request:
     paths:
       - package/src/jsc-host/**
+      - package/src/launcher/**
+      - package/build.ts
       - package/test-apps/jsc-sdk/**
       - package/src/sdks/main/**
       - package/src/core/**
@@ -69,3 +71,19 @@ jobs:
             echo "| .app size | $(du -sh "$app" | cut -f1) |"
             echo "| MacOS/main | $(du -sh "$app/Contents/MacOS/main" | cut -f1) |"
           } >> "$GITHUB_STEP_SUMMARY"
+      # T431: the same app built by Hutch against this tree's devkit. Hutch
+      # builds it for Bun, then the devkit's postBuild hook moves its main
+      # process to the JSC host (src/jsc-host/post-build.ts).
+      - name: SDK app built by Hutch on the system JavaScriptCore
+        working-directory: package/test-apps/jsc-sdk
+        env:
+          LIVEWIRE_SDK_FOCUS: '1'
+          HUTCH_ELECTROBUN_DEVKIT_ROOT: ${{ github.workspace }}/package/dist
+        run: |
+          hutch electrobun build
+          app=$(ls -d build/dev-macos-*/*.app)
+          grep -q '"mainProcess":"jsc"' "$app/Contents/Resources/build.json"
+          test ! -e "$app/Contents/MacOS/bun"
+          codesign -d --entitlements - "$app/Contents/MacOS/main" 2>&1 | grep -q com.apple.security.cs.allow-jit
+          "$app/Contents/MacOS/launcher"
+          echo "| Hutch-built .app | $(du -sh "$app" | cut -f1) |" >> "$GITHUB_STEP_SUMMARY"
