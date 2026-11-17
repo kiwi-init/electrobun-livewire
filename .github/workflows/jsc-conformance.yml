@@ -41,6 +41,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev xxd pkg-config
       - name: Conformance against Bun and Node
         run: |
+          set -o pipefail
           echo "bun $(bun --version), node $(node --version)"
           bun package/src/jsc-host/conformance/run.ts "$RUNNER_TEMP/jsc" | tee "$RUNNER_TEMP/conformance.txt"
       - name: Summary

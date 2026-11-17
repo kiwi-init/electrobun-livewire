@@ -21,7 +21,6 @@
 #include <fcntl.h>
 #include <fts.h>
 #include <limits.h>
-#include <math.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,10 +345,10 @@ NATIVE(n_utimes) {
     UNUSED_ARGS;
     char *path = jsr_to_utf8(ctx, ARG(0));
     double at = num(ctx, ARG(1)), mt = num(ctx, ARG(2));
-    struct timespec ts[2] = {
-        {(time_t)floor(at), (long)((at - floor(at)) * 1e9)},
-        {(time_t)floor(mt), (long)((mt - floor(mt)) * 1e9)},
-    };
+    time_t as = (time_t)at, ms = (time_t)mt;
+    if ((double)as > at) as--;
+    if ((double)ms > mt) ms--;
+    struct timespec ts[2] = {{as, (long)((at - (double)as) * 1e9)}, {ms, (long)((mt - (double)ms) * 1e9)}};
     JSValueRef r = utimensat(AT_FDCWD, path, ts, 0) == 0 ? JSValueMakeUndefined(ctx) : throw_errno(ctx, exc, errno, "utime", path);
     free(path);
     return r;

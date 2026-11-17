@@ -50,9 +50,11 @@ console.log("str cb", lib.tl_call_str(strCb).toString());
 const threadCb = new JSCallback(
 	(id) => {
 		console.log("thread cb", id);
-		threadCb.close();
-		console.log("closed");
-		clearTimeout(keepAlive);
+		setTimeout(() => {
+			threadCb.close();
+			console.log("closed");
+			clearTimeout(keepAlive);
+		}, 0);
 	},
 	{ args: ["u32", FFIType.cstring], returns: "void", threadsafe: true },
 );

@@ -21,12 +21,12 @@ setTimeout(() => {
 setTimeout(() => log("timer B"), 50);
 setTimeout(() => {
 	setImmediate(() => { log("immediate 1"); Promise.resolve().then(() => log("micro after immediate 1")); });
-	setImmediate(() => log("immediate 2"));
+	setImmediate(() => { log("immediate 2"); setTimeout(interleave, 0); });
 }, 80);
-setTimeout(async () => {
+async function interleave() {
 	const order = [];
 	const a = (async () => { order.push("a1"); await undefined; order.push("a2"); await undefined; order.push("a3"); })();
 	const b = Promise.resolve().then(() => order.push("b1")).then(() => order.push("b2")).then(() => order.push("b3"));
 	await Promise.all([a, b]);
 	log("interleave", order.join(" "));
-}, 120);
+}
