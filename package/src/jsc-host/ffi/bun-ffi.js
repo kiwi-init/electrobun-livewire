@@ -6,7 +6,7 @@ if (!n) throw new Error("bun:ffi: the Livewire JSC host's ffi glue isn't install
 
 const names = ["void", "bool", "char", "i8", "u8", "i16", "u16", "i32", "int", "u32", "i64", "i64_fast", "u64", "u64_fast", "f32", "f64", "float", "double", "ptr", "pointer", "cstring", "function", "callback", "buffer"];
 export const FFIType = Object.fromEntries(names.map((name) => [name, name]));
-export const suffix = "dylib";
+export const suffix = globalThis.process?.platform === "linux" ? "so" : "dylib";
 
 const canonical = { int: "i32", int32_t: "i32", uint32_t: "u32", pointer: "ptr", callback: "function", double: "f64", uint64_t: "u64" };
 const canon = (t) => canonical[String(t)] ?? String(t);

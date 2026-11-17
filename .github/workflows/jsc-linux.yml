@@ -1,0 +1,85 @@
+name: JSC runtime (Linux)
+
+# mainProcess "jsc" on Linux (#226, T238): the runtime's own tests, then the
+# SDK check app built from this tree's core, both on the system
+# libjavascriptcoregtk that WebKitGTK ships, run to a pass/fail exit code.
+on:
+  pull_request:
+    paths:
+      - 'package/src/jsc-host/**'
+      - 'package/test-apps/jsc-sdk/**'
+      - 'package/src/sdks/main/**'
+      - 'package/src/core/**'
+      - 'package/src/native/linux/**'
+      - '.github/workflows/jsc-linux.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jsc-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: Install the system JavaScriptCore, GLib and libgcrypt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev xxd pkg-config
+      - name: Runtime tests
+        run: sh package/src/jsc-host/test.sh "$RUNNER_TEMP/jsc"
+
+  sdk-app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.1'
+      - uses: ./.github/actions/install-hutch
+      # The JSC host's build scripts run on Bun; Hutch runs its pinned Bun.
+      - name: Bun through Hutch
+        run: |
+          shim="$RUNNER_TEMP/bun-shim"
+          mkdir -p "$shim"
+          printf '#!/bin/sh\nHUTCH_RUNTIME=bun exec hutch "$@"\n' > "$shim/bun"
+          chmod +x "$shim/bun"
+          echo "$shim" >> "$GITHUB_PATH"
+      - name: Linux build and display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libpipewire-0.3-dev build-essential cmake pkg-config xvfb xauth openbox dbus-x11 libgcrypt20-dev xxd
+      - name: Install dependencies
+        working-directory: package
+        run: hutch run install
+      - name: Build (dev)
+        working-directory: package
+        run: hutch build:dev
+      # Exit 0 only when typed RPC works both ways, window events reach the
+      # app, and closing the last window quits.
+      - name: SDK app on the system JavaScriptCore
+        working-directory: package
+        # As Kitchen's X11 job: software GL, no DMA-BUF renderer under Xvfb.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+        run: |
+          set -o pipefail
+          test-apps/jsc-sdk/assemble.sh dist "$RUNNER_TEMP/jsc-sdk"
+          app="$RUNNER_TEMP/jsc-sdk/JSC SDK"
+          test-apps/jsc-sdk/run-xvfb.sh "$app" 2>&1 | grep -vE 'portal|dbus-daemon|pw.conf|cannot open display|skeleton|dbind'
+          {
+            echo "### JSC host: SDK app passed on Linux ($(lsb_release -ds))"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| app folder | $(du -sh "$app" | cut -f1) |"
+            echo "| bin/main | $(du -sh "$app/bin/main" | cut -f1) |"
+          } >> "$GITHUB_STEP_SUMMARY"

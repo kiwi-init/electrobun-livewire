@@ -7,7 +7,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${1:-$(mktemp -d)}
 "$HERE/build.sh" "$OUT" || exit 1
 # Not JSC_*: JavaScriptCore reads JSC_-prefixed variables as engine options.
-export LIVEWIRE_TESTLIB="$OUT/libjsctest.dylib"
+case $(uname -s) in Darwin) LIB_EXT=dylib ;; *) LIB_EXT=so ;; esac
+export LIVEWIRE_TESTLIB="$OUT/libjsctest.$LIB_EXT"
 mkdir -p "$OUT/bundled"
 fail=0
 for t in "$HERE"/tests/*.test.js "$HERE"/tests/*/*.test.mjs; do

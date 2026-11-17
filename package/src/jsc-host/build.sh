@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds the Livewire JSC runtime for its tests: the prelude header, the
 # generated bun:ffi glue (SDK declarations plus the test library's), the test
-# library, and jsc-run. macOS only.
+# library, and jsc-run. macOS (JavaScriptCore.framework) or Linux (WebKitGTK's
+# libjavascriptcoregtk, GLib and libgcrypt).
 #   build.sh <out dir>
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -14,6 +15,15 @@ printf '\0' >> "$GEN/jsr_prelude_js"
 rm -rf "$GEN"
 bun "$HERE/ffi/gen.ts" "$OUT/gen" --extra "$HERE/tests/ffi/decls.json"
 CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$OUT/gen -I$HERE -I$HERE/ffi"
-clang -O2 -dynamiclib -o "$OUT/libjsctest.dylib" "$HERE/tests/ffi/testlib.c"
-clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -o "$OUT/jsc-run" \
-  "$HERE/runtime.c" "$HERE/node.c" "$OUT/gen/ffi_glue.c" "$HERE/jsc-run.c"
+SOURCES="$HERE/runtime.c $HERE/node.c $OUT/gen/ffi_glue.c $HERE/jsc-run.c"
+if [ "$(uname -s)" = "Darwin" ]; then
+  clang -O2 -dynamiclib -o "$OUT/libjsctest.dylib" "$HERE/tests/ffi/testlib.c"
+  # shellcheck disable=SC2086
+  clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -o "$OUT/jsc-run" $SOURCES
+else
+  CC=${CC:-cc}
+  "$CC" -O2 -shared -fPIC -o "$OUT/libjsctest.so" "$HERE/tests/ffi/testlib.c"
+  # shellcheck disable=SC2086
+  "$CC" $CFLAGS $(pkg-config --cflags javascriptcoregtk-4.1 glib-2.0) -o "$OUT/jsc-run" $SOURCES \
+    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -ldl -lpthread
+fi

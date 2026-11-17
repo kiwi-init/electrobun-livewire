@@ -5,8 +5,18 @@
 #include "runtime.h"
 #include "node.h"
 
+#ifdef __APPLE__
 #include <CommonCrypto/CommonCryptor.h>
 #include <dispatch/dispatch.h>
+#include <sys/sysctl.h>
+#else
+#include <gcrypt.h>
+#include <glib.h>
+#include <glib-unix.h>
+#include <sys/random.h>
+#include <sys/sysinfo.h>
+#include <sys/utsname.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
@@ -16,7 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/sysctl.h>
 #include <dirent.h>
 #include <unistd.h>
 
@@ -76,10 +85,17 @@ static JSValueRef stat_object(JSContextRef ctx, const struct stat *st) {
     S("dev", st->st_dev); S("ino", st->st_ino); S("mode", st->st_mode); S("nlink", st->st_nlink);
     S("uid", st->st_uid); S("gid", st->st_gid); S("rdev", st->st_rdev); S("size", st->st_size);
     S("blksize", st->st_blksize); S("blocks", st->st_blocks);
+#ifdef __APPLE__
     S("atimeMs", st->st_atimespec.tv_sec * 1e3 + st->st_atimespec.tv_nsec / 1e6);
     S("mtimeMs", st->st_mtimespec.tv_sec * 1e3 + st->st_mtimespec.tv_nsec / 1e6);
     S("ctimeMs", st->st_ctimespec.tv_sec * 1e3 + st->st_ctimespec.tv_nsec / 1e6);
     S("birthtimeMs", st->st_birthtimespec.tv_sec * 1e3 + st->st_birthtimespec.tv_nsec / 1e6);
+#else
+    S("atimeMs", st->st_atim.tv_sec * 1e3 + st->st_atim.tv_nsec / 1e6);
+    S("mtimeMs", st->st_mtim.tv_sec * 1e3 + st->st_mtim.tv_nsec / 1e6);
+    S("ctimeMs", st->st_ctim.tv_sec * 1e3 + st->st_ctim.tv_nsec / 1e6);
+    S("birthtimeMs", 0); // struct stat has no birth time on Linux (only statx)
+#endif
 #undef S
     return o;
 }
@@ -321,7 +337,11 @@ NATIVE(n_os_info) {
     set_prop(ctx, o, "username", jsr_string(ctx, pw ? pw->pw_name : ""));
     char tmp[PATH_MAX];
     const char *t = getenv("TMPDIR");
+#ifdef __APPLE__
     if (!t && confstr(_CS_DARWIN_USER_TEMP_DIR, tmp, sizeof tmp) > 0) t = tmp;
+#else
+    (void)tmp;
+#endif
     char trimmed[PATH_MAX];
     snprintf(trimmed, sizeof trimmed, "%s", t ? t : "/tmp");
     size_t n = strlen(trimmed);
@@ -330,14 +350,23 @@ NATIVE(n_os_info) {
     char host[256] = "";
     gethostname(host, sizeof host);
     set_prop(ctx, o, "hostname", jsr_string(ctx, host));
+#ifdef __APPLE__
     int64_t mem = 0; size_t len = sizeof mem;
     sysctlbyname("hw.memsize", &mem, &len, NULL, 0);
-    set_prop(ctx, o, "totalmem", JSValueMakeNumber(ctx, (double)mem));
     int cpus = 0; len = sizeof cpus;
     sysctlbyname("hw.ncpu", &cpus, &len, NULL, 0);
-    set_prop(ctx, o, "cpus", JSValueMakeNumber(ctx, cpus));
     char release[64] = ""; len = sizeof release;
     sysctlbyname("kern.osrelease", release, &len, NULL, 0);
+#else
+    struct sysinfo si;
+    double mem = sysinfo(&si) == 0 ? (double)si.totalram * si.mem_unit : 0;
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    struct utsname un;
+    char release[sizeof un.release] = "";
+    if (uname(&un) == 0) snprintf(release, sizeof release, "%s", un.release);
+#endif
+    set_prop(ctx, o, "totalmem", JSValueMakeNumber(ctx, (double)mem));
+    set_prop(ctx, o, "cpus", JSValueMakeNumber(ctx, (double)cpus));
     set_prop(ctx, o, "release", jsr_string(ctx, release));
     set_prop(ctx, o, "uid", JSValueMakeNumber(ctx, getuid()));
     set_prop(ctx, o, "gid", JSValueMakeNumber(ctx, getgid()));
@@ -349,7 +378,16 @@ NATIVE(n_random_fill) {
     UNUSED_ARGS; (void)exc;
     size_t len;
     uint8_t *buf = bytes_of(ctx, ARG(0), &len);
+#ifdef __APPLE__
     if (buf) arc4random_buf(buf, len); // a CSPRNG on macOS
+#else
+    // getrandom(2): the kernel CSPRNG; it returns at most 32 MB per call.
+    for (size_t done = 0; buf && done < len;) {
+        ssize_t n = getrandom(buf + done, len - done, 0);
+        if (n < 0) { if (errno == EINTR) continue; return throw_message(ctx, exc, "getrandom failed"); }
+        done += (size_t)n;
+    }
+#endif
     return ARG(0);
 }
 
@@ -388,8 +426,21 @@ static void ghash_update(u128 *y, u128 h, const uint8_t *data, size_t len) {
     }
 }
 static bool aes_ecb(const uint8_t *key, size_t key_len, const uint8_t *in, uint8_t *out, size_t len) {
+#ifdef __APPLE__
     size_t moved = 0;
     return CCCrypt(kCCEncrypt, kCCAlgorithmAES, kCCOptionECBMode, key, key_len, NULL, in, len, out, len, &moved) == kCCSuccess && moved == len;
+#else
+    // libgcrypt: WebKitGTK already depends on it, so it costs the app nothing.
+    int algo = key_len == 16 ? GCRY_CIPHER_AES128 : key_len == 24 ? GCRY_CIPHER_AES192 : key_len == 32 ? GCRY_CIPHER_AES256 : 0;
+    if (!algo) return false;
+    static bool initialized;
+    if (!initialized) { gcry_check_version(NULL); gcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0); initialized = true; }
+    gcry_cipher_hd_t hd;
+    if (gcry_cipher_open(&hd, algo, GCRY_CIPHER_MODE_ECB, 0)) return false;
+    bool ok = !gcry_cipher_setkey(hd, key, key_len) && !gcry_cipher_encrypt(hd, out, len, in, len);
+    gcry_cipher_close(hd);
+    return ok;
+#endif
 }
 // gcm(encrypt, key, iv, data, aad, tag?) -> { data, tag } (encrypt) or data (decrypt; throws on a bad tag)
 NATIVE(n_aes_gcm) {
@@ -462,7 +513,11 @@ NATIVE(n_aes_gcm) {
 typedef struct fd_watch {
     int id, fd;
     JSObjectRef fn;
+#ifdef __APPLE__
     dispatch_source_t source;
+#else
+    GSource *source; // on the JS thread's context: reads happen on the JS thread
+#endif
     bool closed;
     struct fd_watch *next;
 } fd_watch;
@@ -477,7 +532,11 @@ static fd_watch *find_watch(int id) {
 static void stop_watch(jsr_runtime *rt, fd_watch *w, bool close_fd) {
     if (w->closed) return;
     w->closed = true;
+#ifdef __APPLE__
     dispatch_source_cancel(w->source);
+#else
+    if (w->source) { g_source_destroy(w->source); g_source_unref(w->source); w->source = NULL; }
+#endif
     if (close_fd) close(w->fd);
     jsr_unref(rt);
 }
@@ -496,6 +555,25 @@ static void deliver_fd_event(jsr_runtime *rt, void *data) {
     free(ev->bytes);
     free(ev);
 }
+#ifndef __APPLE__
+// Linux: the fd source runs on the JS thread, so it reads and delivers in place.
+static gboolean fd_readable(gint fd, GIOCondition cond, gpointer data) {
+    (void)cond;
+    fd_watch *w = data;
+    jsr_runtime *rt = jsr_from_context(NULL);
+    uint8_t *buf = malloc(65536);
+    ssize_t n = read(fd, buf, 65536);
+    if (n < 0 && (errno == EAGAIN || errno == EINTR)) { free(buf); return G_SOURCE_CONTINUE; }
+    fd_event *ev = calloc(1, sizeof *ev);
+    ev->id = w->id;
+    ev->len = n;
+    ev->err = n < 0 ? errno : 0;
+    ev->bytes = n > 0 ? buf : NULL;
+    if (n <= 0) free(buf);
+    deliver_fd_event(rt, ev); // may stop_watch(), which destroys this source
+    return G_SOURCE_CONTINUE;
+}
+#endif
 NATIVE(n_watch_fd) {
     UNUSED_ARGS;
     int fd = (int)num(ctx, ARG(0));
@@ -511,6 +589,7 @@ NATIVE(n_watch_fd) {
     jsr_runtime *rt = jsr_from_context(ctx);
     jsr_ref(rt);
     int id = w->id;
+#ifdef __APPLE__
     w->source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, dispatch_get_global_queue(0, 0));
     dispatch_source_set_event_handler(w->source, ^{
         uint8_t *buf = malloc(65536);
@@ -525,6 +604,12 @@ NATIVE(n_watch_fd) {
         jsr_post(rt, deliver_fd_event, ev);
     });
     dispatch_resume(w->source);
+#else
+    (void)id;
+    w->source = g_unix_fd_source_new(fd, G_IO_IN | G_IO_HUP | G_IO_ERR);
+    g_source_set_callback(w->source, (GSourceFunc)(void (*)(void))fd_readable, w, NULL);
+    g_source_attach(w->source, (GMainContext *)jsr_glib_context(rt));
+#endif
     return JSValueMakeNumber(ctx, id);
 }
 // unwatchFd(id, closeFd)
