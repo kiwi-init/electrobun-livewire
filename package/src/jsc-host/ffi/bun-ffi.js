@@ -47,7 +47,6 @@ export class CString extends String {
 		this.byteLength = byteLength ?? this.length;
 	}
 }
-n.setCStringClass(CString);
 
 export const ptr = (view, byteOffset = 0) => n.ptr(view, byteOffset);
 export const toArrayBuffer = (pointer, byteOffset = 0, byteLength) => n.toArrayBuffer(pointer, byteOffset, byteLength ?? -1);

@@ -2,12 +2,14 @@
 // code: Buffer, and the slice of Bun's API the SDK uses.
 import { Buffer } from "buffer";
 import { readFileSync, existsSync, statSync } from "./fs.js";
+import { getRandomValues, randomUUID } from "./crypto.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
 const defineGlobal = (name, value) =>
 	Object.defineProperty(globalThis, name, { value, writable: true, configurable: true, enumerable: false });
 defineGlobal("Buffer", Buffer);
+globalThis.crypto ??= { getRandomValues, randomUUID };
 
 const mime = {
 	html: "text/html", htm: "text/html", js: "text/javascript", mjs: "text/javascript", css: "text/css", json: "application/json",

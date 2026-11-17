@@ -4,14 +4,15 @@
 // expect: u64 echo 18446744073709551615
 // expect: not false
 // expect: strlen 5
-// expect: greet hello, jsc CString
+// expect: greet hello, jsc string
 // expect: null string null
 // expect: fill 0,3,6,9
 // expect: pair 1.5 -2.25
 // expect: ptr echo ok
-// expect: sync cb 7 sync
-// expect: ret cb 42
+// expect: after threadsafe call
+// expect: ret cb 1
 // expect: str cb [str 3]
+// expect: sync cb 7 sync
 // expect: thread cb 20 from thread 20
 // expect: closed
 // expect: mismatch rejected
@@ -58,6 +59,7 @@ console.log("ptr echo", lib.tl_echo_ptr(p) === p && read.u8(p, 1) === 3 && new U
 
 const syncCb = new JSCallback((id, text) => console.log("sync cb", id, text), { args: ["u32", FFIType.cstring], returns: "void", threadsafe: true });
 lib.tl_call_sync(syncCb.ptr);
+console.log("after threadsafe call");
 const retCb = new JSCallback((id) => id, { args: [FFIType.u32, FFIType.cstring], returns: FFIType.u32, threadsafe: true });
 console.log("ret cb", lib.tl_call_ret(retCb));
 let keep;

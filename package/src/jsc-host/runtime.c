@@ -341,14 +341,18 @@ static gboolean timer_fired(gpointer info) {
 }
 #endif
 
-// __rt.setTimer(fn, ms, repeat) -> id
+// __rt.setTimer(fn, ms, repeat, immediate) -> id. An immediate is due at once
+// and, as Node's check phase, runs before timers that come due with it but
+// after the timers already being run.
 static JSValueRef rt_set_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
     jsr_runtime *rt = g_runtime;
     if (argc < 1 || !JSValueIsObject(ctx, argv[0])) return JSValueMakeNumber(ctx, 0);
     double ms = argc > 1 ? JSValueToNumber(ctx, argv[1], NULL) : 0;
-    if (!(ms >= 1)) ms = 1; // Node clamps to 1 ms
     bool repeat = argc > 2 && JSValueToBoolean(ctx, argv[2]);
+    bool immediate = argc > 3 && JSValueToBoolean(ctx, argv[3]);
+    if (immediate) ms = 0;
+    else if (!(ms >= 1)) ms = 1; // Node clamps to 1 ms
     jsr_timer *t = calloc(1, sizeof *t);
     t->id = ++rt->next_timer_id;
     t->fn = (JSObjectRef)argv[0];
@@ -362,6 +366,7 @@ static JSValueRef rt_set_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self
     CFRunLoopAddTimer(rt->loop, t->cf, kCFRunLoopCommonModes);
 #else
     t->source = g_timeout_source_new((guint)(ms > (double)G_MAXUINT ? G_MAXUINT : ms));
+    if (immediate) g_source_set_priority(t->source, G_PRIORITY_DEFAULT - 1);
     g_source_set_callback(t->source, timer_fired, (void *)(uintptr_t)t->id, NULL);
     g_source_attach(t->source, rt->gctx);
 #endif

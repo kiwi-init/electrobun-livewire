@@ -6,6 +6,7 @@ import { wrap } from "./errors.js";
 const n = globalThis.__node.fs;
 export const constants = n.constants;
 const C = constants;
+const C_ENOENT = globalThis.__node.errnos.ENOENT;
 
 const toPath = (p) => (typeof URL === "function" && p instanceof URL ? decodeURIComponent(p.pathname) : String(p));
 const encoder = new TextEncoder();
@@ -48,7 +49,7 @@ const statWith = (link) => (path, options) => {
 	try {
 		return new Stats(n.stat(toPath(path), link));
 	} catch (error) {
-		if (options?.throwIfNoEntry === false && error.errno === -2) return undefined;
+		if (options?.throwIfNoEntry === false && error.errno === -C_ENOENT) return undefined;
 		throw error;
 	}
 };
@@ -110,11 +111,32 @@ export const appendFileSync = (path, data, options) =>
 export const mkdirSync = wrap((path, options) => {
 	const recursive = typeof options === "object" && !!options?.recursive;
 	const mode = typeof options === "object" ? options?.mode ?? 0o777 : options ?? 0o777;
-	const existed = recursive && existsSync(path);
-	n.mkdir(toPath(path), mode, recursive);
-	return recursive && !existed ? toPath(path) : undefined;
+	if (!recursive) return void n.mkdir(toPath(path), mode, false);
+	let first = toPath(path);
+	while (!existsSync(first)) {
+		const parent = first.replace(/\/+[^/]+\/*$/, "") || "/";
+		if (parent === first || existsSync(parent)) break;
+		first = parent;
+	}
+	const created = existsSync(first) ? undefined : first;
+	n.mkdir(toPath(path), mode, true);
+	return created;
 });
-export const rmSync = wrap((path, options) => n.rm(toPath(path), !!options?.recursive, !!options?.force));
+export const rmSync = wrap((path, options) => {
+	const p = toPath(path);
+	let st;
+	try { st = n.stat(p, true); }
+	catch (error) {
+		if (options?.force && error.errno === -C_ENOENT) return;
+		throw error;
+	}
+	if ((st.mode & C.S_IFMT) === C.S_IFDIR && !options?.recursive) {
+		const e = new Error(`Path is a directory: rm returned EISDIR (is a directory) ${p}`);
+		Object.assign(e, { code: "ERR_FS_EISDIR", errno: globalThis.__node.errnos.EISDIR, syscall: "rm", path: p });
+		throw e;
+	}
+	n.rm(p, !!options?.recursive, !!options?.force);
+});
 export const rmdirSync = wrap((path, options) => (options?.recursive ? n.rm(toPath(path), true, false) : n.rmdir(toPath(path))));
 export const unlinkSync = wrap((path) => n.unlink(toPath(path)));
 export const renameSync = wrap((from, to) => n.rename(toPath(from), toPath(to)));
@@ -139,7 +161,7 @@ export const mkdtempSync = wrap((prefix) => {
 			n.mkdir(path, 0o700, false);
 			return path;
 		} catch (error) {
-			if (error.errno !== -17 || attempt > 100) throw error;
+			if (error.errno !== -globalThis.__node.errnos.EEXIST || attempt > 100) throw error;
 		}
 	}
 });
@@ -148,8 +170,11 @@ const notYet = (name) => () => {
 };
 export const fchmodSync = notYet("fchmodSync");
 export const opendirSync = notYet("opendirSync");
-export const symlinkSync = notYet("symlinkSync");
-export const utimesSync = notYet("utimesSync");
+export const symlinkSync = wrap((target, path) => n.symlink(toPath(target), toPath(path)));
+export const linkSync = wrap((from, to) => n.link(toPath(from), toPath(to)));
+export const readlinkSync = wrap((path) => n.readlink(toPath(path)));
+const toSeconds = (t) => (t instanceof Date ? t.getTime() / 1000 : typeof t === "string" ? Number(t) : t);
+export const utimesSync = wrap((path, atime, mtime) => n.utimes(toPath(path), toSeconds(atime), toSeconds(mtime)));
 export function read(fd, buffer, offset, length, position, callback) {
 	queueMicrotask(() => {
 		let bytesRead;
@@ -164,9 +189,9 @@ const asCallback = (fn) => (...args) => {
 	const cb = typeof args[args.length - 1] === "function" ? args.pop() : () => {};
 	queueMicrotask(() => { let r; try { r = fn(...args); } catch (e) { return cb(e); } cb(null, r); });
 };
-const syncApi = { stat: statSync, lstat: lstatSync, access: accessSync, readFile: readFileSync, writeFile: writeFileSync, appendFile: appendFileSync, mkdir: mkdirSync, rm: rmSync, rmdir: rmdirSync, unlink: unlinkSync, rename: renameSync, realpath: realpathSync, chmod: chmodSync, readdir: readdirSync, copyFile: copyFileSync };
+const syncApi = { stat: statSync, lstat: lstatSync, access: accessSync, readFile: readFileSync, writeFile: writeFileSync, appendFile: appendFileSync, mkdir: mkdirSync, rm: rmSync, rmdir: rmdirSync, unlink: unlinkSync, rename: renameSync, realpath: realpathSync, chmod: chmodSync, readdir: readdirSync, copyFile: copyFileSync, symlink: symlinkSync, link: linkSync, readlink: readlinkSync, utimes: utimesSync };
 export const promises = Object.fromEntries(Object.entries(syncApi).map(([k, fn]) => [k, asPromise(fn)]));
-export const { stat, lstat, access, readFile, writeFile, appendFile, mkdir, rm, rmdir, unlink, rename, realpath, chmod, readdir, copyFile } = Object.fromEntries(Object.entries(syncApi).map(([k, fn]) => [k, asCallback(fn)]));
+export const { stat, lstat, access, readFile, writeFile, appendFile, mkdir, rm, rmdir, unlink, rename, realpath, chmod, readdir, copyFile, symlink, link, readlink, utimes } = Object.fromEntries(Object.entries(syncApi).map(([k, fn]) => [k, asCallback(fn)]));
 export const exists = (path, cb) => queueMicrotask(() => cb(existsSync(path)));
 export function watch() {
 	throw new Error("fs.watch isn't available on the JSC runtime yet");
@@ -180,7 +205,7 @@ export function createWriteStream() {
 export default {
 	constants, statSync, lstatSync, fstatSync, existsSync, accessSync, openSync, closeSync, fsyncSync, readSync, writeSync,
 	readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, rmdirSync, unlinkSync, renameSync, realpathSync, chmodSync,
-	readdirSync, copyFileSync, mkdtempSync, fchmodSync, opendirSync, symlinkSync, utimesSync, read, promises, stat, lstat, access, readFile, writeFile, appendFile, mkdir, rm, rmdir, unlink, rename,
-	realpath, chmod, readdir, copyFile, exists, watch, createReadStream, createWriteStream, Stats,
+	readdirSync, copyFileSync, mkdtempSync, fchmodSync, opendirSync, symlinkSync, linkSync, readlinkSync, utimesSync, read, promises, stat, lstat, access, readFile, writeFile, appendFile, mkdir, rm, rmdir, unlink, rename,
+	realpath, chmod, readdir, copyFile, symlink, link, readlink, utimes, exists, watch, createReadStream, createWriteStream, Stats,
 };
 export { Stats };

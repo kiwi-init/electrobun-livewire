@@ -65,24 +65,21 @@ static double ffi_arg_num(JSContextRef ctx, JSValueRef v) { return v ? JSValueTo
 static bool ffi_arg_bool(JSContextRef ctx, JSValueRef v) { return v ? JSValueToBoolean(ctx, v) : false; }
 
 // --- returns -----------------------------------------------------------------
-static JSObjectRef g_cstring_class; // the shim's CString constructor
 static JSValueRef ffi_ret_ptr(JSContextRef ctx, const void *p) {
     return p ? JSValueMakeNumber(ctx, (double)(uintptr_t)p) : JSValueMakeNull(ctx);
 }
 static JSValueRef ffi_ret_cstring(JSContextRef ctx, const char *p) {
-    if (!p) return JSValueMakeNull(ctx);
-    JSValueRef args[1] = {ffi_ret_ptr(ctx, p)};
-    if (!g_cstring_class) return jsr_string(ctx, p);
-    return JSObjectCallAsConstructor(ctx, g_cstring_class, 1, args, NULL);
+    return p ? jsr_string(ctx, p) : JSValueMakeNull(ctx);
 }
 static JSValueRef ffi_ret_u64(JSContextRef ctx, uint64_t v) { return JSBigIntCreateWithUInt64(ctx, v, NULL); }
 
 // --- callbacks -----------------------------------------------------------------
 // Each signature gets a fixed set of generated trampolines ("slots"). A
 // JSCallback takes a free slot; native code calls the slot's trampoline.
-// On the JS thread the call is direct. From another thread a threadsafe
-// callback is queued to the JS thread and returns 0 at once (Bun's behaviour);
-// one that isn't waits for the JS thread, up to a timeout.
+// A threadsafe callback is always queued to the JS thread and returns 0 at
+// once, even when called on the JS thread (Bun's behaviour). One that isn't
+// is direct on the JS thread, and from another thread waits for the JS
+// thread, up to a timeout.
 typedef struct ffi_slot {
     JSObjectRef fn;      // NULL when free
     bool threadsafe;
@@ -163,7 +160,7 @@ static void ffi_run_call(jsr_runtime *rt, void *data) {
 // came from another thread, see ffi_release_result) or NULL.
 static JSValueRef ffi_dispatch(ffi_call *call, bool wants_result) {
     jsr_runtime *rt = g_ffi_rt;
-    if (jsr_on_js_thread(rt)) {
+    if (jsr_on_js_thread(rt) && !call->slot->threadsafe) {
         call->done = NULL;
         JSContextRef ctx = jsr_context(rt);
         JSValueRef args[8];
