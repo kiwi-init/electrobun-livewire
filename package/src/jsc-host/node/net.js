@@ -260,9 +260,11 @@ export class Socket extends EventEmitter {
 		const bytes = toBuffer(chunk, encoding);
 		this._queue.push({ bytes, offset: 0, callback });
 		this._queued += bytes.length;
-		if (!this.connecting) this._flush();
+		// As in Node: the answer counts this chunk as buffered, however much
+		// of it the kernel then takes at once.
 		const ok = this._queued < HIGH_WATER;
 		if (!ok) this._needDrain = true;
+		if (!this.connecting) this._flush();
 		return ok;
 	}
 	end(chunk, encoding, callback) {

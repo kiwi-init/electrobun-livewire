@@ -150,9 +150,11 @@ export class FdWritable extends EventEmitter {
 		const bytes = toBuffer(chunk, encoding);
 		this._queue.push({ bytes, offset: 0, callback });
 		this._pending += bytes.length;
-		this._flush();
+		// As in Node: the answer counts this chunk as buffered, however much
+		// of it the kernel then takes at once.
 		const ok = this._pending < this.writableHighWaterMark;
 		if (!ok) this._needDrain = true;
+		this._flush();
 		return ok;
 	}
 	end(chunk, encoding, callback) {
