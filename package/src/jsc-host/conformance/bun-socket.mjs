@@ -103,7 +103,10 @@ step(async () => {
 		},
 	});
 	await allSent;
-	log("tcp sent", offset, "drained", drains > 0, socket.remoteAddress, typeof socket.localPort);
+	// Whether drain fires depends on how much the kernel took at once (on Intel
+	// macOS it can take all 4 MB), so only what arrived is printed.
+	void drains;
+	log("tcp sent", offset, socket.remoteAddress, typeof socket.localPort);
 	socket.end();
 	await ended;
 	log("tcp received", received);
