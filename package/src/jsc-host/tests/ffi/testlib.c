@@ -37,6 +37,24 @@ const char *tl_call_str(str_cb cb) {
     return copy;
 }
 
+// What WebKit does to a views:// page: another thread asks a sync callback for
+// a string and waits, while the JS thread is blocked in this very call.
+typedef struct { str_cb cb; char out[256]; } str_job;
+static void *run_str_job(void *arg) {
+    str_job *job = arg;
+    const char *s = job->cb(9);
+    snprintf(job->out, sizeof job->out, "%s", s ? s : "(null)");
+    return NULL;
+}
+const char *tl_str_via_thread(str_cb cb) {
+    static str_job job;
+    job.cb = cb;
+    pthread_t t;
+    pthread_create(&t, NULL, run_str_job, &job);
+    pthread_join(t, NULL);
+    return job.out;
+}
+
 typedef struct { event_cb cb; uint32_t delay_ms; } thread_job;
 static void *run_job(void *arg) {
     thread_job *job = arg;
