@@ -611,6 +611,16 @@ export interface ElectrobunConfig {
 		 */
 		inspector?: boolean;
 
+		/**
+		 * Set to false to ship only the UI inside the app: AppEngine
+		 * (`electrobun/bun/appengine`) then never checks its UI channel, installs
+		 * or hot-swaps a UI, and shows the built-in UI (host mode) or its
+		 * safeModeUrl. A developer choice: nothing at run time turns it back on.
+		 * Apps that don't use AppEngine are unaffected.
+		 * @default true
+		 */
+		uiUpdates?: boolean;
+
 		[key: string]: unknown;
 	};
 

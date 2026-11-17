@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { EngineInvokeResult } from "../../../shared/appengine-protocol";
 import type { BrowserView } from "../core/BrowserView";
+import { BuildConfig } from "../core/BuildConfig";
 import type { BrowserWindow } from "../core/BrowserWindow";
 import { UiChannel, type UiChannelOptions } from "./channel";
 import { Capabilities, contractRefusal, type CapabilityHandler } from "./contract";
@@ -103,7 +104,20 @@ export type AppEngineOptions = {
 	// Handlers for engine.invoke(cap, args) beyond the built-in ones
 	// (engine.info, session.takeHandoff). Only these names can be invoked.
 	capabilities?: Record<string, CapabilityHandler>;
+	// false: show only the UI the app ships (host mode's built-in UI, or
+	// safeModeUrl), and never check, install or swap one from the channel.
+	// A build turns updates off with `runtime.uiUpdates: false` in its config;
+	// this option can't turn them back on there. Default: on.
+	uiUpdates?: boolean;
 };
+
+// Whether an engine installs UIs from its channel: off when the build's
+// `runtime.uiUpdates` or the app's `uiUpdates` option is false.
+export function uiUpdatesEnabled(buildRuntime: { uiUpdates?: unknown } | undefined, option: boolean | undefined): boolean {
+	return buildRuntime?.uiUpdates !== false && option !== false;
+}
+
+const UPDATES_OFF = "UI updates are off in this build";
 
 export type AppEngineEvent =
 	| { type: "booting"; manifest: UiManifest; reason: BootReason }
@@ -200,6 +214,7 @@ export class AppEngine {
 	// sha256 ("built-in" for the app's own), since the last prune.
 	private placed = new Map<string, Set<string>>();
 	private started = false;
+	private readonly uiUpdates: boolean;
 	private readonly capabilities: Capabilities;
 
 	constructor(options: AppEngineOptions) {
@@ -214,6 +229,7 @@ export class AppEngine {
 		this.readyTimeoutMs = options.readyTimeoutMs ?? 5_000;
 		this.probationMs = options.probationMs ?? 30_000;
 		this.keepGood = options.keepGood ?? 3;
+		this.uiUpdates = uiUpdatesEnabled(BuildConfig.getSync().runtime, options.uiUpdates);
 		this.capabilities = new Capabilities(
 			options.contractVersion,
 			{
@@ -259,6 +275,16 @@ export class AppEngine {
 			// Imported lazily: host mode never loads BrowserView or the page script.
 			const { ViewDisplay } = await import("./view-display");
 			this.display = new ViewDisplay(this, this.options.window!, this.options.safeModeUrl!, this.capabilities.pagePrelude());
+		}
+
+		if (!this.uiUpdates) {
+			// Installed UIs stay on disk, untouched, and the channel never starts.
+			if (this.host) this.showBuiltIn(UPDATES_OFF, false);
+			else {
+				this.display!.mount(this.options.safeModeUrl!);
+				this.emit({ type: "safe-mode", reason: UPDATES_OFF });
+			}
+			return;
 		}
 
 		const candidates = [this.state.retry, this.state.current, ...this.state.good];
@@ -321,6 +347,8 @@ export class AppEngine {
 
 	// Refuses bundles the engine knows it can't run, before they're downloaded.
 	private accept(manifest: UiManifest): string | null {
+		// Also covers a check() the app runs itself on `engine.channel`.
+		if (!this.uiUpdates) return UPDATES_OFF;
 		const refusal = contractRefusal(this.capabilities.contract.version, manifest);
 		if (refusal) return refusal;
 		const failure = this.state.bad[manifest.sha256];

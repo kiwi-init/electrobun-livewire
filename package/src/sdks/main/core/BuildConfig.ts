@@ -15,6 +15,7 @@ export type BuildConfigType = {
 	runtime?: {
 		exitOnLastWindowClosed?: boolean;
 		inspector?: boolean;
+		uiUpdates?: boolean;
 		[key: string]: unknown;
 	};
 };
