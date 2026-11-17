@@ -1,7 +1,9 @@
 // fetch and WebSocket on libsoup 3, which WebKitGTK already ships (see
-// http.h). A libsoup session belongs to the thread-default main context it
-// was made in, so every call runs with the runtime's GMainContext pushed:
-// libsoup's callbacks then run on the JS thread, inside its loop.
+// http.h). libsoup and the GIO under it schedule each step on the thread's
+// default main context at that moment, and the JS thread deliberately has
+// none (runtime.c), so libsoup runs on a network thread of its own, with its
+// own context as that thread's default. Calls from the JS thread hop onto it;
+// events go back through http_emit. As the macOS backend's delegate queue.
 #include "http.h"
 #include <libsoup/soup.h>
 #include <stdlib.h>
@@ -23,18 +25,26 @@ typedef struct http_job {
     struct http_job *next;
 } http_job;
 
-static SoupSession *session;
+static SoupSession *session; // network thread only, as is everything below but the entry points
 static http_job *jobs;
+static GMainContext *net_context;
 
-#define IN_CONTEXT(rt) for (int once_ = (g_main_context_push_thread_default(jsr_glib_context(rt)), 1); once_; \
-                            once_ = (g_main_context_pop_thread_default(jsr_glib_context(rt)), 0))
-
-static void ensure_session(jsr_runtime *rt) {
-    if (session) return;
-    IN_CONTEXT(rt) {
-        // No cookie jar or cache (as Bun's fetch); the system's proxies.
-        session = soup_session_new_with_options("timeout", 300, "max-conns", 256, "max-conns-per-host", 256, NULL);
+static gpointer net_main(gpointer data) {
+    (void)data;
+    g_main_context_push_thread_default(net_context);
+    // No cookie jar or cache (as Bun's fetch); the system's proxies.
+    session = soup_session_new_with_options("timeout", 300, "max-conns", 256, "max-conns-per-host", 256, NULL);
+    GMainLoop *loop = g_main_loop_new(net_context, FALSE);
+    g_main_loop_run(loop);
+    return NULL;
+}
+// Runs fn(data) on the network thread, starting it the first time.
+static void on_net(GSourceFunc fn, gpointer data) {
+    if (!net_context) {
+        net_context = g_main_context_new();
+        g_thread_unref(g_thread_new("livewire-net", net_main, NULL));
     }
+    g_main_context_invoke(net_context, fn, data);
 }
 
 static http_job *find_job(long id) {
@@ -122,9 +132,7 @@ static void read_ready(GObject *source, GAsyncResult *result, gpointer data) {
     ev->len = len;
     http_emit(job->rt, ev);
     g_bytes_unref(bytes);
-    IN_CONTEXT(job->rt) {
-        g_input_stream_read_bytes_async(job->in, 64 * 1024, G_PRIORITY_DEFAULT, job->cancel, read_ready, job);
-    }
+    g_input_stream_read_bytes_async(job->in, 64 * 1024, G_PRIORITY_DEFAULT, job->cancel, read_ready, job);
 }
 
 static void send_ready(GObject *source, GAsyncResult *result, gpointer data) {
@@ -166,9 +174,7 @@ static void send_ready(GObject *source, GAsyncResult *result, gpointer data) {
         ev->headers[i++] = strdup(value);
     }
     http_emit(job->rt, ev);
-    IN_CONTEXT(job->rt) {
-        g_input_stream_read_bytes_async(job->in, 64 * 1024, G_PRIORITY_DEFAULT, job->cancel, read_ready, job);
-    }
+    g_input_stream_read_bytes_async(job->in, 64 * 1024, G_PRIORITY_DEFAULT, job->cancel, read_ready, job);
 }
 
 static void restarted(SoupMessage *msg, gpointer data) {
@@ -176,35 +182,72 @@ static void restarted(SoupMessage *msg, gpointer data) {
     ((http_job *)data)->redirected = true;
 }
 
-void http_backend_request(jsr_runtime *rt, long id, const char *url, const char *method, char **headers,
-                          const uint8_t *body, size_t body_len, int redirect) {
-    ensure_session(rt);
-    IN_CONTEXT(rt) {
-        SoupMessage *msg = soup_message_new(method, url);
-        if (!msg) {
-            emit_fail(rt, id, HTTP_EV_ERROR, HTTP_FAIL_URL, "invalid URL");
-            continue;
-        }
-        http_job *job = new_job(rt, id);
-        job->msg = msg;
-        job->redirect = redirect;
-        SoupMessageHeaders *h = soup_message_get_request_headers(msg);
-        for (size_t i = 0; headers && headers[i] && headers[i + 1]; i += 2) soup_message_headers_append(h, headers[i], headers[i + 1]);
-        if (body) {
-            GBytes *bytes = g_bytes_new(body, body_len);
-            soup_message_set_request_body_from_bytes(msg, NULL, bytes); // NULL keeps the request's own content type
-            g_bytes_unref(bytes);
-        }
-        if (redirect != 0) soup_message_add_flags(msg, SOUP_MESSAGE_NO_REDIRECT);
-        g_signal_connect(msg, "restarted", G_CALLBACK(restarted), job);
-        soup_session_send_async(session, msg, G_PRIORITY_DEFAULT, job->cancel, send_ready, job);
-    }
+// A call from the JS thread, with copies of its arguments.
+typedef struct net_call {
+    jsr_runtime *rt;
+    long id;
+    char *url, *method, *reason;
+    char **headers, **protocols;
+    GBytes *body;
+    int redirect, code;
+    bool binary;
+} net_call;
+static char **copy_list(char **list) { return list ? g_strdupv(list) : NULL; }
+static void free_call(net_call *c) {
+    g_free(c->url);
+    g_free(c->method);
+    g_free(c->reason);
+    g_strfreev(c->headers);
+    g_strfreev(c->protocols);
+    if (c->body) g_bytes_unref(c->body);
+    g_free(c);
 }
 
-void http_backend_cancel(jsr_runtime *rt, long id) {
-    (void)rt;
-    http_job *job = find_job(id);
+static gboolean start_request(gpointer data) {
+    net_call *c = data;
+    SoupMessage *msg = soup_message_new(c->method, c->url);
+    if (!msg) {
+        emit_fail(c->rt, c->id, HTTP_EV_ERROR, HTTP_FAIL_URL, "invalid URL");
+        free_call(c);
+        return G_SOURCE_REMOVE;
+    }
+    http_job *job = new_job(c->rt, c->id);
+    job->msg = msg;
+    job->redirect = c->redirect;
+    SoupMessageHeaders *h = soup_message_get_request_headers(msg);
+    for (size_t i = 0; c->headers && c->headers[i] && c->headers[i + 1]; i += 2) soup_message_headers_append(h, c->headers[i], c->headers[i + 1]);
+    if (c->body) soup_message_set_request_body_from_bytes(msg, NULL, c->body); // NULL keeps the request's own content type
+    if (c->redirect != 0) soup_message_add_flags(msg, SOUP_MESSAGE_NO_REDIRECT);
+    g_signal_connect(msg, "restarted", G_CALLBACK(restarted), job);
+    soup_session_send_async(session, msg, G_PRIORITY_DEFAULT, job->cancel, send_ready, job);
+    free_call(c);
+    return G_SOURCE_REMOVE;
+}
+void http_backend_request(jsr_runtime *rt, long id, const char *url, const char *method, char **headers,
+                          const uint8_t *body, size_t body_len, int redirect) {
+    net_call *c = g_new0(net_call, 1);
+    c->rt = rt;
+    c->id = id;
+    c->url = g_strdup(url);
+    c->method = g_strdup(method);
+    c->headers = copy_list(headers);
+    c->body = body ? g_bytes_new(body, body_len) : NULL;
+    c->redirect = redirect;
+    on_net(start_request, c);
+}
+
+static gboolean cancel_job(gpointer data) {
+    net_call *c = data;
+    http_job *job = find_job(c->id);
     if (job) g_cancellable_cancel(job->cancel);
+    free_call(c);
+    return G_SOURCE_REMOVE;
+}
+void http_backend_cancel(jsr_runtime *rt, long id) {
+    net_call *c = g_new0(net_call, 1);
+    c->rt = rt;
+    c->id = id;
+    on_net(cancel_job, c);
 }
 
 // --- WebSockets -----------------------------------------------------------------
@@ -266,59 +309,90 @@ static void ws_ready(GObject *source, GAsyncResult *result, gpointer data) {
     if (job->client_code) soup_websocket_connection_close(job->conn, (gushort)job->client_code, job->client_reason);
 }
 
-void http_backend_ws_open(jsr_runtime *rt, long id, const char *url, char **protocols, char **headers) {
-    ensure_session(rt);
+static gboolean start_socket(gpointer data) {
+    net_call *c = data;
     // libsoup speaks the handshake over http(s) URLs.
-    char *http_url = NULL;
-    if (!strncmp(url, "ws:", 3)) http_url = g_strconcat("http:", url + 3, NULL);
-    else if (!strncmp(url, "wss:", 4)) http_url = g_strconcat("https:", url + 4, NULL);
-    else http_url = g_strdup(url);
-    IN_CONTEXT(rt) {
-        SoupMessage *msg = soup_message_new("GET", http_url);
-        if (!msg) {
-            emit_fail(rt, id, WS_EV_ERROR, HTTP_FAIL_URL, "invalid URL");
-            http_ev *ev = http_ev_new(id, WS_EV_CLOSE);
-            ev->number = 1006;
-            ev->text = strdup("");
-            http_emit(rt, ev);
-            continue;
-        }
-        http_job *job = new_job(rt, id);
-        job->socket = true;
-        job->msg = msg;
-        SoupMessageHeaders *h = soup_message_get_request_headers(msg);
-        for (size_t i = 0; headers && headers[i] && headers[i + 1]; i += 2) soup_message_headers_append(h, headers[i], headers[i + 1]);
-        soup_session_websocket_connect_async(session, msg, NULL, protocols && protocols[0] ? protocols : NULL, G_PRIORITY_DEFAULT,
-                                             job->cancel, ws_ready, job);
+    char *url = !strncmp(c->url, "ws:", 3) ? g_strconcat("http:", c->url + 3, NULL)
+              : !strncmp(c->url, "wss:", 4) ? g_strconcat("https:", c->url + 4, NULL)
+              : g_strdup(c->url);
+    SoupMessage *msg = soup_message_new("GET", url);
+    g_free(url);
+    if (!msg) {
+        emit_fail(c->rt, c->id, WS_EV_ERROR, HTTP_FAIL_URL, "invalid URL");
+        http_ev *ev = http_ev_new(c->id, WS_EV_CLOSE);
+        ev->number = 1006;
+        ev->text = strdup("");
+        http_emit(c->rt, ev);
+        free_call(c);
+        return G_SOURCE_REMOVE;
     }
-    g_free(http_url);
+    http_job *job = new_job(c->rt, c->id);
+    job->socket = true;
+    job->msg = msg;
+    SoupMessageHeaders *h = soup_message_get_request_headers(msg);
+    for (size_t i = 0; c->headers && c->headers[i] && c->headers[i + 1]; i += 2) soup_message_headers_append(h, c->headers[i], c->headers[i + 1]);
+    soup_session_websocket_connect_async(session, msg, NULL, c->protocols && c->protocols[0] ? c->protocols : NULL, G_PRIORITY_DEFAULT,
+                                         job->cancel, ws_ready, job);
+    free_call(c);
+    return G_SOURCE_REMOVE;
+}
+void http_backend_ws_open(jsr_runtime *rt, long id, const char *url, char **protocols, char **headers) {
+    net_call *c = g_new0(net_call, 1);
+    c->rt = rt;
+    c->id = id;
+    c->url = g_strdup(url);
+    c->protocols = copy_list(protocols);
+    c->headers = copy_list(headers);
+    on_net(start_socket, c);
 }
 
-void http_backend_ws_send(jsr_runtime *rt, long id, bool binary, const uint8_t *data, size_t len) {
-    http_job *job = find_job(id);
-    if (!job || !job->conn || soup_websocket_connection_get_state(job->conn) != SOUP_WEBSOCKET_STATE_OPEN) return;
-    IN_CONTEXT(rt) {
-        if (binary) soup_websocket_connection_send_binary(job->conn, data, len);
+static gboolean send_frame(gpointer data) {
+    net_call *c = data;
+    http_job *job = find_job(c->id);
+    if (job && job->conn && soup_websocket_connection_get_state(job->conn) == SOUP_WEBSOCKET_STATE_OPEN) {
+        gsize len = 0;
+        const void *bytes = g_bytes_get_data(c->body, &len);
+        if (c->binary) soup_websocket_connection_send_binary(job->conn, bytes, len);
         else {
-            char *text = strndup((const char *)data, len);
+            char *text = g_strndup(bytes, len);
             soup_websocket_connection_send_text(job->conn, text);
-            free(text);
+            g_free(text);
         }
+        // libsoup queues the frame; count it written now.
+        http_ev *ev = http_ev_new(c->id, WS_EV_SENT);
+        ev->number = (double)len;
+        http_emit(c->rt, ev);
     }
-    // libsoup queues the frame; count it written now.
-    http_ev *ev = http_ev_new(id, WS_EV_SENT);
-    ev->number = (double)len;
-    http_emit(rt, ev);
+    free_call(c);
+    return G_SOURCE_REMOVE;
+}
+void http_backend_ws_send(jsr_runtime *rt, long id, bool binary, const uint8_t *data, size_t len) {
+    net_call *c = g_new0(net_call, 1);
+    c->rt = rt;
+    c->id = id;
+    c->binary = binary;
+    c->body = g_bytes_new(data, len);
+    on_net(send_frame, c);
 }
 
-void http_backend_ws_close(jsr_runtime *rt, long id, int code, const char *reason) {
-    http_job *job = find_job(id);
-    if (!job || job->client_code) return;
-    // 0: close() without a code, a close frame with no status (1005 here)
-    job->client_code = code ? code : SOUP_WEBSOCKET_CLOSE_NO_STATUS;
-    job->client_reason = strdup(reason);
-    IN_CONTEXT(rt) {
-        if (job->conn) soup_websocket_connection_close(job->conn, code ? (gushort)code : SOUP_WEBSOCKET_CLOSE_NO_STATUS, code ? reason : NULL);
+static gboolean close_socket(gpointer data) {
+    net_call *c = data;
+    http_job *job = find_job(c->id);
+    if (job && !job->client_code) {
+        // 0: close() without a code, a close frame with no status (1005 here)
+        job->client_code = c->code ? c->code : SOUP_WEBSOCKET_CLOSE_NO_STATUS;
+        job->client_reason = strdup(c->reason);
+        if (job->conn) soup_websocket_connection_close(job->conn, c->code ? (gushort)c->code : SOUP_WEBSOCKET_CLOSE_NO_STATUS, c->code ? c->reason : NULL);
         else g_cancellable_cancel(job->cancel);
     }
+    free_call(c);
+    return G_SOURCE_REMOVE;
+}
+void http_backend_ws_close(jsr_runtime *rt, long id, int code, const char *reason) {
+    net_call *c = g_new0(net_call, 1);
+    c->rt = rt;
+    c->id = id;
+    c->code = code;
+    c->reason = g_strdup(reason);
+    on_net(close_socket, c);
 }
