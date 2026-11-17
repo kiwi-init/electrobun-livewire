@@ -129,6 +129,34 @@ export const readdirSync = wrap((path, options) => {
 	});
 });
 export const copyFileSync = wrap((from, to) => writeFileSync(to, readFileSync(from)));
+export const mkdtempSync = wrap((prefix) => {
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+	const bytes = new Uint8Array(6);
+	for (let attempt = 0; ; attempt++) {
+		globalThis.__node.randomFill(bytes);
+		const path = toPath(prefix) + Array.from(bytes, (b) => chars[b % chars.length]).join("");
+		try {
+			n.mkdir(path, 0o700, false);
+			return path;
+		} catch (error) {
+			if (error.errno !== -17 || attempt > 100) throw error;
+		}
+	}
+});
+const notYet = (name) => () => {
+	throw new Error(`fs.${name} isn't available on the JSC runtime yet`);
+};
+export const fchmodSync = notYet("fchmodSync");
+export const opendirSync = notYet("opendirSync");
+export const symlinkSync = notYet("symlinkSync");
+export const utimesSync = notYet("utimesSync");
+export function read(fd, buffer, offset, length, position, callback) {
+	queueMicrotask(() => {
+		let bytesRead;
+		try { bytesRead = readSync(fd, buffer, offset, length, position); } catch (e) { return callback(e); }
+		callback(null, bytesRead, buffer);
+	});
+}
 
 // Promise and callback forms: the sync calls, deferred a tick.
 const asPromise = (fn) => (...args) => new Promise((resolve, reject) => queueMicrotask(() => { try { resolve(fn(...args)); } catch (e) { reject(e); } }));
@@ -152,7 +180,7 @@ export function createWriteStream() {
 export default {
 	constants, statSync, lstatSync, fstatSync, existsSync, accessSync, openSync, closeSync, fsyncSync, readSync, writeSync,
 	readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, rmdirSync, unlinkSync, renameSync, realpathSync, chmodSync,
-	readdirSync, copyFileSync, promises, stat, lstat, access, readFile, writeFile, appendFile, mkdir, rm, rmdir, unlink, rename,
+	readdirSync, copyFileSync, mkdtempSync, fchmodSync, opendirSync, symlinkSync, utimesSync, read, promises, stat, lstat, access, readFile, writeFile, appendFile, mkdir, rm, rmdir, unlink, rename,
 	realpath, chmod, readdir, copyFile, exists, watch, createReadStream, createWriteStream, Stats,
 };
 export { Stats };

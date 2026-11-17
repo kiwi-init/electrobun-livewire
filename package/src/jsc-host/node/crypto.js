@@ -92,5 +92,10 @@ export const createDecipheriv = (algorithm, key, iv) => new GcmCipher(false, alg
 const unsupported = (name) => () => { throw new Error(`crypto.${name} isn't available on the JSC runtime yet`); };
 export const createHash = unsupported("createHash");
 export const createHmac = unsupported("createHmac");
+export const createPrivateKey = unsupported("createPrivateKey");
+export const createPublicKey = unsupported("createPublicKey");
+export const generateKeyPairSync = unsupported("generateKeyPairSync");
+export const sign = unsupported("sign");
+export const verify = unsupported("verify");
 export const webcrypto = { getRandomValues, randomUUID };
-export default { randomBytes, randomFillSync, randomUUID, randomInt, getRandomValues, createCipheriv, createDecipheriv, createHash, createHmac, webcrypto };
+export default { randomBytes, randomFillSync, randomUUID, randomInt, getRandomValues, createCipheriv, createDecipheriv, createHash, createHmac, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify, webcrypto };

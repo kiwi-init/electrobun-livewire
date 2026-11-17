@@ -65,13 +65,16 @@
 	let exitCode = 0;
 	const process = {
 		argv: rt.argv,
+		argv0: rt.argv[0] ?? "",
+		execPath: rt.execPath ?? rt.argv[0] ?? "",
 		env: rt.env,
 		pid: rt.pid,
 		platform: "darwin",
 		arch: "arm64",
 		versions: { livewire_jsc: "0" },
 		release: { name: "livewire-jsc" },
-		cwd: () => rt.env.PWD || "/",
+		cwd: () => rt.cwd(),
+		chdir: (dir) => rt.chdir(String(dir)),
 		exit(code) { if (code !== undefined) exitCode = code; rt.exit(exitCode); },
 		get exitCode() { return exitCode; },
 		set exitCode(code) { exitCode = code; rt.setExitCode(code); },

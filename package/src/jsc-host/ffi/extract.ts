@@ -1,13 +1,13 @@
 // Records the SDK's bun:ffi declarations (proc/native.ts) as JSON: run with
 // Bun at build time. The JSC host's ffi glue is generated from this file, so
 // a symbol the SDK adds or changes can't drift from the glue.
-//   bun package/src/jsc-host/ffi/extract.ts > ffi-decls.json
+//   bun package/src/jsc-host/ffi/extract.ts [sdks/main dir] > ffi-decls.json
 import type { OnLoadArgs, PluginBuilder } from "bun";
 import { join } from "node:path";
 
 const here = import.meta.dir;
 const result = await Bun.build({
-	entrypoints: [join(here, "../../sdks/main/proc/native.ts")],
+	entrypoints: [join(process.argv[2] ?? join(here, "../../sdks/main"), "proc/native.ts")],
 	target: "bun",
 	format: "esm",
 	plugins: [
