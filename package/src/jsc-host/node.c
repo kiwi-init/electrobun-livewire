@@ -1939,8 +1939,13 @@ NATIVE(n_ws_send) {
     (void)exc;
     long id = (long)num(ctx, ARG(0));
     if (JSValueIsString(ctx, ARG(1))) {
-        char *text = jsr_to_utf8(ctx, ARG(1));
-        http_backend_ws_send(jsr_from_context(ctx), id, false, (const uint8_t *)text, strlen(text));
+        // The length from the conversion, not strlen: text frames may hold NULs.
+        JSStringRef s = JSValueToStringCopy(ctx, ARG(1), NULL);
+        size_t max = JSStringGetMaximumUTF8CStringSize(s);
+        char *text = malloc(max);
+        size_t len = JSStringGetUTF8CString(s, text, max);
+        JSStringRelease(s);
+        http_backend_ws_send(jsr_from_context(ctx), id, false, (const uint8_t *)text, len ? len - 1 : 0);
         free(text);
     } else {
         size_t len = 0;

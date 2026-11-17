@@ -22,6 +22,8 @@ step(async () => {
 	log("echo text", await nextMessage(ws));
 	ws.send("unicode");
 	log("unicode", await nextMessage(ws));
+	ws.send("a\u0000b");
+	log("nul", JSON.stringify(await nextMessage(ws)));
 	ws.send(new Uint8Array([1, 2, 255]));
 	const buf = await nextMessage(ws);
 	log("echo binary", Buffer.isBuffer(buf), buf instanceof Uint8Array, [...buf].join(","));

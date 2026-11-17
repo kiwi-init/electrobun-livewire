@@ -355,11 +355,7 @@ static gboolean send_frame(gpointer data) {
         gsize len = 0;
         const void *bytes = g_bytes_get_data(c->body, &len);
         if (c->binary) soup_websocket_connection_send_binary(job->conn, bytes, len);
-        else {
-            char *text = g_strndup(bytes, len);
-            soup_websocket_connection_send_text(job->conn, text);
-            g_free(text);
-        }
+        else soup_websocket_connection_send_message(job->conn, SOUP_WEBSOCKET_DATA_TEXT, c->body); // keeps NULs, unlike send_text
         // libsoup queues the frame; count it written now.
         http_ev *ev = http_ev_new(c->id, WS_EV_SENT);
         ev->number = (double)len;
