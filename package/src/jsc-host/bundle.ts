@@ -3,6 +3,7 @@
 // pointed at its shims, and the runtime's globals (Buffer, Bun.file)
 // evaluated before the app's code. Runs with Bun at build time.
 //   bun package/src/jsc-host/bundle.ts <entry> <outfile> [--minify]
+import type { OnLoadArgs, OnResolveArgs, PluginBuilder } from "bun";
 import { join, resolve } from "node:path";
 
 const here = import.meta.dir;
@@ -34,16 +35,16 @@ const result = await Bun.build({
 	plugins: [
 		{
 			name: "livewire-jsc",
-			setup(build) {
+			setup(build: PluginBuilder) {
 				build.onResolve({ filter: /^livewire-jsc-app$/ }, () => ({ path: resolve(entry) }));
-				build.onResolve({ filter: /^(node:)?[a-z_/]+$|^bun:ffi$/ }, (args) => {
+				build.onResolve({ filter: /^(node:)?[a-z_/]+$|^bun:ffi$/ }, (args: OnResolveArgs) => {
 					const shim = shimFor(args.path);
 					// Others (path, events, buffer, util, url) use Bun's browser fallbacks.
 					return shim ? { path: shim } : undefined;
 				});
-				build.onLoad({ filter: /\.(ts|tsx|js|mjs)$/ }, async (args) => {
+				build.onLoad({ filter: /\.(ts|tsx|js|mjs)$/ }, async (args: OnLoadArgs) => {
 					const source = await Bun.file(args.path).text();
-					const contents = source.replace(importPattern, (match, lead, quote, specifier) => {
+					const contents = source.replace(importPattern, (match: string, lead: string, quote: string, specifier: string) => {
 						const shim = shimFor(specifier);
 						return shim ? lead + quote + shim + quote : match;
 					});
