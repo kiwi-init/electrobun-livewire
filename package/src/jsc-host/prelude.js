@@ -44,10 +44,15 @@
 		return process;
 	}
 	// Called from C. Returns true when a listener handled the event.
+	// From JavaScriptCore at a microtask checkpoint: with no listener, an
+	// unhandled rejection ends the process with 1, as in Node and Bun.
+	rt.onUnhandledRejection = function (promise, reason) {
+		if (!rt.dispatchEvent("unhandledRejection", reason, promise)) rt.fatal("Uncaught (in promise) ", reason);
+	};
 	rt.dispatchEvent = function (name, ...args) {
 		const list = listeners.get(name);
 		if (!list || list.length === 0) {
-			if (signals.has(name)) process.exit(130);
+			if (signals.has(name)) process.exit(128 + { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 }[name]);
 			return false;
 		}
 		for (const fn of list.slice()) {
@@ -154,14 +159,43 @@
 	}
 	if (typeof g.TextDecoder !== "function") {
 		g.TextDecoder = class TextDecoder {
-			constructor(label = "utf-8") {
+			constructor(label = "utf-8", options = {}) {
 				const l = String(label).toLowerCase();
 				if (l !== "utf-8" && l !== "utf8") throw new RangeError("TextDecoder: only utf-8 is supported");
+				this.ignoreBOM = !!options.ignoreBOM;
+				this.fatal = false;
+				this._pending = null; // an incomplete sequence held over by {stream: true}
+				this._started = false;
 			}
 			get encoding() { return "utf-8"; }
-			decode(input) {
-				if (input == null) return "";
-				const b = input instanceof Uint8Array ? input : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
+			decode(input, options = {}) {
+				let b = input == null ? new Uint8Array(0) : input instanceof Uint8Array ? input : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
+				if (this._pending) {
+					const joined = new Uint8Array(this._pending.length + b.length);
+					joined.set(this._pending);
+					joined.set(b, this._pending.length);
+					b = joined;
+					this._pending = null;
+				}
+				if (options.stream) {
+					// Hold back a trailing sequence that the next chunk completes.
+					for (let back = 1; back <= 3 && back <= b.length; back++) {
+						const c = b[b.length - back];
+						if ((c & 0xc0) === 0x80) continue;
+						const need = c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : c >= 0xc0 ? 2 : 1;
+						if (need > back) { this._pending = b.slice(b.length - back); b = b.subarray(0, b.length - back); }
+						break;
+					}
+				}
+				let text = this._decode(b);
+				if (!this._started && text.length > 0) {
+					this._started = true;
+					if (!this.ignoreBOM && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+				}
+				if (!options.stream) this._started = false;
+				return text;
+			}
+			_decode(b) {
 				let out = "", chunk = [];
 				for (let i = 0; i < b.length; ) {
 					const c = b[i];

@@ -7,6 +7,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <signal.h>
@@ -84,7 +85,40 @@ static void set_value(JSContextRef ctx, JSObjectRef obj, const char *name, JSVal
     JSStringRelease(n);
 }
 
+// --- exit ------------------------------------------------------------------------
+// process.exit() and fatal errors end the process right there, as in Node and
+// Bun: 'exit' listeners run once, stdio is flushed, and nothing after the call
+// runs. A process.exit() inside an 'exit' listener exits at once.
+static bool g_exiting;
+static void emit_exit(jsr_runtime *rt) {
+    if (g_exiting || !rt->dispatch_fn) return;
+    g_exiting = true;
+    JSValueRef args[2] = {jsr_string(rt->ctx, "exit"), JSValueMakeNumber(rt->ctx, rt->exit_code)};
+    JSObjectCallAsFunction(rt->ctx, rt->dispatch_fn, NULL, 2, args, NULL);
+}
+_Noreturn static void exit_now(jsr_runtime *rt, int code) {
+    rt->exit_code = code;
+    emit_exit(rt);
+    fflush(stdout);
+    fflush(stderr);
+    exit(rt->exit_code);
+}
+
+static void print_error(jsr_runtime *rt, const char *prefix, JSValueRef error) {
+    JSStringRef stack_name = JSStringCreateWithUTF8CString("stack");
+    JSValueRef stack = JSValueIsObject(rt->ctx, error)
+        ? JSObjectGetProperty(rt->ctx, (JSObjectRef)error, stack_name, NULL) : NULL;
+    JSStringRelease(stack_name);
+    char *message = jsr_to_utf8(rt->ctx, error);
+    char *trace = stack && !JSValueIsUndefined(rt->ctx, stack) ? jsr_to_utf8(rt->ctx, stack) : NULL;
+    fprintf(stderr, "%s%s\n%s%s", prefix, message, trace ? trace : "", trace ? "\n" : "");
+    free(message);
+    free(trace);
+}
+
 // --- exceptions --------------------------------------------------------------
+// With no 'uncaughtException' listener, an uncaught error ends the process
+// with 1, as in Node and Bun.
 void jsr_report_exception(jsr_runtime *rt, JSValueRef exception) {
     // Let process.on('uncaughtException') handle it when the prelude is up.
     if (rt->dispatch_fn) {
@@ -93,16 +127,8 @@ void jsr_report_exception(jsr_runtime *rt, JSValueRef exception) {
         JSValueRef handled = JSObjectCallAsFunction(rt->ctx, rt->dispatch_fn, NULL, 2, args, &inner);
         if (!inner && handled && JSValueToBoolean(rt->ctx, handled)) return;
     }
-    JSStringRef stack_name = JSStringCreateWithUTF8CString("stack");
-    JSValueRef stack = JSValueIsObject(rt->ctx, exception)
-        ? JSObjectGetProperty(rt->ctx, (JSObjectRef)exception, stack_name, NULL) : NULL;
-    JSStringRelease(stack_name);
-    char *message = jsr_to_utf8(rt->ctx, exception);
-    char *trace = stack && !JSValueIsUndefined(rt->ctx, stack) ? jsr_to_utf8(rt->ctx, stack) : NULL;
-    fprintf(stderr, "Uncaught %s\n%s%s", message, trace ? trace : "", trace ? "\n" : "");
-    free(message);
-    free(trace);
-    if (rt->exit_code == 0) rt->exit_code = 1;
+    print_error(rt, "Uncaught ", exception);
+    exit_now(rt, 1);
 }
 
 JSValueRef jsr_call(jsr_runtime *rt, JSObjectRef fn, JSObjectRef self, size_t argc, const JSValueRef argv[]) {
@@ -198,10 +224,7 @@ void jsr_run(jsr_runtime *rt, bool until_idle) {
         if (until_idle && rt->refs == 0 && queue_empty(rt)) break;
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1e10, false);
     }
-    if (rt->dispatch_fn) {
-        JSValueRef args[2] = {jsr_string(rt->ctx, "exit"), JSValueMakeNumber(rt->ctx, rt->exit_code)};
-        JSObjectCallAsFunction(rt->ctx, rt->dispatch_fn, NULL, 2, args, NULL);
-    }
+    emit_exit(rt);
 }
 
 void jsr_stop(jsr_runtime *rt) {
@@ -300,9 +323,17 @@ static JSValueRef rt_write(JSContextRef ctx, JSObjectRef f, JSObjectRef self, si
 static JSValueRef rt_exit(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
     jsr_runtime *rt = g_runtime;
-    rt->exit_code = argc > 0 ? (int)JSValueToNumber(ctx, argv[0], NULL) : rt->exit_code;
-    jsr_stop(rt);
-    return JSValueMakeUndefined(ctx);
+    int code = argc > 0 ? (int)JSValueToNumber(ctx, argv[0], NULL) : rt->exit_code;
+    if (g_exiting) { fflush(stdout); fflush(stderr); exit(code); }
+    exit_now(rt, code);
+}
+// __rt.fatal(prefix, error): print it and exit 1 (an unhandled rejection).
+static JSValueRef rt_fatal(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
+    (void)f; (void)self; (void)exc;
+    char *prefix = argc > 0 ? jsr_to_utf8(ctx, argv[0]) : strdup("");
+    print_error(g_runtime, prefix, argc > 1 ? argv[1] : JSValueMakeUndefined(ctx));
+    free(prefix);
+    exit_now(g_runtime, 1);
 }
 static JSValueRef rt_set_exit_code(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
@@ -324,6 +355,7 @@ typedef struct { int signo; } signal_task;
 static void deliver_signal(jsr_runtime *rt, void *data) {
     signal_task *task = data;
     const char *name = task->signo == SIGINT ? "SIGINT" : task->signo == SIGTERM ? "SIGTERM" : "SIGHUP";
+    // (no listeners left: the prelude exits with 128 + the signal's number)
     JSValueRef args[1] = {jsr_string(rt->ctx, name)};
     jsr_call(rt, rt->dispatch_fn, NULL, 1, args);
     free(task);
@@ -380,6 +412,7 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     jsr_set_function(ctx, rt->internal, "refTimer", rt_ref_timer);
     jsr_set_function(ctx, rt->internal, "write", rt_write);
     jsr_set_function(ctx, rt->internal, "exit", rt_exit);
+    jsr_set_function(ctx, rt->internal, "fatal", rt_fatal);
     jsr_set_function(ctx, rt->internal, "setExitCode", rt_set_exit_code);
     jsr_set_function(ctx, rt->internal, "now", rt_now);
     jsr_set_function(ctx, rt->internal, "watchSignal", rt_watch_signal);
@@ -399,5 +432,14 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
         rt->dispatch_fn = (JSObjectRef)dispatch;
         JSValueProtect(ctx, dispatch);
     }
+    // Unhandled rejections reach __rt.onUnhandledRejection(promise, reason).
+    // JavaScriptCore exports the setter (macOS 10.15.4+) without a public
+    // header, so it's looked up rather than linked.
+    typedef void (*set_rejection_fn)(JSGlobalContextRef, JSObjectRef, JSValueRef *);
+    set_rejection_fn set_rejection = (set_rejection_fn)dlsym(RTLD_DEFAULT, "JSGlobalContextSetUnhandledRejectionCallback");
+    JSStringRef on_name = JSStringCreateWithUTF8CString("onUnhandledRejection");
+    JSValueRef on_rejection = JSObjectGetProperty(ctx, rt->internal, on_name, NULL);
+    JSStringRelease(on_name);
+    if (set_rejection && JSValueIsObject(ctx, on_rejection)) set_rejection(rt->ctx, (JSObjectRef)on_rejection, NULL);
     return rt;
 }
