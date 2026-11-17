@@ -83,9 +83,9 @@ step(async () => {
 		conn.on("end", () => {
 			const all = Buffer.concat(chunks);
 			log("tcp server got", all.length, all[0], all[all.length - 1]);
-			let ok = true;
-			for (let i = 0; i < 4 && ok; i++) ok = conn.write(all);
-			log("tcp server write returned", ok);
+			// write()'s answer for a big chunk depends on how much the kernel
+			// took at once (Bun's differs between Linux and macOS), so it isn't printed.
+			conn.write(all);
 			conn.end();
 		});
 	});
@@ -101,7 +101,6 @@ step(async () => {
 	payload[0] = 1;
 	payload[payload.length - 1] = 9;
 	const wrote = client.write(payload);
-	log("tcp client write returned", wrote);
 	await new Promise((resolve) => (wrote ? resolve() : client.once("drain", resolve)));
 	client.end();
 	let received = 0;
