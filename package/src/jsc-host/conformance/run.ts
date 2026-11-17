@@ -28,10 +28,17 @@ const run = (cmd: string[]): Run => {
 
 const tests = readdirSync(here).filter((f) => f.endsWith(".mjs") && (!only || f.includes(only))).sort();
 let failed = 0;
+let skipped = 0;
 for (const test of tests) {
 	const path = join(here, test);
 	const oracle = /^\/\/ oracle: node$/m.test(readFileSync(path, "utf8")) ? "node" : "bun";
 	const want = run([oracle === "node" ? "node" : process.execPath, path]);
+	if (want.code === null) {
+		skipped++;
+		const why = want.text.split("\n").find((l) => /panic|Segmentation|crashed|Killed|timed out/i.test(l)) ?? "no exit code";
+		console.log(`SKIP ${test}: the reference (${oracle}) crashed here, so there is nothing to compare: ${why}`);
+		continue;
+	}
 	const bundled = join(out, "conformance", basename(test, ".mjs") + ".js");
 	const bundle = Bun.spawnSync([process.execPath, join(host, "bundle.ts"), path, bundled], { stderr: "pipe" });
 	const got: Run = bundle.exitCode === 0 ? run([join(out, "jsc-run"), bundled]) : { code: null, text: "bundle failed: " + bundle.stderr.toString() };
@@ -48,5 +55,6 @@ for (const test of tests) {
 	}
 }
 rmSync(scratch, { recursive: true, force: true });
-console.log(failed ? `${failed} of ${tests.length} differ from the reference` : `all ${tests.length} match the reference`);
+const skip = skipped ? `, ${skipped} skipped` : "";
+console.log(failed ? `${failed} of ${tests.length} differ from the reference${skip}` : `${tests.length - skipped} of ${tests.length} match the reference${skip}`);
 process.exit(failed ? 1 : 0);

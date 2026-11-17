@@ -8,7 +8,10 @@ folder runs twice:
   doesn't read pipes, which is why the SDK polls on Bun);
 - **bundled, on this OS's JSC host** (`jsc-run`), as an app would be.
 
-A test passes when both print the same lines and exit with the same code.
+A test passes when both print the same lines and exit with the same code. A
+test whose reference crashes is skipped, not failed: Bun 1.4.4 on Intel macOS
+segfaults on a threadsafe `JSCallback` called from another thread
+(`ffi.mjs`).
 
 ```sh
 bun package/src/jsc-host/conformance/run.ts [out dir] [name filter]

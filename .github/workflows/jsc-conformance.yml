@@ -50,6 +50,6 @@ jobs:
           {
             echo "### JSC host conformance on ${{ matrix.os }}"
             echo '```'
-            grep -E '^(ok|FAIL|  |all |[0-9]+ of)' "$RUNNER_TEMP/conformance.txt" || true
+            grep -E '^(ok|FAIL|SKIP|  |[0-9]+ of)' "$RUNNER_TEMP/conformance.txt" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
