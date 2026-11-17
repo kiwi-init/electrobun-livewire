@@ -1551,6 +1551,7 @@ typedef struct {
     char *result;           // get: the value; NULL when there's none
     bool deleted;
     char *error, *code;
+    jsr_runtime *rt;        // the runtime that asked (a Worker's too)
 } secret_job;
 
 #ifdef __APPLE__
@@ -1707,10 +1708,9 @@ static void secret_done(jsr_runtime *rt, void *data) {
     free(j);
 }
 
-static jsr_runtime *g_secret_rt;
 static void *secret_thread(void *data) {
     secret_run(data);
-    jsr_post(g_secret_rt, secret_done, data);
+    jsr_post(((secret_job *)data)->rt, secret_done, data);
     return NULL;
 }
 
@@ -1725,11 +1725,14 @@ NATIVE(n_secrets) {
     j->unrestricted = JSValueToBoolean(ctx, ARG(4));
     j->callback = JSValueToObject(ctx, ARG(5), NULL);
     JSValueProtect(ctx, j->callback);
-    g_secret_rt = jsr_from_context(ctx);
-    jsr_ref(g_secret_rt);
+    j->rt = jsr_from_context(ctx);
+    jsr_ref(j->rt);
     pthread_t thread;
-    pthread_create(&thread, NULL, secret_thread, j);
-    pthread_detach(thread);
+    if (pthread_create(&thread, NULL, secret_thread, j) != 0) {
+        j->error = strdup("couldn't start a thread for the secret store");
+        j->code = strdup("ERR_SECRETS_PLATFORM_ERROR");
+        jsr_post(j->rt, secret_done, j);
+    } else pthread_detach(thread);
     return JSValueMakeUndefined(ctx);
 }
 
