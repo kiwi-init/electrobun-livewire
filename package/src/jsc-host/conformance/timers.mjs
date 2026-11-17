@@ -25,6 +25,11 @@ function after() {
 		const u = setTimeout(() => log("unref never"), 1000);
 		u.unref?.();
 		log("refresh", typeof u.refresh);
+		const r = setTimeout(() => log("refreshed then cleared by its old id: never"), 30);
+		const key = +r;
+		r.refresh();
+		log("refresh keeps the id", +r === key);
+		clearTimeout(key);
 		const s = setInterval(() => {}, 1000);
 		s.unref?.();
 		log("end of timers");

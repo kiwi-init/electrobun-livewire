@@ -7,20 +7,29 @@
 
 	// --- timers --------------------------------------------------------------
 	class Timeout {
-		constructor(id, repeat, run, ms) { this._id = id; this._repeat = repeat; this._ref = true; this._run = run; this._ms = ms; }
+		constructor(id, repeat, run, ms) { this._key = id; this._id = id; this._repeat = repeat; this._ref = true; this._run = run; this._ms = ms; }
+		// The primitive id stays the first one, as in Node: a refreshed timer gets a
+		// new native timer, found from the old id through `refreshed`.
 		refresh() {
 			rt.clearTimer(this._id);
-			this._id = rt.setTimer(this._run, this._ms, this._repeat);
+			const run = this._repeat ? this._run : () => { refreshed.delete(this._key); this._run(); };
+			this._id = rt.setTimer(run, this._ms, this._repeat);
+			refreshed.set(this._key, this);
 			if (!this._ref) rt.refTimer(this._id, false);
 			return this;
 		}
-		close() { rt.clearTimer(this._id); return this; }
+		close() { clearTimer(this); return this; }
 		ref() { if (!this._ref) { this._ref = true; rt.refTimer(this._id, true); } return this; }
 		unref() { if (this._ref) { this._ref = false; rt.refTimer(this._id, false); } return this; }
 		hasRef() { return this._ref; }
-		[Symbol.toPrimitive]() { return this._id; }
+		[Symbol.toPrimitive]() { return this._key; }
 	}
-	const timerId = (t) => (t instanceof Timeout ? t._id : Number(t) || 0);
+	const refreshed = new Map();
+	const clearTimer = (t) => {
+		const timer = t instanceof Timeout ? t : refreshed.get(Number(t));
+		if (timer) refreshed.delete(timer._key);
+		rt.clearTimer(timer ? timer._id : Number(t) || 0);
+	};
 	function schedule(fn, ms, args, repeat, immediate = false) {
 		if (typeof fn !== "function") throw new TypeError("The callback must be a function");
 		const run = args.length ? () => fn(...args) : fn;
@@ -30,7 +39,7 @@
 	g.setTimeout = (fn, ms, ...args) => schedule(fn, Number(ms) || 0, args, false);
 	g.setInterval = (fn, ms, ...args) => schedule(fn, Number(ms) || 0, args, true);
 	g.setImmediate = (fn, ...args) => schedule(fn, 0, args, false, true);
-	g.clearTimeout = g.clearInterval = g.clearImmediate = (t) => { if (t != null) rt.clearTimer(timerId(t)); };
+	g.clearTimeout = g.clearInterval = g.clearImmediate = (t) => { if (t != null) clearTimer(t); };
 	if (typeof g.queueMicrotask !== "function") {
 		const resolved = Promise.resolve();
 		g.queueMicrotask = (fn) => { resolved.then(fn).catch((e) => rt.dispatchEvent("uncaughtException", e)); };
