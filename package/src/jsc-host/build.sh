@@ -16,4 +16,4 @@ bun "$HERE/ffi/gen.ts" "$OUT/gen" --extra "$HERE/tests/ffi/decls.json"
 CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$OUT/gen -I$HERE -I$HERE/ffi"
 clang -O2 -dynamiclib -o "$OUT/libjsctest.dylib" "$HERE/tests/ffi/testlib.c"
 clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -o "$OUT/jsc-run" \
-  "$HERE/runtime.c" "$OUT/gen/ffi_glue.c" "$HERE/jsc-run.c"
+  "$HERE/runtime.c" "$HERE/node.c" "$OUT/gen/ffi_glue.c" "$HERE/jsc-run.c"

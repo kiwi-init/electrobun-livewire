@@ -2,6 +2,7 @@
 // Bun at build time. The JSC host's ffi glue is generated from this file, so
 // a symbol the SDK adds or changes can't drift from the glue.
 //   bun package/src/jsc-host/ffi/extract.ts > ffi-decls.json
+import type { OnLoadArgs, PluginBuilder } from "bun";
 import { join } from "node:path";
 
 const here = import.meta.dir;
@@ -12,10 +13,10 @@ const result = await Bun.build({
 	plugins: [
 		{
 			name: "ffi-recorder",
-			setup(build) {
+			setup(build: PluginBuilder) {
 				// bun:ffi is a builtin for target "bun", so onResolve never sees it:
 				// point the SDK's imports at the recorder in the source instead.
-				build.onLoad({ filter: /sdks\/main\/.*\.ts$/ }, async (args) => ({
+				build.onLoad({ filter: /sdks\/main\/.*\.ts$/ }, async (args: OnLoadArgs) => ({
 					contents: (await Bun.file(args.path).text()).replaceAll('"bun:ffi"', JSON.stringify(join(here, "recorder.js"))),
 					loader: "ts",
 				}));

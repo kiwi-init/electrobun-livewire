@@ -42,7 +42,7 @@ for (const libPath of checkLibs) {
 	const lib = record.libraries.find((l) => basename(l.path) === basename(libPath));
 	if (!lib) continue;
 	const nm = Bun.spawnSync(["nm", "-gU", libPath]);
-	const exported = new Set(nm.stdout.toString().split("\n").map((line) => line.trim().split(/\s+/).pop()?.replace(/^_/, "")));
+	const exported = new Set(nm.stdout.toString().split("\n").map((line: string) => line.trim().split(/\s+/).pop()?.replace(/^_/, "")));
 	const missing = Object.keys(lib.symbols).filter((name) => !exported.has(name));
 	if (missing.length) {
 		console.error("gen: " + basename(libPath) + " doesn't export " + missing.join(", "));

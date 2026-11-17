@@ -2,6 +2,7 @@
 // exiting with process.exitCode. Used by the runtime's own tests.
 #include "runtime.h"
 #include "ffi/ffi.h"
+#include "node.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -40,6 +41,15 @@ static JSValueRef t_post_from_thread(JSContextRef ctx, JSObjectRef f, JSObjectRe
     return JSValueMakeUndefined(ctx);
 }
 
+// __test.pipe() -> [readFd, writeFd]
+static JSValueRef t_pipe(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
+    (void)f; (void)self; (void)argc; (void)argv; (void)exc;
+    int fds[2];
+    if (pipe(fds) != 0) return JSValueMakeNull(ctx);
+    JSValueRef pair[2] = {JSValueMakeNumber(ctx, fds[0]), JSValueMakeNumber(ctx, fds[1])};
+    return JSObjectMakeArray(ctx, 2, pair, NULL);
+}
+
 int main(int argc, const char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: jsc-run <script.js> [args...]\n");
@@ -47,9 +57,11 @@ int main(int argc, const char **argv) {
     }
     jsr_runtime *rt = jsr_create(argc, argv);
     ffi_install(rt);
+    node_install(rt);
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef test = JSObjectMake(ctx, NULL, NULL);
     jsr_set_function(ctx, test, "postFromThread", t_post_from_thread);
+    jsr_set_function(ctx, test, "pipe", t_pipe);
     JSStringRef name = JSStringCreateWithUTF8CString("__test");
     JSObjectSetProperty(ctx, JSContextGetGlobalObject(ctx), name, test, kJSPropertyAttributeNone, NULL);
     JSStringRelease(name);
