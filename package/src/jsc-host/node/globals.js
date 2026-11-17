@@ -7,12 +7,15 @@ import { spawn, spawnSync, which } from "./bun-spawn.js";
 import { kill } from "./spawn-common.js";
 import { listen, connect } from "./bun-socket.js";
 import { ReadableStream, Response } from "./web-streams.js";
+import { Worker, structuredClone } from "./worker.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
 const defineGlobal = (name, value) =>
 	Object.defineProperty(globalThis, name, { value, writable: true, configurable: true, enumerable: false });
 defineGlobal("Buffer", Buffer);
+if (!("Worker" in globalThis)) defineGlobal("Worker", Worker);
+if (!("structuredClone" in globalThis)) defineGlobal("structuredClone", structuredClone);
 globalThis.crypto ??= { getRandomValues, randomUUID };
 
 const mime = {

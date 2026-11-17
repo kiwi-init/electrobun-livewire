@@ -3,3 +3,5 @@
 #include "runtime.h"
 
 void node_install(jsr_runtime *rt);
+// bun:sqlite's natives (sqlite.c): globalThis.__sqlite.
+void sqlite_install(jsr_runtime *rt);

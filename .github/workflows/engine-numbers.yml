@@ -21,7 +21,7 @@ jobs:
     steps:
       - name: System JavaScriptCore (webkit2gtk-4.1), GLib, libgcrypt
         run: |
-          pacman -Syu --noconfirm --needed webkit2gtk-4.1 glib2 libgcrypt base-devel pkgconf unzip git tinyxxd || pacman -S --noconfirm --needed vim
+          pacman -Syu --noconfirm --needed webkit2gtk-4.1 glib2 libgcrypt sqlite base-devel pkgconf unzip git tinyxxd || pacman -S --noconfirm --needed vim
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
       - name: Measure
@@ -37,7 +37,7 @@ jobs:
       - name: System JavaScriptCore, GLib, libgcrypt
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev xxd pkg-config
+          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev libsqlite3-dev xxd pkg-config
       - name: Measure
         run: |
           set -o pipefail
