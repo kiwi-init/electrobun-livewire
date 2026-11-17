@@ -7,21 +7,29 @@
 
 	// --- timers --------------------------------------------------------------
 	class Timeout {
-		constructor(id, repeat) { this._id = id; this._repeat = repeat; this._ref = true; }
+		constructor(id, repeat, run, ms) { this._id = id; this._repeat = repeat; this._ref = true; this._run = run; this._ms = ms; }
+		refresh() {
+			rt.clearTimer(this._id);
+			this._id = rt.setTimer(this._run, this._ms, this._repeat);
+			if (!this._ref) rt.refTimer(this._id, false);
+			return this;
+		}
+		close() { rt.clearTimer(this._id); return this; }
 		ref() { if (!this._ref) { this._ref = true; rt.refTimer(this._id, true); } return this; }
 		unref() { if (this._ref) { this._ref = false; rt.refTimer(this._id, false); } return this; }
 		hasRef() { return this._ref; }
 		[Symbol.toPrimitive]() { return this._id; }
 	}
 	const timerId = (t) => (t instanceof Timeout ? t._id : Number(t) || 0);
-	function schedule(fn, ms, args, repeat) {
+	function schedule(fn, ms, args, repeat, immediate = false) {
 		if (typeof fn !== "function") throw new TypeError("The callback must be a function");
-		const id = rt.setTimer(args.length ? () => fn(...args) : fn, Number(ms) || 0, repeat);
-		return new Timeout(id, repeat);
+		const run = args.length ? () => fn(...args) : fn;
+		const id = rt.setTimer(run, ms, repeat, immediate);
+		return new Timeout(id, repeat, run, ms);
 	}
-	g.setTimeout = (fn, ms, ...args) => schedule(fn, ms, args, false);
-	g.setInterval = (fn, ms, ...args) => schedule(fn, ms, args, true);
-	g.setImmediate = (fn, ...args) => schedule(fn, 0, args, false);
+	g.setTimeout = (fn, ms, ...args) => schedule(fn, Number(ms) || 0, args, false);
+	g.setInterval = (fn, ms, ...args) => schedule(fn, Number(ms) || 0, args, true);
+	g.setImmediate = (fn, ...args) => schedule(fn, 0, args, false, true);
 	g.clearTimeout = g.clearInterval = g.clearImmediate = (t) => { if (t != null) rt.clearTimer(timerId(t)); };
 	if (typeof g.queueMicrotask !== "function") {
 		const resolved = Promise.resolve();

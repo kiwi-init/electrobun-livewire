@@ -44,8 +44,10 @@ function checkGcm(algorithm, key) {
 }
 // Node's streaming interface; the work happens in final().
 class GcmCipher {
-	constructor(encrypt, algorithm, key, iv) {
+	constructor(encrypt, algorithm, key, iv, options) {
 		checkGcm(algorithm, key);
+		this._tagLength = options?.authTagLength ?? 16;
+		if (!Number.isInteger(this._tagLength) || this._tagLength < 4 || this._tagLength > 16) throw new TypeError("Invalid authentication tag length: " + this._tagLength);
 		this._encrypt = encrypt;
 		this._key = Buffer.from(bytesOf(key));
 		this._iv = Buffer.from(bytesOf(iv));
@@ -69,7 +71,7 @@ class GcmCipher {
 		if (this._encrypt) {
 			const r = n.aesGcm(true, this._key, this._iv, input, this._aad);
 			out = Buffer.from(r.data.buffer, r.data.byteOffset, r.data.byteLength);
-			this._tag = Buffer.from(r.tag.buffer, r.tag.byteOffset, r.tag.byteLength);
+			this._tag = Buffer.from(r.tag.buffer, r.tag.byteOffset, this._tagLength);
 		} else {
 			if (!this._tag) throw new Error("Unsupported state or unable to authenticate data");
 			const r = n.aesGcm(false, this._key, this._iv, input, this._aad, this._tag);
@@ -83,12 +85,14 @@ class GcmCipher {
 	}
 	setAuthTag(tag) {
 		if (this._encrypt) throw new Error("Invalid state for operation setAuthTag");
-		this._tag = Buffer.from(bytesOf(tag));
+		const bytes = Buffer.from(bytesOf(tag));
+		if (bytes.length !== this._tagLength) throw new TypeError("Invalid authentication tag length: " + bytes.length);
+		this._tag = bytes;
 		return this;
 	}
 }
-export const createCipheriv = (algorithm, key, iv) => new GcmCipher(true, algorithm, key, iv);
-export const createDecipheriv = (algorithm, key, iv) => new GcmCipher(false, algorithm, key, iv);
+export const createCipheriv = (algorithm, key, iv, options) => new GcmCipher(true, algorithm, key, iv, options);
+export const createDecipheriv = (algorithm, key, iv, options) => new GcmCipher(false, algorithm, key, iv, options);
 const unsupported = (name) => () => { throw new Error(`crypto.${name} isn't available on the JSC runtime yet`); };
 export const createHash = unsupported("createHash");
 export const createHmac = unsupported("createHmac");

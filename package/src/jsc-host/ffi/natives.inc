@@ -171,15 +171,6 @@ NATIVE(n_read) {
     return v ? v : ffi_throw(ctx, exc, "read: unknown kind");
 }
 
-NATIVE(n_set_cstring_class) {
-    NATIVE_UNUSED;
-    if (argc > 0 && JSValueIsObject(ctx, argv[0])) {
-        g_cstring_class = (JSObjectRef)argv[0];
-        JSValueProtect(ctx, argv[0]);
-    }
-    return JSValueMakeUndefined(ctx);
-}
-
 #include "ffi.h"
 void ffi_install(jsr_runtime *rt) {
     g_ffi_rt = rt;
@@ -193,6 +184,5 @@ void ffi_install(jsr_runtime *rt) {
     jsr_set_function(ctx, ffi, "readCString", n_read_cstring);
     jsr_set_function(ctx, ffi, "toArrayBuffer", n_to_array_buffer);
     jsr_set_function(ctx, ffi, "read", n_read);
-    jsr_set_function(ctx, ffi, "setCStringClass", n_set_cstring_class);
     ffi_set(ctx, JSContextGetGlobalObject(ctx), "__ffi", ffi);
 }

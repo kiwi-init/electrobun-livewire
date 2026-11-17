@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <fts.h>
 #include <limits.h>
+#include <math.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,7 +170,7 @@ NATIVE(n_read_file) {
             if (errno == EINTR) continue;
             int err = errno;
             close(fd); free(buf);
-            JSValueRef r = throw_errno(ctx, exc, err, "read", path);
+            JSValueRef r = throw_errno(ctx, exc, err, "read", NULL);
             free(path);
             return r;
         }
@@ -315,6 +316,53 @@ NATIVE(n_readdir) {
     closedir(d);
     free(path);
     return list;
+}
+NATIVE(n_symlink) {
+    UNUSED_ARGS;
+    char *target = jsr_to_utf8(ctx, ARG(0)), *path = jsr_to_utf8(ctx, ARG(1));
+    JSValueRef r = symlink(target, path) == 0 ? JSValueMakeUndefined(ctx) : throw_errno(ctx, exc, errno, "symlink", target);
+    free(target); free(path);
+    return r;
+}
+NATIVE(n_link) {
+    UNUSED_ARGS;
+    char *from = jsr_to_utf8(ctx, ARG(0)), *to = jsr_to_utf8(ctx, ARG(1));
+    JSValueRef r = link(from, to) == 0 ? JSValueMakeUndefined(ctx) : throw_errno(ctx, exc, errno, "link", from);
+    free(from); free(to);
+    return r;
+}
+NATIVE(n_readlink) {
+    UNUSED_ARGS;
+    char *path = jsr_to_utf8(ctx, ARG(0));
+    char out[PATH_MAX];
+    ssize_t n = readlink(path, out, sizeof out - 1);
+    JSValueRef r;
+    if (n >= 0) { out[n] = 0; r = jsr_string(ctx, out); }
+    else r = throw_errno(ctx, exc, errno, "readlink", path);
+    free(path);
+    return r;
+}
+NATIVE(n_utimes) {
+    UNUSED_ARGS;
+    char *path = jsr_to_utf8(ctx, ARG(0));
+    double at = num(ctx, ARG(1)), mt = num(ctx, ARG(2));
+    struct timespec ts[2] = {
+        {(time_t)floor(at), (long)((at - floor(at)) * 1e9)},
+        {(time_t)floor(mt), (long)((mt - floor(mt)) * 1e9)},
+    };
+    JSValueRef r = utimensat(AT_FDCWD, path, ts, 0) == 0 ? JSValueMakeUndefined(ctx) : throw_errno(ctx, exc, errno, "utime", path);
+    free(path);
+    return r;
+}
+static JSObjectRef errno_names(JSContextRef ctx) {
+    JSObjectRef c = JSObjectMake(ctx, NULL, NULL);
+#define E(name) set_prop(ctx, c, #name, JSValueMakeNumber(ctx, name))
+    E(EPERM); E(ENOENT); E(ESRCH); E(EINTR); E(EIO); E(ENXIO); E(E2BIG); E(ENOEXEC); E(EBADF); E(ECHILD); E(EAGAIN); E(ENOMEM);
+    E(EACCES); E(EFAULT); E(EBUSY); E(EEXIST); E(EXDEV); E(ENODEV); E(ENOTDIR); E(EISDIR); E(EINVAL); E(ENFILE); E(EMFILE);
+    E(ENOTTY); E(EFBIG); E(ENOSPC); E(ESPIPE); E(EROFS); E(EMLINK); E(EPIPE); E(ELOOP); E(ENAMETOOLONG); E(ENOTEMPTY);
+    E(ENOSYS); E(ETIMEDOUT); E(ECONNREFUSED); E(ECONNRESET); E(EADDRINUSE); E(ENOTSUP); E(ENOTCONN); E(ECANCELED);
+#undef E
+    return c;
 }
 static JSObjectRef fs_constants(JSContextRef ctx) {
     JSObjectRef c = JSObjectMake(ctx, NULL, NULL);
@@ -651,7 +699,12 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, fs, "access", n_access);
     jsr_set_function(ctx, fs, "chmod", n_chmod);
     jsr_set_function(ctx, fs, "readdir", n_readdir);
+    jsr_set_function(ctx, fs, "symlink", n_symlink);
+    jsr_set_function(ctx, fs, "link", n_link);
+    jsr_set_function(ctx, fs, "readlink", n_readlink);
+    jsr_set_function(ctx, fs, "utimes", n_utimes);
     set_prop(ctx, fs, "constants", fs_constants(ctx));
+    set_prop(ctx, node, "errnos", errno_names(ctx));
     set_prop(ctx, node, "fs", fs);
     jsr_set_function(ctx, node, "osInfo", n_os_info);
     jsr_set_function(ctx, node, "randomFill", n_random_fill);

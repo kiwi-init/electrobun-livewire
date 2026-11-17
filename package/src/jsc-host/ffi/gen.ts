@@ -188,8 +188,8 @@ cbs.forEach(([key, sig], s) => {
 		if (t === "cstring") c += "    call->a[" + j + "].s = a" + j + " ? strdup(a" + j + ") : NULL;\n    call->owns_string[" + j + "] = true;\n";
 		else c += "    call->a[" + j + "]." + field[t] + " = a" + j + ";\n";
 	});
-	c += "    bool on_js = jsr_on_js_thread(g_ffi_rt);\n";
-	c += "    bool waits = !on_js && " + (wants ? "!call->slot->threadsafe" : "false") + ";\n";
+	c += "    bool direct = jsr_on_js_thread(g_ffi_rt) && !call->slot->threadsafe;\n";
+	c += "    bool waits = !jsr_on_js_thread(g_ffi_rt) && " + (wants ? "!call->slot->threadsafe" : "false") + ";\n";
 	c += "    JSValueRef r = ffi_dispatch(call, " + (wants ? "true" : "false") + ");\n";
 	if (ret === "void") c += "    (void)r;\n";
 	else if (ret === "cstring") c += "    const char *out = ffi_result_cstring(call->slot, r);\n";
@@ -197,7 +197,7 @@ cbs.forEach(([key, sig], s) => {
 	else if (ret === "bool") c += "    bool out = r ? JSValueToBoolean(jsr_context(g_ffi_rt), r) : false;\n";
 	else if (ret === "u64") c += "    uint64_t out = r ? ffi_arg_u64(jsr_context(g_ffi_rt), r) : 0;\n";
 	else c += "    " + ctype(ret) + " out = (" + ctype(ret) + ")ffi_result_num(r);\n";
-	c += "    if (on_js) ffi_free_call(call);\n    else if (waits && !call->timed_out) { ffi_release_result(r, true); ffi_free_call(call); }\n";
+	c += "    if (direct) ffi_free_call(call);\n    else if (waits && !call->timed_out) { ffi_release_result(r, true); ffi_free_call(call); }\n";
 	c += ret === "void" ? "}\n" : "    return out;\n}\n";
 	for (let n = 0; n < SLOTS; n++) {
 		c += "static " + ctype(ret) + " " + p + "_t" + n + "(" + params + ") { " + (ret === "void" ? "" : "return ") + p + "_invoke(" + n + (args.length ? ", " + args.map((_, j) => "a" + j).join(", ") : "") + "); }\n";
