@@ -5,6 +5,7 @@ import { readFileSync, existsSync, statSync } from "./fs.js";
 import { getRandomValues, randomUUID } from "./crypto.js";
 import { spawn, spawnSync, which } from "./bun-spawn.js";
 import { kill } from "./spawn-common.js";
+import { listen, connect } from "./bun-socket.js";
 import { ReadableStream, Response } from "./web-streams.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
@@ -50,6 +51,8 @@ if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	spawn,
 	spawnSync,
 	which,
+	listen,
+	connect,
 	env: proc?.env ?? {},
 	version: "0.0.0-livewire-jsc",
 });
