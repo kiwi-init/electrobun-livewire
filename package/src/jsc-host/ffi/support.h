@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <time.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -87,7 +88,8 @@ typedef struct ffi_slot {
 } ffi_slot;
 
 // A one-shot signal a foreign thread waits on for a JS result (portable: a
-// mutex and a condition variable, instead of a dispatch semaphore).
+// mutex and a condition variable, instead of a dispatch semaphore). Waits are
+// measured on a monotonic clock, so a wall-clock change can't stretch them.
 typedef struct ffi_waiter {
     pthread_mutex_t lock;
     pthread_cond_t cond;
@@ -96,7 +98,15 @@ typedef struct ffi_waiter {
 static ffi_waiter *ffi_waiter_create(void) {
     ffi_waiter *w = calloc(1, sizeof *w);
     pthread_mutex_init(&w->lock, NULL);
-    pthread_cond_init(&w->cond, NULL);
+#ifdef __APPLE__
+    pthread_cond_init(&w->cond, NULL); // waits use pthread_cond_timedwait_relative_np
+#else
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&w->cond, &attr);
+    pthread_condattr_destroy(&attr);
+#endif
     return w;
 }
 static void ffi_waiter_signal(ffi_waiter *w) {
@@ -105,20 +115,33 @@ static void ffi_waiter_signal(ffi_waiter *w) {
     pthread_cond_signal(&w->cond);
     pthread_mutex_unlock(&w->lock);
 }
-// True once signaled, false after timeout_s seconds.
-static bool ffi_waiter_wait(ffi_waiter *w, int timeout_s) {
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += timeout_s;
+static int64_t ffi_now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+// True once signaled, false after timeout_ms.
+static bool ffi_waiter_wait_ms(ffi_waiter *w, int64_t timeout_ms) {
+    int64_t end = ffi_now_ms() + timeout_ms;
     pthread_mutex_lock(&w->lock);
+#ifdef __APPLE__
+    for (int64_t left = timeout_ms; !w->signaled && left > 0; left = end - ffi_now_ms()) {
+        struct timespec rel = {(time_t)(left / 1000), (long)(left % 1000) * 1000000L};
+        pthread_cond_timedwait_relative_np(&w->cond, &w->lock, &rel);
+    }
+#else
+    struct timespec deadline = {(time_t)(end / 1000), (long)(end % 1000) * 1000000L};
     int rc = 0;
     while (!w->signaled && rc != ETIMEDOUT) rc = pthread_cond_timedwait(&w->cond, &w->lock, &deadline);
+#endif
     bool ok = w->signaled;
     pthread_mutex_unlock(&w->lock);
     return ok;
 }
 
 typedef struct ffi_call {
+    _Atomic int refs;          // the trampoline and the queued task; the last frees it
+    _Atomic int claimed;       // 0 until a thread starts running it (exactly once)
     ffi_slot *slot;
     int argc;
     JSValueRef (*make_args)(JSContextRef ctx, struct ffi_call *call, JSValueRef *out);
@@ -131,6 +154,21 @@ typedef struct ffi_call {
 
 static jsr_runtime *g_ffi_rt;
 
+// --- native calls and borrowed JS --------------------------------------------
+// While the JS thread is inside a native call, JavaScriptCore has dropped its
+// lock, so another thread can run JS. A sync callback that arrives then (WebKit
+// asking for a views:// page's MIME type on the main thread while JS waits on
+// the main thread in createWebview) runs on the calling thread, as Bun's
+// JSCallback does, instead of waiting for a JS thread that's waiting for it.
+// One borrower at a time; a thread that can't take the borrow lock (another
+// borrower, possibly one blocked on this thread) queues and waits instead.
+static _Atomic int g_ffi_in_native;
+static _Thread_local int t_ffi_borrowed; // this thread is running JS it borrowed
+static pthread_mutex_t g_ffi_borrow_lock = PTHREAD_MUTEX_INITIALIZER;
+static inline void ffi_enter_native(void) { atomic_fetch_add(&g_ffi_in_native, 1); }
+static inline void ffi_leave_native(void) { atomic_fetch_sub(&g_ffi_in_native, 1); }
+static inline bool ffi_runs_js_here(void) { return t_ffi_borrowed > 0 || jsr_on_js_thread(g_ffi_rt); }
+
 static void ffi_free_call(ffi_call *call) {
     for (int i = 0; i < call->argc; i++)
         if (call->owns_string[i]) free(call->a[i].s);
@@ -141,9 +179,28 @@ static void ffi_free_call(ffi_call *call) {
     }
     free(call);
 }
+static void ffi_call_unref(ffi_call *call) {
+    if (atomic_fetch_sub(&call->refs, 1) == 1) ffi_free_call(call);
+}
+
+// Runs a call with the borrow lock held (the caller took it).
+static void ffi_run_borrowed(ffi_call *call) {
+    t_ffi_borrowed++;
+    JSContextRef ctx = jsr_context(g_ffi_rt);
+    JSValueRef args[8];
+    call->make_args(ctx, call, args);
+    call->result = call->slot->fn ? jsr_call(g_ffi_rt, call->slot->fn, NULL, (size_t)call->argc, args) : NULL;
+    if (call->result) JSValueProtect(ctx, call->result); // released by the trampoline
+    t_ffi_borrowed--;
+    pthread_mutex_unlock(&g_ffi_borrow_lock);
+}
 
 static void ffi_run_call(jsr_runtime *rt, void *data) {
     ffi_call *call = data;
+    if (call->done && atomic_exchange(&call->claimed, 1)) { // the waiter ran it
+        ffi_call_unref(call);
+        return;
+    }
     JSContextRef ctx = jsr_context(rt);
     JSValueRef args[8];
     call->make_args(ctx, call, args);
@@ -151,6 +208,7 @@ static void ffi_run_call(jsr_runtime *rt, void *data) {
     if (call->done) {
         if (call->result) JSValueProtect(ctx, call->result);
         ffi_waiter_signal(call->done);
+        ffi_call_unref(call);
     } else {
         ffi_free_call(call);
     }
@@ -160,7 +218,7 @@ static void ffi_run_call(jsr_runtime *rt, void *data) {
 // came from another thread, see ffi_release_result) or NULL.
 static JSValueRef ffi_dispatch(ffi_call *call, bool wants_result) {
     jsr_runtime *rt = g_ffi_rt;
-    if (jsr_on_js_thread(rt) && !call->slot->threadsafe) {
+    if (ffi_runs_js_here() && !call->slot->threadsafe) {
         call->done = NULL;
         JSContextRef ctx = jsr_context(rt);
         JSValueRef args[8];
@@ -172,14 +230,34 @@ static JSValueRef ffi_dispatch(ffi_call *call, bool wants_result) {
         jsr_post(rt, ffi_run_call, call);
         return NULL;
     }
-    call->done = ffi_waiter_create();
-    jsr_post(rt, ffi_run_call, call);
-    if (!ffi_waiter_wait(call->done, 3)) {
-        fprintf(stderr, "[jsc-ffi] a non-threadsafe callback timed out waiting for the JS thread\n");
-        call->timed_out = true;
-        return NULL; // the call still runs later; it leaks its record
+    // JS parked in a native call: run it here.
+    call->done = NULL;
+    call->refs = 1;
+    if (atomic_load(&g_ffi_in_native) > 0 && pthread_mutex_trylock(&g_ffi_borrow_lock) == 0) {
+        call->claimed = 1;
+        ffi_run_borrowed(call);
+        return call->result;
     }
-    return call->result;
+    // Otherwise queue it for the JS thread, and take it back if the JS thread
+    // enters a native call before running it. The queued task holds a
+    // reference: it may run (and find the call claimed) after we return.
+    call->done = ffi_waiter_create();
+    call->refs = 2;
+    jsr_post(rt, ffi_run_call, call);
+    for (int64_t waited_ms = 0; waited_ms < 3000; waited_ms += 2) {
+        if (ffi_waiter_wait_ms(call->done, 2)) return call->result;
+        if (atomic_load(&g_ffi_in_native) > 0 && pthread_mutex_trylock(&g_ffi_borrow_lock) == 0) {
+            if (!atomic_exchange(&call->claimed, 1)) {
+                ffi_run_borrowed(call);
+                return call->result;
+            }
+            pthread_mutex_unlock(&g_ffi_borrow_lock); // the JS thread is running it
+        }
+    }
+    if (ffi_waiter_wait_ms(call->done, 0)) return call->result;
+    fprintf(stderr, "[jsc-ffi] a non-threadsafe callback timed out waiting for the JS thread\n");
+    call->timed_out = true;
+    return NULL; // the call still runs later; its result stays protected
 }
 
 static double ffi_result_num(JSValueRef r) { return r ? JSValueToNumber(jsr_context(g_ffi_rt), r, NULL) : 0; }

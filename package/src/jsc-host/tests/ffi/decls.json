@@ -93,6 +93,12 @@
       "u32"
      ],
      "returns": "void"
+    },
+    "tl_str_via_thread": {
+     "args": [
+      "function"
+     ],
+     "returns": "cstring"
     }
    }
   }

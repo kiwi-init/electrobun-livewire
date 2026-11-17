@@ -12,6 +12,7 @@
 // expect: after threadsafe call
 // expect: ret cb 1
 // expect: str cb [str 3]
+// expect: str via thread [str 9] fast
 // expect: sync cb 7 sync
 // expect: thread cb 20 from thread 20
 // expect: closed
@@ -35,6 +36,7 @@ const lib = dlopen(process.env.LIVEWIRE_TESTLIB, {
 	tl_call_ret: { args: [FFIType.function], returns: FFIType.u32 },
 	tl_call_str: { args: [FFIType.function], returns: FFIType.cstring },
 	tl_call_thread: { args: [FFIType.function, FFIType.u32], returns: FFIType.void },
+	tl_str_via_thread: { args: [FFIType.function], returns: FFIType.cstring },
 }).symbols;
 
 const cstr = (s) => new TextEncoder().encode(s + "\0");
@@ -65,6 +67,11 @@ console.log("ret cb", lib.tl_call_ret(retCb));
 let keep;
 const strCb = new JSCallback((n) => { keep = cstr("[str " + n + "]"); return ptr(keep); }, { args: [FFIType.u32], returns: FFIType.cstring });
 console.log("str cb", lib.tl_call_str(strCb).toString());
+// The callback runs while JS waits in tl_str_via_thread, as under Bun: no 3 s
+// wait for a JS thread that is waiting for it (T416).
+const started = performance.now();
+const viaThread = lib.tl_str_via_thread(strCb).toString();
+console.log("str via thread", viaThread, performance.now() - started < 1000 ? "fast" : "slow");
 
 const threadCb = new JSCallback(
 	(id, text) => {

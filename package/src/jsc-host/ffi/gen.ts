@@ -131,16 +131,19 @@ for (const lib of record.libraries) {
 				default: throw new Error("gen: unsupported argument type " + t + " in " + name);
 			}
 		});
-		const call = "((" + fnType + ")" + id + "_p" + i + ")(" + conv.join(", ") + ")";
+		// Arguments are converted before the call, so the "in a native call"
+		// window (see support.h) covers only the C function itself.
+		args.forEach((t, j) => { body += "    " + ctype(t) + " x" + j + " = " + conv[j] + ";\n"; });
+		const call = "((" + fnType + ")" + id + "_p" + i + ")(" + conv.map((_, j) => "x" + j).join(", ") + ")";
 		const frees = args.flatMap((t, j) => (t === "cstring" ? ["    free(own" + j + ");\n"] : [])).join("");
 		let ret_ = "";
 		switch (ret) {
-			case "void": body += "    " + call + ";\n" + frees; ret_ = "JSValueMakeUndefined(ctx)"; break;
-			case "bool": body += "    bool r = " + call + ";\n" + frees; ret_ = "JSValueMakeBoolean(ctx, r)"; break;
-			case "u32": case "i32": case "f64": body += "    double r = (double)" + call + ";\n" + frees; ret_ = "JSValueMakeNumber(ctx, r)"; break;
-			case "u64": body += "    uint64_t r = " + call + ";\n" + frees; ret_ = "ffi_ret_u64(ctx, r)"; break;
-			case "ptr": case "function": body += "    void *r = " + call + ";\n" + frees; ret_ = "ffi_ret_ptr(ctx, r)"; break;
-			case "cstring": body += "    const char *r = " + call + ";\n" + frees; ret_ = "ffi_ret_cstring(ctx, r)"; break;
+			case "void": body += "    ffi_enter_native();\n    " + call + ";\n    ffi_leave_native();\n" + frees; ret_ = "JSValueMakeUndefined(ctx)"; break;
+			case "bool": body += "    ffi_enter_native();\n    bool r = " + call + ";\n    ffi_leave_native();\n" + frees; ret_ = "JSValueMakeBoolean(ctx, r)"; break;
+			case "u32": case "i32": case "f64": body += "    ffi_enter_native();\n    double r = (double)" + call + ";\n    ffi_leave_native();\n" + frees; ret_ = "JSValueMakeNumber(ctx, r)"; break;
+			case "u64": body += "    ffi_enter_native();\n    uint64_t r = " + call + ";\n    ffi_leave_native();\n" + frees; ret_ = "ffi_ret_u64(ctx, r)"; break;
+			case "ptr": case "function": body += "    ffi_enter_native();\n    void *r = " + call + ";\n    ffi_leave_native();\n" + frees; ret_ = "ffi_ret_ptr(ctx, r)"; break;
+			case "cstring": body += "    ffi_enter_native();\n    const char *r = " + call + ";\n    ffi_leave_native();\n" + frees; ret_ = "ffi_ret_cstring(ctx, r)"; break;
 			default: throw new Error("gen: unsupported return type " + ret + " in " + name);
 		}
 		c += "static JSValueRef " + id + "_f" + i + "(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {\n";
@@ -188,8 +191,8 @@ cbs.forEach(([key, sig], s) => {
 		if (t === "cstring") c += "    call->a[" + j + "].s = a" + j + " ? strdup(a" + j + ") : NULL;\n    call->owns_string[" + j + "] = true;\n";
 		else c += "    call->a[" + j + "]." + field[t] + " = a" + j + ";\n";
 	});
-	c += "    bool direct = jsr_on_js_thread(g_ffi_rt) && !call->slot->threadsafe;\n";
-	c += "    bool waits = !jsr_on_js_thread(g_ffi_rt) && " + (wants ? "!call->slot->threadsafe" : "false") + ";\n";
+	c += "    bool direct = ffi_runs_js_here() && !call->slot->threadsafe;\n";
+	c += "    bool waits = !ffi_runs_js_here() && " + (wants ? "!call->slot->threadsafe" : "false") + ";\n";
 	c += "    JSValueRef r = ffi_dispatch(call, " + (wants ? "true" : "false") + ");\n";
 	if (ret === "void") c += "    (void)r;\n";
 	else if (ret === "cstring") c += "    const char *out = ffi_result_cstring(call->slot, r);\n";
@@ -197,7 +200,7 @@ cbs.forEach(([key, sig], s) => {
 	else if (ret === "bool") c += "    bool out = r ? JSValueToBoolean(jsr_context(g_ffi_rt), r) : false;\n";
 	else if (ret === "u64") c += "    uint64_t out = r ? ffi_arg_u64(jsr_context(g_ffi_rt), r) : 0;\n";
 	else c += "    " + ctype(ret) + " out = (" + ctype(ret) + ")ffi_result_num(r);\n";
-	c += "    if (direct) ffi_free_call(call);\n    else if (waits && !call->timed_out) { ffi_release_result(r, true); ffi_free_call(call); }\n";
+	c += "    if (direct) ffi_free_call(call);\n    else if (waits) { if (!call->timed_out) ffi_release_result(r, true); ffi_call_unref(call); }\n";
 	c += ret === "void" ? "}\n" : "    return out;\n}\n";
 	for (let n = 0; n < SLOTS; n++) {
 		c += "static " + ctype(ret) + " " + p + "_t" + n + "(" + params + ") { " + (ret === "void" ? "" : "return ") + p + "_invoke(" + n + (args.length ? ", " + args.map((_, j) => "a" + j).join(", ") : "") + "); }\n";
