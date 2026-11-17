@@ -1013,7 +1013,13 @@ async function copyToDist() {
 		console.log("[done]Copying CEF files for Linux...");
 	}
 
-	if (OS === "macos") await buildJscHost();
+	if (OS === "macos") await buildJscHost(".dylib");
+	else if (OS === "linux") {
+		// Needs WebKitGTK's JavaScriptCore headers (libjavascriptcoregtk-4.1-dev),
+		// GLib and libgcrypt; without them the devkit ships no JSC host.
+		if (spawnSync("pkg-config", ["--exists", "javascriptcoregtk-4.1"]).status === 0) await buildJscHost(".so");
+		else console.warn("No javascriptcoregtk-4.1 (pkg-config): this devkit has no JSC host");
+	}
 
 	const nativeDevkitManifest = createNativeDevkitManifest({
 		productVersion: ELECTROBUN_VERSION,
@@ -1032,11 +1038,11 @@ async function copyToDist() {
 // Livewire's JavaScriptCore host (src/jsc-host) under api/jsc-host, which Hutch
 // copies into each project's .hutch/devkit: the prebuilt host, its bundler and
 // shims, and the postBuild hook that moves an app's main process from Bun to it.
-async function buildJscHost() {
+async function buildJscHost(libExt: ".dylib" | ".so") {
 	const out = join("dist", "api", "jsc-host");
 	rmSync(out, { recursive: true, force: true });
 	mkdirSync(join(out, "ffi"), { recursive: true });
-	await $`sh src/jsc-host/build-host.sh ${join(out, "main")} --sdk src/sdks/main --check-lib dist/libElectrobunCore.dylib --check-lib dist/libNativeWrapper.dylib`.env({
+	await $`sh src/jsc-host/build-host.sh ${join(out, "main")} --sdk src/sdks/main --check-lib ${"dist/libElectrobunCore" + libExt} --check-lib ${"dist/libNativeWrapper" + libExt}`.env({
 		...process.env,
 		BUN: process.execPath,
 	});
