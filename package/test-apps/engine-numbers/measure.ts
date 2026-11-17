@@ -108,7 +108,7 @@ const labels: [string, string][] = [
 		? ([["idle_dirty_mb", "Idle memory, phys footprint (MB)"]] as [string, string][])
 		: ([["idle_dirty_mb", "Idle memory, private dirty (MB)"], ["idle_private_mb", "Idle private incl. library pages (MB)"]] as [string, string][])),
 	["idle_rss_mb", "Idle RSS (MB)"],
-	["after_work_dirty_mb", "Memory after the workload, no GC yet (MB)"],
+	["after_work_dirty_mb", "Memory 2.5 s after the workload (MB)"],
 	["json_ms", "JSON: 1.4 MB parse x10 (ms)"],
 	["loop_ms", "Loop: 5M iterations (ms)"],
 	["string_ms", "Strings and regex (ms)"],

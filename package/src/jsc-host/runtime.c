@@ -66,6 +66,12 @@ struct jsr_runtime {
     uint32_t next_timer_id;
     int refs;                  // ref'd timers + handles
     bool stopped;
+    bool ran_js;               // the loop woke since the last idle collection
+#ifdef __APPLE__
+    CFRunLoopTimerRef gc_timer;
+#else
+    GSource *gc_source;
+#endif
     int exit_code;
     int argc;
     const char **argv;
@@ -269,6 +275,54 @@ static void loop_wake(jsr_runtime *rt) {
 #endif
 }
 
+// --- idle GC -------------------------------------------------------------------
+// JSC's own GC timers leave a finished workload's heap in place for a long time
+// in an embedder's loop (48-63 MB after the engine-numbers workload, vs 6-9 MB
+// on Bun). Once the loop has woken and then stays idle for IDLE_GC_DELAY, the
+// host runs one full collection, so memory drops back as it does on Bun. A wake
+// for the collection itself doesn't arm another one.
+#define IDLE_GC_DELAY 0.5
+
+typedef void (*jsr_sync_gc_fn)(JSContextRef);
+static jsr_sync_gc_fn g_sync_gc;
+
+static void idle_gc(jsr_runtime *rt) {
+    rt->ran_js = false;
+    if (g_sync_gc) g_sync_gc(rt->ctx); else JSGarbageCollect(rt->ctx);
+}
+
+#ifdef __APPLE__
+static void gc_timer_fired(CFRunLoopTimerRef timer, void *info) {
+    (void)timer;
+    idle_gc(info);
+}
+
+static void loop_activity(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info) {
+    (void)observer;
+    jsr_runtime *rt = info;
+    if (activity == kCFRunLoopAfterWaiting) rt->ran_js = true;
+    else if (rt->ran_js) CFRunLoopTimerSetNextFireDate(rt->gc_timer, CFAbsoluteTimeGetCurrent() + IDLE_GC_DELAY);
+}
+#else
+static gboolean gc_source_fired(gpointer info) {
+    jsr_runtime *rt = info;
+    g_source_unref(rt->gc_source);
+    rt->gc_source = NULL;
+    idle_gc(rt);
+    return G_SOURCE_REMOVE;
+}
+
+static void arm_idle_gc(jsr_runtime *rt) {
+    if (rt->gc_source) {
+        g_source_destroy(rt->gc_source);
+        g_source_unref(rt->gc_source);
+    }
+    rt->gc_source = g_timeout_source_new((guint)(IDLE_GC_DELAY * 1000));
+    g_source_set_callback(rt->gc_source, gc_source_fired, rt, NULL);
+    g_source_attach(rt->gc_source, rt->gctx);
+}
+#endif
+
 static bool g_until_idle;
 static void maybe_stop_when_idle(jsr_runtime *rt) {
     if (g_until_idle && rt->refs == 0 && queue_empty(rt)) loop_wake(rt);
@@ -281,7 +335,9 @@ void jsr_run(jsr_runtime *rt, bool until_idle) {
 #ifdef __APPLE__
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1e10, false);
 #else
+        rt->ran_js = true;
         g_main_context_iteration(rt->gctx, TRUE);
+        if (rt->ran_js) arm_idle_gc(rt);
 #endif
     }
     emit_exit(rt);
@@ -540,6 +596,13 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     sctx.perform = drain_tasks;
     rt->source = CFRunLoopSourceCreate(NULL, 0, &sctx);
     CFRunLoopAddSource(rt->loop, rt->source, kCFRunLoopCommonModes);
+    CFRunLoopTimerContext gctx = {0, rt, NULL, NULL, NULL};
+    rt->gc_timer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent() + 1e10, 1e10, 0, 0, gc_timer_fired, &gctx);
+    CFRunLoopAddTimer(rt->loop, rt->gc_timer, kCFRunLoopCommonModes);
+    CFRunLoopObserverContext octx = {0, rt, NULL, NULL, NULL};
+    CFRunLoopObserverRef observer = CFRunLoopObserverCreate(NULL, kCFRunLoopBeforeWaiting | kCFRunLoopAfterWaiting, true, 0, loop_activity, &octx);
+    CFRunLoopAddObserver(rt->loop, observer, kCFRunLoopCommonModes);
+    CFRelease(observer);
 #else
     // The JS thread's own context: the main thread's default context belongs
     // to GTK in an app host.
@@ -551,6 +614,10 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
 #endif
 
     rt->ctx = JSGlobalContextCreate(NULL);
+    rt->ran_js = true;
+    // A full collection now, not the hint JSGarbageCollect gives; exported
+    // without a public header on macOS and WebKitGTK, so looked up.
+    g_sync_gc = (jsr_sync_gc_fn)dlsym(RTLD_DEFAULT, "JSSynchronousGarbageCollectForDebugging");
     JSContextRef ctx = rt->ctx;
     rt->internal = JSObjectMake(ctx, NULL, NULL);
     JSValueProtect(ctx, rt->internal);
