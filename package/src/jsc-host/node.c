@@ -576,6 +576,8 @@ NATIVE(n_aes_gcm) {
     return result;
 }
 
+#include "node-crypto.inc"
+
 // --- fd readiness (net.Socket({fd})) ---------------------------------------------
 // watchFd(fd, fn): fn(Uint8Array) per read, fn(null) at EOF, fn(errno) on error.
 // Reads happen on a dispatch queue; delivery is on the JS thread.
@@ -1793,6 +1795,7 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, node, "zlib", n_zlib);
     jsr_set_function(ctx, node, "crc32", n_crc32);
     jsr_set_function(ctx, node, "secrets", n_secrets);
+    crypto_install(ctx, node);
     jsr_set_function(ctx, node, "watchFd", n_watch_fd);
     jsr_set_function(ctx, node, "unwatchFd", n_unwatch_fd);
     jsr_set_function(ctx, node, "refFd", n_ref_fd);

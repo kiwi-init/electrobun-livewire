@@ -15,7 +15,7 @@ printf '\0' >> "$GEN/jsr_prelude_js"
 rm -rf "$GEN"
 bun "$HERE/ffi/gen.ts" "$OUT/gen" --extra "$HERE/tests/ffi/decls.json"
 CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$OUT/gen -I$HERE -I$HERE/ffi"
-SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $OUT/gen/ffi_glue.c $HERE/jsc-run.c"
+SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $HERE/vendor/monocypher/monocypher.c $HERE/vendor/monocypher/monocypher-ed25519.c $OUT/gen/ffi_glue.c $HERE/jsc-run.c"
 if [ "$(uname -s)" = "Darwin" ]; then
   clang -O2 -dynamiclib -o "$OUT/libjsctest.dylib" "$HERE/tests/ffi/testlib.c"
   # shellcheck disable=SC2086

@@ -8,6 +8,7 @@ import { kill } from "./spawn-common.js";
 import { listen, connect } from "./bun-socket.js";
 import { ReadableStream, Response } from "./web-streams.js";
 import { Worker, structuredClone } from "./worker.js";
+import { subtle, CryptoKey, SubtleCrypto, DOMException } from "./webcrypto.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
@@ -16,7 +17,47 @@ const defineGlobal = (name, value) =>
 defineGlobal("Buffer", Buffer);
 if (!("Worker" in globalThis)) defineGlobal("Worker", Worker);
 if (!("structuredClone" in globalThis)) defineGlobal("structuredClone", structuredClone);
-globalThis.crypto ??= { getRandomValues, randomUUID };
+
+// Bun's browser buffer fallback predates "base64url" (Node 15.7); Channels
+// and the SDK use it for tokens and JWKs. Teach the few entry points it.
+if (!Buffer.isEncoding("base64url")) {
+	const toBase64 = (s) => String(s).replace(/-/g, "+").replace(/_/g, "/");
+	const { from, byteLength, isEncoding } = Buffer;
+	const { toString, write } = Buffer.prototype;
+	const isUrl = (e) => typeof e === "string" && e.toLowerCase() === "base64url";
+	Buffer.isEncoding = (e) => isUrl(e) || isEncoding.call(Buffer, e);
+	Buffer.from = function (value, encodingOrOffset, length) {
+		return typeof value === "string" && isUrl(encodingOrOffset) ? from.call(Buffer, toBase64(value), "base64") : from.call(Buffer, value, encodingOrOffset, length);
+	};
+	Buffer.byteLength = (s, e) => (typeof s === "string" && isUrl(e) ? byteLength.call(Buffer, toBase64(s), "base64") : byteLength.call(Buffer, s, e));
+	Buffer.prototype.toString = function (encoding, start, end) {
+		if (!isUrl(encoding)) return toString.apply(this, arguments);
+		return toString.call(this, "base64", start, end).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	};
+	Buffer.prototype.write = function (string, ...rest) {
+		const i = rest.findIndex(isUrl);
+		if (i < 0) return write.call(this, string, ...rest);
+		rest[i] = "base64";
+		return write.call(this, toBase64(string), ...rest);
+	};
+}
+globalThis.crypto ??= { getRandomValues, randomUUID, subtle };
+if (!("DOMException" in globalThis)) defineGlobal("DOMException", DOMException);
+if (!("btoa" in globalThis)) {
+	defineGlobal("btoa", (s) => {
+		s = String(s);
+		if (/[^\x00-\xff]/.test(s)) throw new DOMException("Invalid character", "InvalidCharacterError");
+		return Buffer.from(s, "latin1").toString("base64");
+	});
+	defineGlobal("atob", (s) => {
+		s = String(s).replace(/[\t\n\f\r ]/g, "");
+		if (s.length % 4 === 0) s = s.replace(/==?$/, "");
+		if (s.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(s)) throw new DOMException("The string to be decoded is not correctly encoded.", "InvalidCharacterError");
+		return Buffer.from(s, "base64").toString("latin1");
+	});
+}
+if (!("CryptoKey" in globalThis)) defineGlobal("CryptoKey", CryptoKey);
+if (!("SubtleCrypto" in globalThis)) defineGlobal("SubtleCrypto", SubtleCrypto);
 
 const mime = {
 	html: "text/html", htm: "text/html", js: "text/javascript", mjs: "text/javascript", css: "text/css", json: "application/json",
