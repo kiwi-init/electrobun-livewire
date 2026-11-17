@@ -5,7 +5,9 @@
 // expect: tick 3
 // expect: c 30 x y
 const t0 = performance.now();
-setTimeout((p, q) => console.log("c", 30, p, q), 30, "x", "y");
+// 120 ms, not 30: the 7 ms interval's three ticks must come first, and a busy
+// machine (CI runners included) delays and coalesces timers.
+setTimeout((p, q) => console.log("c", 30, p, q), 120, "x", "y");
 setTimeout(() => console.log("b", 5), 5);
 const never = setTimeout(() => console.log("cleared"), 10);
 clearTimeout(never);
