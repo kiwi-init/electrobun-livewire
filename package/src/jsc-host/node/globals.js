@@ -6,9 +6,13 @@ import { getRandomValues, randomUUID } from "./crypto.js";
 import { spawn, spawnSync, which } from "./bun-spawn.js";
 import { kill } from "./spawn-common.js";
 import { listen, connect } from "./bun-socket.js";
-import { ReadableStream, Response } from "./web-streams.js";
+import { ReadableStream } from "./web-streams.js";
 import { Worker, structuredClone } from "./worker.js";
-import { subtle, CryptoKey, SubtleCrypto, DOMException } from "./webcrypto.js";
+import { subtle, CryptoKey, SubtleCrypto } from "./webcrypto.js";
+import * as events from "./web-events.js";
+import { DOMException } from "./web-events.js";
+import { Blob, File, Headers, Request, Response, fetch } from "./fetch.js";
+import { WebSocket } from "./websocket.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
@@ -42,7 +46,6 @@ if (!Buffer.isEncoding("base64url")) {
 	};
 }
 globalThis.crypto ??= { getRandomValues, randomUUID, subtle };
-if (!("DOMException" in globalThis)) defineGlobal("DOMException", DOMException);
 if (!("btoa" in globalThis)) {
 	defineGlobal("btoa", (s) => {
 		s = String(s);
@@ -78,10 +81,13 @@ class BunFile {
 	async arrayBuffer() { const b = readFileSync(this.name); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }
 	async bytes() { return new Uint8Array(await this.arrayBuffer()); }
 }
-// The system JavaScriptCore has no web streams or fetch types; Bun.spawn's
-// pipes are ReadableStreams that apps read with new Response(stream).text().
-if (typeof globalThis.ReadableStream !== "function") defineGlobal("ReadableStream", ReadableStream);
-if (typeof globalThis.Response !== "function") defineGlobal("Response", Response);
+// The system JavaScriptCore has no web streams, events, fetch or WebSocket.
+const web = {
+	ReadableStream, Blob, File, Headers, Request, Response, fetch, WebSocket,
+	Event: events.Event, EventTarget: events.EventTarget, DOMException: events.DOMException, AbortController: events.AbortController,
+	AbortSignal: events.AbortSignal, MessageEvent: events.MessageEvent, CloseEvent: events.CloseEvent, ErrorEvent: events.ErrorEvent,
+};
+for (const [name, value] of Object.entries(web)) if (typeof globalThis[name] !== "function") defineGlobal(name, value);
 
 const proc = globalThis["process"];
 if (proc) {

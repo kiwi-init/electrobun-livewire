@@ -28,10 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
-      - name: Install the system JavaScriptCore, GLib and libgcrypt
+      - name: Install the system JavaScriptCore, GLib, libgcrypt and libsoup
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev libsqlite3-dev xxd pkg-config
+          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev libsqlite3-dev libsoup-3.0-dev xxd pkg-config
       - name: Runtime tests
         run: sh package/src/jsc-host/test.sh "$RUNNER_TEMP/jsc"
 

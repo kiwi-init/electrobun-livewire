@@ -1760,6 +1760,199 @@ NATIVE(n_secrets) {
     return JSValueMakeUndefined(ctx);
 }
 
+// --- fetch and WebSocket (backends in http-darwin.m / http-linux.c) ---------
+// httpRequest(url, method, [name, value…], body | null, redirect, fn) and
+// wsOpen(url, [protocols], [name, value…], fn) return an id; fn gets the
+// events of http.h as fn(kind, …). Each keeps the loop alive until its final
+// event.
+#include "http.h"
+
+typedef struct http_cb { long id; JSObjectRef fn; struct http_cb *next; } http_cb;
+static http_cb *http_cbs;
+static long http_next_id = 1;
+
+http_ev *http_ev_new(long id, http_ev_kind kind) {
+    http_ev *ev = calloc(1, sizeof *ev);
+    ev->id = id;
+    ev->kind = kind;
+    return ev;
+}
+
+// UTF-8 to a JS string, invalid bytes as U+FFFD, NULs kept.
+static JSValueRef utf8_value(JSContextRef ctx, const uint8_t *s, size_t len) {
+    JSChar *out = malloc((len + 1) * sizeof(JSChar));
+    size_t n = 0;
+    for (size_t i = 0; i < len;) {
+        uint8_t c = s[i];
+        uint32_t need, cp;
+        if (c < 0x80) { out[n++] = c; i++; continue; }
+        if ((c & 0xE0) == 0xC0) { need = 1; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { need = 2; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { need = 3; cp = c & 0x07; }
+        else { out[n++] = 0xFFFD; i++; continue; }
+        bool ok = i + need < len;
+        for (uint32_t k = 1; ok && k <= need; k++) {
+            if ((s[i + k] & 0xC0) != 0x80) ok = false;
+            else cp = (cp << 6) | (s[i + k] & 0x3F);
+        }
+        static const uint32_t least[] = {0, 0x80, 0x800, 0x10000};
+        if (!ok || cp < least[need] || cp > 0x10FFFF || (cp >= 0xD800 && cp < 0xE000)) { out[n++] = 0xFFFD; i++; continue; }
+        i += need + 1;
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out[n++] = (JSChar)(0xD800 + (cp >> 10));
+            out[n++] = (JSChar)(0xDC00 + (cp & 0x3FF));
+        } else out[n++] = (JSChar)cp;
+    }
+    JSStringRef str = JSStringCreateWithCharacters(out, n);
+    free(out);
+    JSValueRef v = JSValueMakeString(ctx, str);
+    JSStringRelease(str);
+    return v;
+}
+
+static void http_deliver(jsr_runtime *rt, void *data) {
+    http_ev *ev = data;
+    JSContextRef ctx = jsr_context(rt);
+    http_cb **link = &http_cbs;
+    while (*link && (*link)->id != ev->id) link = &(*link)->next;
+    http_cb *cb = *link;
+    bool final = ev->kind == HTTP_EV_END || ev->kind == HTTP_EV_ERROR || ev->kind == HTTP_EV_ABORTED || ev->kind == WS_EV_CLOSE;
+    if (cb) {
+        static const char *names[] = {"response", "data", "end", "error", "aborted", "open", "message", "sent", "error", "close"};
+        JSValueRef args[4] = {jsr_string(ctx, names[ev->kind]), JSValueMakeUndefined(ctx), JSValueMakeUndefined(ctx), JSValueMakeUndefined(ctx)};
+        size_t argc = 1;
+        switch (ev->kind) {
+        case HTTP_EV_RESPONSE: {
+            size_t n = 0;
+            while (ev->headers && ev->headers[n]) n++;
+            JSValueRef *items = calloc(n + 1, sizeof *items);
+            for (size_t i = 0; i < n; i++) items[i] = jsr_string(ctx, ev->headers[i]);
+            args[1] = JSValueMakeNumber(ctx, ev->number);
+            args[2] = JSObjectMakeArray(ctx, n, items, NULL);
+            args[3] = jsr_string(ctx, ev->text ? ev->text : "");
+            free(items);
+            argc = 4;
+            // redirected rides on the array, to keep fn's arity small
+            set_prop(ctx, (JSObjectRef)args[2], "redirected", JSValueMakeBoolean(ctx, ev->flag));
+            break;
+        }
+        case HTTP_EV_DATA:
+            args[1] = make_u8(ctx, ev->bytes, ev->len);
+            ev->bytes = NULL;
+            argc = 2;
+            break;
+        case WS_EV_MESSAGE:
+            if (ev->flag) {
+                args[1] = make_u8(ctx, ev->bytes, ev->len);
+                ev->bytes = NULL;
+            } else args[1] = utf8_value(ctx, ev->bytes, ev->len);
+            argc = 2;
+            break;
+        case HTTP_EV_ERROR:
+        case WS_EV_ERROR:
+        case WS_EV_CLOSE:
+            args[1] = JSValueMakeNumber(ctx, ev->number);
+            args[2] = jsr_string(ctx, ev->text ? ev->text : "");
+            args[3] = JSValueMakeBoolean(ctx, ev->flag);
+            argc = 4;
+            break;
+        case WS_EV_OPEN:
+            args[1] = jsr_string(ctx, ev->text ? ev->text : "");
+            argc = 2;
+            break;
+        case WS_EV_SENT:
+            args[1] = JSValueMakeNumber(ctx, ev->number);
+            argc = 2;
+            break;
+        default:
+            break;
+        }
+        JSObjectRef fn = cb->fn;
+        if (final) {
+            *link = cb->next;
+            free(cb);
+            jsr_unref(rt);
+        }
+        jsr_call(rt, fn, NULL, argc, args);
+        if (final) JSValueUnprotect(ctx, fn);
+    }
+    free(ev->text);
+    free(ev->bytes);
+    if (ev->headers) free_list(ev->headers);
+    free(ev);
+}
+
+void http_emit(jsr_runtime *rt, http_ev *ev) { jsr_post(rt, http_deliver, ev); }
+
+static long http_track(JSContextRef ctx, JSObjectRef fn) {
+    http_cb *cb = calloc(1, sizeof *cb);
+    cb->id = http_next_id++;
+    cb->fn = fn;
+    cb->next = http_cbs;
+    http_cbs = cb;
+    JSValueProtect(ctx, fn);
+    jsr_ref(jsr_from_context(ctx));
+    return cb->id;
+}
+
+NATIVE(n_http_request) {
+    UNUSED_ARGS;
+    if (!JSValueIsObject(ctx, ARG(5))) return throw_message(ctx, exc, "httpRequest(url, method, headers, body, redirect, fn)");
+    char *url = jsr_to_utf8(ctx, ARG(0)), *method = jsr_to_utf8(ctx, ARG(1));
+    char **headers = string_list(ctx, ARG(2));
+    size_t len = 0;
+    uint8_t *body = JSValueIsObject(ctx, ARG(3)) ? bytes_of(ctx, ARG(3), &len) : NULL;
+    long id = http_track(ctx, (JSObjectRef)ARG(5));
+    http_backend_request(jsr_from_context(ctx), id, url, method, headers, body ? body : (JSValueIsObject(ctx, ARG(3)) ? (const uint8_t *)"" : NULL), len, (int)num(ctx, ARG(4)));
+    free(url);
+    free(method);
+    free_list(headers);
+    return JSValueMakeNumber(ctx, (double)id);
+}
+NATIVE(n_http_cancel) {
+    UNUSED_ARGS;
+    (void)exc;
+    http_backend_cancel(jsr_from_context(ctx), (long)num(ctx, ARG(0)));
+    return JSValueMakeUndefined(ctx);
+}
+NATIVE(n_ws_open) {
+    UNUSED_ARGS;
+    if (!JSValueIsObject(ctx, ARG(3))) return throw_message(ctx, exc, "wsOpen(url, protocols, headers, fn)");
+    char *url = jsr_to_utf8(ctx, ARG(0));
+    char **protocols = string_list(ctx, ARG(1)), **headers = string_list(ctx, ARG(2));
+    long id = http_track(ctx, (JSObjectRef)ARG(3));
+    http_backend_ws_open(jsr_from_context(ctx), id, url, protocols, headers);
+    free(url);
+    free_list(protocols);
+    free_list(headers);
+    return JSValueMakeNumber(ctx, (double)id);
+}
+// wsSend(id, string | bytes)
+NATIVE(n_ws_send) {
+    UNUSED_ARGS;
+    (void)exc;
+    long id = (long)num(ctx, ARG(0));
+    if (JSValueIsString(ctx, ARG(1))) {
+        char *text = jsr_to_utf8(ctx, ARG(1));
+        http_backend_ws_send(jsr_from_context(ctx), id, false, (const uint8_t *)text, strlen(text));
+        free(text);
+    } else {
+        size_t len = 0;
+        uint8_t *bytes = bytes_of(ctx, ARG(1), &len);
+        http_backend_ws_send(jsr_from_context(ctx), id, true, bytes ? bytes : (const uint8_t *)"", len);
+    }
+    return JSValueMakeUndefined(ctx);
+}
+NATIVE(n_ws_close) {
+    UNUSED_ARGS;
+    (void)exc;
+    char *reason = JSValueIsString(ctx, ARG(2)) ? jsr_to_utf8(ctx, ARG(2)) : strdup("");
+    http_backend_ws_close(jsr_from_context(ctx), (long)num(ctx, ARG(0)), (int)num(ctx, ARG(1)), reason);
+    free(reason);
+    return JSValueMakeUndefined(ctx);
+}
+
 void node_install(jsr_runtime *rt) {
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef node = JSObjectMake(ctx, NULL, NULL);
@@ -1816,6 +2009,11 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, node, "sockShutdown", n_sock_shutdown);
     jsr_set_function(ctx, node, "sockOption", n_sock_option);
     jsr_set_function(ctx, node, "lookup", n_lookup);
+    jsr_set_function(ctx, node, "httpRequest", n_http_request);
+    jsr_set_function(ctx, node, "httpCancel", n_http_cancel);
+    jsr_set_function(ctx, node, "wsOpen", n_ws_open);
+    jsr_set_function(ctx, node, "wsSend", n_ws_send);
+    jsr_set_function(ctx, node, "wsClose", n_ws_close);
     jsr_set_function(ctx, node, "which", n_which);
     set_prop(ctx, node, "signals", signal_names(ctx));
     // As in Node and Bun: a write to a closed pipe fails with EPIPE instead of

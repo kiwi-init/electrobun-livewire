@@ -19,7 +19,7 @@ SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $HERE/vendor
 if [ "$(uname -s)" = "Darwin" ]; then
   clang -O2 -dynamiclib -o "$OUT/libjsctest.dylib" "$HERE/tests/ffi/testlib.c"
   # shellcheck disable=SC2086
-  clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -framework Security -lz -lsqlite3 -o "$OUT/jsc-run" $SOURCES
+  clang $CFLAGS -fobjc-arc -framework JavaScriptCore -framework CoreFoundation -framework Foundation -framework Security -lz -lsqlite3 -o "$OUT/jsc-run" $SOURCES "$HERE/http-darwin.m"
   # The system JavaScriptCore only JITs in a process with this entitlement;
   # without it, everything runs in the interpreter (6-8x slower).
   codesign --force -s - --entitlements "$HERE/jit.entitlements" "$OUT/jsc-run"
@@ -27,6 +27,6 @@ else
   CC=${CC:-cc}
   "$CC" -O2 -shared -fPIC -o "$OUT/libjsctest.so" "$HERE/tests/ffi/testlib.c"
   # shellcheck disable=SC2086
-  "$CC" $CFLAGS $(pkg-config --cflags javascriptcoregtk-4.1 glib-2.0 sqlite3) -o "$OUT/jsc-run" $SOURCES \
-    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0 sqlite3) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -lz -ldl -lpthread
+  "$CC" $CFLAGS $(pkg-config --cflags javascriptcoregtk-4.1 glib-2.0 sqlite3 libsoup-3.0) -o "$OUT/jsc-run" $SOURCES "$HERE/http-linux.c" \
+    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0 sqlite3 libsoup-3.0) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -lz -ldl -lpthread
 fi
