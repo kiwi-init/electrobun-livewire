@@ -439,7 +439,7 @@ pub fn main(init: std.process.Init) !void {
     var argv: []const []const u8 = undefined;
 
     switch (main_process) {
-        .zig, .rust, .go, .odin => {
+        .zig, .rust, .go, .odin, .jsc => {
             const main_binary_name = if (builtin.os.tag == .windows) "main.exe" else "main";
             const main_binary_path = try std.fs.path.join(arena_alloc, &.{ exe_dir, main_binary_name });
             argv = &[_][]const u8{main_binary_path};

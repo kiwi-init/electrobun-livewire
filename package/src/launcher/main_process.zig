@@ -1,6 +1,8 @@
 const std = @import("std");
 
-pub const MainProcess = enum { bun, cottontail, zig, rust, go, odin };
+// jsc: Livewire's JavaScriptCore host, a native MacOS/main (bin/main on Linux)
+// that a build hook puts in place of Bun (package/src/jsc-host).
+pub const MainProcess = enum { bun, cottontail, zig, rust, go, odin, jsc };
 
 pub fn fromMetadata(allocator: std.mem.Allocator, content: []const u8) MainProcess {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return .bun;

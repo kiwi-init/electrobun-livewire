@@ -1013,6 +1013,25 @@ async function copyToDist() {
 		console.log("[done]Copying CEF files for Linux...");
 	}
 
+	if (OS === "macos") await buildJscHost(".dylib");
+	else if (OS === "linux") {
+		// Optional on Linux: needs WebKitGTK's JavaScriptCore headers
+		// (libjavascriptcoregtk-4.1-dev), GLib and libgcrypt (libgcrypt20-dev).
+		// Without them, or if the host fails to build, the devkit ships no JSC host.
+		const has = (command: string, args: string[]) => spawnSync(command, args).status === 0;
+		const deps = has("pkg-config", ["--exists", "javascriptcoregtk-4.1", "glib-2.0"]) &&
+			(has("pkg-config", ["--exists", "libgcrypt"]) || has("libgcrypt-config", ["--version"]));
+		if (!deps) console.warn("JSC host: no javascriptcoregtk-4.1/glib-2.0/libgcrypt headers, so this devkit has no JSC host");
+		else {
+			try {
+				await buildJscHost(".so");
+			} catch (error) {
+				rmSync(join("dist", "api", "jsc-host"), { recursive: true, force: true });
+				console.warn("JSC host: the Linux host failed to build, so this devkit has none:", error);
+			}
+		}
+	}
+
 	const nativeDevkitManifest = createNativeDevkitManifest({
 		productVersion: ELECTROBUN_VERSION,
 		target: nativeDevkitTarget(OS, ARCH),
@@ -1025,6 +1044,22 @@ async function copyToDist() {
 	normalizeDistExecutableModes("dist");
 	// Create platform-specific dist folder and copy all files
 	await createPlatformDistFolder();
+}
+
+// Livewire's JavaScriptCore host (src/jsc-host) under api/jsc-host, which Hutch
+// copies into each project's .hutch/devkit: the prebuilt host, its bundler and
+// shims, and the postBuild hook that moves an app's main process from Bun to it.
+async function buildJscHost(libExt: ".dylib" | ".so") {
+	const out = join("dist", "api", "jsc-host");
+	rmSync(out, { recursive: true, force: true });
+	mkdirSync(join(out, "ffi"), { recursive: true });
+	await $`sh src/jsc-host/build-host.sh ${join(out, "main")} --sdk src/sdks/main --check-lib ${"dist/libElectrobunCore" + libExt} --check-lib ${"dist/libNativeWrapper" + libExt}`.env({
+		...process.env,
+		BUN: process.execPath,
+	});
+	cpSync(join("src", "jsc-host", "node"), join(out, "node"), { recursive: true, force: true });
+	cpSync(join("src", "jsc-host", "ffi", "bun-ffi.js"), join(out, "ffi", "bun-ffi.js"), { force: true });
+	for (const name of ["bundle.ts", "post-build.ts"]) cpSync(join("src", "jsc-host", name), join(out, name), { force: true });
 }
 
 function normalizeDistExecutableModes(directory: string) {
