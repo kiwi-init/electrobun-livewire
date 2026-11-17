@@ -40,9 +40,11 @@ static gpointer net_main(gpointer data) {
 }
 // Runs fn(data) on the network thread, starting it the first time.
 static void on_net(GSourceFunc fn, gpointer data) {
-    if (!net_context) {
+    static gsize started; // once across JS threads (Workers fetch too)
+    if (g_once_init_enter(&started)) {
         net_context = g_main_context_new();
         g_thread_unref(g_thread_new("livewire-net", net_main, NULL));
+        g_once_init_leave(&started, 1);
     }
     g_main_context_invoke(net_context, fn, data);
 }

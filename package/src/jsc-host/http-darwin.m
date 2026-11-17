@@ -15,12 +15,12 @@
 @property(nonatomic) NSInteger clientCode;
 @property(nonatomic, strong) NSData *clientReason;
 @property(nonatomic, strong) NSURLSessionTask *task;
+@property(nonatomic) jsr_runtime *rt; // whose JS thread gets its events (a Worker's, or main's)
 @end
 @implementation LWTask
 @end
 
 @interface LWDelegate : NSObject <NSURLSessionDataDelegate, NSURLSessionWebSocketDelegate>
-@property(nonatomic) jsr_runtime *rt;
 @end
 
 static NSOperationQueue *queue;
@@ -116,7 +116,7 @@ static void receive(jsr_runtime *rt, LWTask *t) {
             ev->headers[i++] = dup_string(name);
             ev->headers[i++] = dup_string([fields[name] description]);
         }
-        http_emit(self.rt, ev);
+        http_emit(t.rt, ev);
     }
     done(NSURLSessionResponseAllow);
 }
@@ -126,7 +126,7 @@ static void receive(jsr_runtime *rt, LWTask *t) {
     if (!t) return;
     http_ev *ev = http_ev_new(t.ident, HTTP_EV_DATA);
     ev->bytes = dup_data(data, &ev->len);
-    http_emit(self.rt, ev);
+    http_emit(t.rt, ev);
 }
 - (void)URLSession:(NSURLSession *)s task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response
         newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))done {
@@ -150,16 +150,16 @@ static void receive(jsr_runtime *rt, LWTask *t) {
     if (!t) return;
     if (t.isSocket) {
         NSURLSessionWebSocketTask *ws = (NSURLSessionWebSocketTask *)task;
-        if (t.clientCode) return finish_socket(self.rt, t, t.clientCode, t.clientReason, YES);
-        if (ws.closeCode != NSURLSessionWebSocketCloseCodeInvalid) return finish_socket(self.rt, t, ws.closeCode, ws.closeReason, YES);
-        if (error) emit_fail(self.rt, t.ident, WS_EV_ERROR, fail_kind(error), error.localizedDescription);
-        return finish_socket(self.rt, t, 1006, nil, NO);
+        if (t.clientCode) return finish_socket(t.rt, t, t.clientCode, t.clientReason, YES);
+        if (ws.closeCode != NSURLSessionWebSocketCloseCodeInvalid) return finish_socket(t.rt, t, ws.closeCode, ws.closeReason, YES);
+        if (error) emit_fail(t.rt, t.ident, WS_EV_ERROR, fail_kind(error), error.localizedDescription);
+        return finish_socket(t.rt, t, 1006, nil, NO);
     }
-    if (t.redirectFailed) emit_fail(self.rt, t.ident, HTTP_EV_ERROR, HTTP_FAIL_REDIRECT, @"unexpected redirect");
+    if (t.redirectFailed) emit_fail(t.rt, t.ident, HTTP_EV_ERROR, HTTP_FAIL_REDIRECT, @"unexpected redirect");
     else if (error && [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
-        http_emit(self.rt, http_ev_new(t.ident, HTTP_EV_ABORTED));
-    else if (error) emit_fail(self.rt, t.ident, HTTP_EV_ERROR, fail_kind(error), error.localizedDescription);
-    else http_emit(self.rt, http_ev_new(t.ident, HTTP_EV_END));
+        http_emit(t.rt, http_ev_new(t.ident, HTTP_EV_ABORTED));
+    else if (error) emit_fail(t.rt, t.ident, HTTP_EV_ERROR, fail_kind(error), error.localizedDescription);
+    else http_emit(t.rt, http_ev_new(t.ident, HTTP_EV_END));
     forget(t);
 }
 - (void)URLSession:(NSURLSession *)s webSocketTask:(NSURLSessionWebSocketTask *)task didOpenWithProtocol:(NSString *)protocol {
@@ -168,34 +168,36 @@ static void receive(jsr_runtime *rt, LWTask *t) {
     if (!t) return;
     http_ev *ev = http_ev_new(t.ident, WS_EV_OPEN);
     ev->text = dup_string(protocol ?: @"");
-    http_emit(self.rt, ev);
+    http_emit(t.rt, ev);
 }
 - (void)URLSession:(NSURLSession *)s webSocketTask:(NSURLSessionWebSocketTask *)task
     didCloseWithCode:(NSURLSessionWebSocketCloseCode)code reason:(NSData *)reason {
     (void)s;
     LWTask *t = byTask[@(task.taskIdentifier)];
-    if (t) finish_socket(self.rt, t, t.clientCode ?: code, t.clientCode ? t.clientReason : reason, YES);
+    if (t) finish_socket(t.rt, t, t.clientCode ?: code, t.clientCode ? t.clientReason : reason, YES);
 }
 @end
 
-// Lazily, on the JS thread: one session per process, no cookies or cache
-// (as Bun's fetch), and the system's proxies and trust store.
-static void ensure_session(jsr_runtime *rt) {
-    if (session) return;
-    queue = [NSOperationQueue new];
-    queue.maxConcurrentOperationCount = 1;
-    delegate = [LWDelegate new];
-    delegate.rt = rt;
-    byTask = [NSMutableDictionary new];
-    byId = [NSMutableDictionary new];
-    NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    config.HTTPCookieStorage = nil;
-    config.HTTPShouldSetCookies = NO;
-    config.URLCache = nil;
-    config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-    config.timeoutIntervalForRequest = 300; // idle, as Bun's
-    config.HTTPMaximumConnectionsPerHost = 256;
-    session = [NSURLSession sessionWithConfiguration:config delegate:delegate delegateQueue:queue];
+// Lazily, on the first JS thread to fetch: one session per process (shared by
+// Workers), no cookies or cache (as Bun's fetch), and the system's proxies and
+// trust store.
+static void ensure_session(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      queue = [NSOperationQueue new];
+      queue.maxConcurrentOperationCount = 1;
+      delegate = [LWDelegate new];
+      byTask = [NSMutableDictionary new];
+      byId = [NSMutableDictionary new];
+      NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+      config.HTTPCookieStorage = nil;
+      config.HTTPShouldSetCookies = NO;
+      config.URLCache = nil;
+      config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+      config.timeoutIntervalForRequest = 300; // idle, as Bun's
+      config.HTTPMaximumConnectionsPerHost = 256;
+      session = [NSURLSession sessionWithConfiguration:config delegate:delegate delegateQueue:queue];
+    });
 }
 
 static NSMutableURLRequest *make_request(const char *url, char **headers) {
@@ -209,7 +211,7 @@ static NSMutableURLRequest *make_request(const char *url, char **headers) {
 
 void http_backend_request(jsr_runtime *rt, long ident, const char *url, const char *method, char **headers,
                           const uint8_t *body, size_t body_len, int redirect) {
-    ensure_session(rt);
+    ensure_session();
     NSMutableURLRequest *req = make_request(url, headers);
     if (!req) return emit_fail(rt, ident, HTTP_EV_ERROR, HTTP_FAIL_URL, @"invalid URL");
     req.HTTPMethod = @(method);
@@ -219,6 +221,7 @@ void http_backend_request(jsr_runtime *rt, long ident, const char *url, const ch
     [queue addOperationWithBlock:^{
       LWTask *t = [LWTask new];
       t.ident = ident;
+      t.rt = rt;
       t.redirect = redirect;
       t.task = [session dataTaskWithRequest:req];
       byTask[@(t.task.taskIdentifier)] = t;
@@ -236,7 +239,7 @@ void http_backend_cancel(jsr_runtime *rt, long ident) {
 }
 
 void http_backend_ws_open(jsr_runtime *rt, long ident, const char *url, char **protocols, char **headers) {
-    ensure_session(rt);
+    ensure_session();
     NSMutableURLRequest *req = make_request(url, headers);
     if (!req) {
         emit_fail(rt, ident, WS_EV_ERROR, HTTP_FAIL_URL, @"invalid URL");
@@ -251,6 +254,7 @@ void http_backend_ws_open(jsr_runtime *rt, long ident, const char *url, char **p
     [queue addOperationWithBlock:^{
       LWTask *t = [LWTask new];
       t.ident = ident;
+      t.rt = rt;
       t.isSocket = YES;
       NSURLSessionWebSocketTask *task = [session webSocketTaskWithRequest:req];
       task.maximumMessageSize = 128 * 1024 * 1024;

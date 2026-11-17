@@ -1768,8 +1768,9 @@ NATIVE(n_secrets) {
 #include "http.h"
 
 typedef struct http_cb { long id; JSObjectRef fn; struct http_cb *next; } http_cb;
-static http_cb *http_cbs;
+static http_cb *http_cbs; // every runtime's (Workers fetch too), under http_cbs_lock
 static long http_next_id = 1;
+static pthread_mutex_t http_cbs_lock = PTHREAD_MUTEX_INITIALIZER;
 
 http_ev *http_ev_new(long id, http_ev_kind kind) {
     http_ev *ev = calloc(1, sizeof *ev);
@@ -1814,10 +1815,13 @@ static JSValueRef utf8_value(JSContextRef ctx, const uint8_t *s, size_t len) {
 static void http_deliver(jsr_runtime *rt, void *data) {
     http_ev *ev = data;
     JSContextRef ctx = jsr_context(rt);
+    bool final = ev->kind == HTTP_EV_END || ev->kind == HTTP_EV_ERROR || ev->kind == HTTP_EV_ABORTED || ev->kind == WS_EV_CLOSE;
+    pthread_mutex_lock(&http_cbs_lock);
     http_cb **link = &http_cbs;
     while (*link && (*link)->id != ev->id) link = &(*link)->next;
     http_cb *cb = *link;
-    bool final = ev->kind == HTTP_EV_END || ev->kind == HTTP_EV_ERROR || ev->kind == HTTP_EV_ABORTED || ev->kind == WS_EV_CLOSE;
+    if (cb && final) *link = cb->next;
+    pthread_mutex_unlock(&http_cbs_lock);
     if (cb) {
         static const char *names[] = {"response", "data", "end", "error", "aborted", "open", "message", "sent", "error", "close"};
         JSValueRef args[4] = {jsr_string(ctx, names[ev->kind]), JSValueMakeUndefined(ctx), JSValueMakeUndefined(ctx), JSValueMakeUndefined(ctx)};
@@ -1870,7 +1874,6 @@ static void http_deliver(jsr_runtime *rt, void *data) {
         }
         JSObjectRef fn = cb->fn;
         if (final) {
-            *link = cb->next;
             free(cb);
             jsr_unref(rt);
         }
@@ -1887,10 +1890,12 @@ void http_emit(jsr_runtime *rt, http_ev *ev) { jsr_post(rt, http_deliver, ev); }
 
 static long http_track(JSContextRef ctx, JSObjectRef fn) {
     http_cb *cb = calloc(1, sizeof *cb);
-    cb->id = http_next_id++;
     cb->fn = fn;
+    pthread_mutex_lock(&http_cbs_lock);
+    cb->id = http_next_id++;
     cb->next = http_cbs;
     http_cbs = cb;
+    pthread_mutex_unlock(&http_cbs_lock);
     JSValueProtect(ctx, fn);
     jsr_ref(jsr_from_context(ctx));
     return cb->id;
