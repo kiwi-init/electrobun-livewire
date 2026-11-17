@@ -1,0 +1,34 @@
+function workload(host) {
+	const r = {};
+	let t = host.now();
+	const data = [];
+	for (let i = 0; i < 20000; i++) data.push({ id: i, name: "item " + i, tags: ["a", "b", "c"], value: i * 1.5, ok: i % 2 === 0 });
+	const text = JSON.stringify(data);
+	let parsed = 0;
+	for (let k = 0; k < 10; k++) parsed += JSON.parse(text).length;
+	r.json_ms = host.now() - t;
+	r.json_bytes = text.length;
+	t = host.now();
+	let x = 0;
+	for (let i = 0; i < 5000000; i++) x = (x + i * 31) % 1000003;
+	r.loop_ms = host.now() - t;
+	t = host.now();
+	let s = "";
+	for (let i = 0; i < 200000; i++) s += String.fromCharCode(97 + (i % 26));
+	const hits = (s.match(/abc/g) || []).length;
+	const words = s.split("z").map((w) => w.toUpperCase()).join("-").length;
+	r.string_ms = host.now() - t;
+	t = host.now();
+	const m = new Map();
+	for (let i = 0; i < 200000; i++) m.set("k" + i, { i, sq: i * i });
+	let sum = 0;
+	for (const [, v] of m) sum += v.sq % 7;
+	r.objects_ms = host.now() - t;
+	const calls = 2000;
+	t = host.now();
+	let echoed = 0;
+	for (let i = 0; i < calls; i++) echoed += host.echo(i);
+	r.native_call_us = ((host.now() - t) * 1000) / calls;
+	r.check = [parsed, x, hits, words, sum, echoed].join(",");
+	return r;
+}
