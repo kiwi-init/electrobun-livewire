@@ -8,8 +8,10 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
+#include <sys/utsname.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <signal.h>
@@ -352,8 +354,20 @@ static JSValueRef rt_chdir(JSContextRef ctx, JSObjectRef f, JSObjectRef self, si
     (void)f; (void)self;
     char *path = argc > 0 ? jsr_to_utf8(ctx, argv[0]) : NULL;
     int failed = !path || chdir(path) != 0;
+    int err = errno;
+    if (failed) {
+        // A Node-shaped error: code, errno, syscall, path.
+        char message[PATH_MAX + 64];
+        snprintf(message, sizeof message, "%s: %s, chdir '%s'", err == ENOENT ? "ENOENT" : err == ENOTDIR ? "ENOTDIR" : err == EACCES ? "EACCES" : "EINVAL", strerror(err), path ? path : "");
+        JSValueRef args[1] = {jsr_string(ctx, message)};
+        JSObjectRef error = JSObjectMakeError(ctx, 1, args, NULL);
+        set_value(ctx, error, "code", jsr_string(ctx, err == ENOENT ? "ENOENT" : err == ENOTDIR ? "ENOTDIR" : err == EACCES ? "EACCES" : "EINVAL"));
+        set_value(ctx, error, "errno", JSValueMakeNumber(ctx, -err));
+        set_value(ctx, error, "syscall", jsr_string(ctx, "chdir"));
+        if (path) set_value(ctx, error, "path", jsr_string(ctx, path));
+        *exc = error;
+    }
     free(path);
-    if (failed) *exc = jsr_string(ctx, "chdir failed");
     return JSValueMakeUndefined(ctx);
 }
 static JSValueRef rt_now(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
@@ -431,6 +445,10 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     jsr_set_function(ctx, rt->internal, "fatal", rt_fatal);
     jsr_set_function(ctx, rt->internal, "setExitCode", rt_set_exit_code);
     jsr_set_function(ctx, rt->internal, "now", rt_now);
+    {
+        struct utsname u;
+        set_value(ctx, rt->internal, "arch", jsr_string(ctx, uname(&u) == 0 && !strcmp(u.machine, "x86_64") ? "x64" : "arm64"));
+    }
     jsr_set_function(ctx, rt->internal, "cwd", rt_cwd);
     jsr_set_function(ctx, rt->internal, "chdir", rt_chdir);
     {

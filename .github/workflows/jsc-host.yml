@@ -23,8 +23,10 @@ concurrency:
 
 jobs:
   macos:
-    # macos-latest, as in release.yml (#287): macos-15 arm64 jobs went unacquired.
-    runs-on: macos-latest
+    # Intel: hosted arm64 macOS runners (macos-15, macos-latest) went unacquired
+    # for 19 minutes at a time (#287). The JSC host is plain C on a system
+    # framework, so the architecture doesn't matter to this check.
+    runs-on: macos-26-intel
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
