@@ -25,6 +25,8 @@ bun package/src/jsc-host/conformance/run.ts [out dir] [name filter]
 | `socket.mjs` | `net.Socket({fd})` over a FIFO: data, chunks, destroy, close |
 | `crypto.mjs` | NIST GCM vectors, seeded AES-GCM up to 256 KB, tamper and tag-length rejection, randomness |
 | `ffi.mjs` | `bun:ffi` calls and callbacks, including threadsafe ones from another thread |
+| `net.mjs` | `node:net` over unix sockets and TCP: listen/connect, line protocols, half-close and `allowHalfOpen`, 2 MB with backpressure, idle timeouts, ENOENT/ECONNREFUSED/EADDRINUSE, socket-file cleanup, `unref` |
+| `bun-socket.mjs` | `Bun.listen`/`Bun.connect` (unix and TCP): handlers, partial writes and `drain`, `end`, `stop`, `connectError`, `timeout` |
 | `spawn.mjs` | `child_process` (spawn, exec, execFile, sync forms: pipes, stdin, timeouts, kill, ENOENT, maxBuffer, detached), `Bun.spawn`/`spawnSync`/`which`, `process.kill` |
 
 Tests print only deterministic text (no random values, times or paths), so the

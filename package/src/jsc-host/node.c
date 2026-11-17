@@ -1,6 +1,6 @@
 // Natives behind the Node shims (node/*.js) on the Livewire JSC runtime:
 // synchronous fs calls, os facts, randomness, AES-GCM, fd readiness and child
-// processes. Installed as globalThis.__node. Errors are thrown as Error
+// processes and sockets. Installed as globalThis.__node. Errors are thrown as Error
 // objects carrying errno/syscall/path; node/errors.js turns them into Node's shape.
 #ifndef __APPLE__
 #define _GNU_SOURCE // pipe2, posix_spawn's SETSID, addchdir_np and addclosefrom_np
@@ -23,7 +23,15 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stddef.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -1082,6 +1090,7 @@ NATIVE(n_write_fd) {
 typedef struct writable_wait {
     int id;
     JSObjectRef fn;
+    bool reffed;
 #ifdef __APPLE__
     dispatch_source_t source;
 #else
@@ -1098,7 +1107,7 @@ static writable_wait *take_writable(jsr_runtime *rt, int id) {
     writable_wait *w = *link;
     if (!w) return NULL;
     *link = w->next;
-    jsr_unref(rt);
+    if (w->reffed) jsr_unref(rt);
 #ifdef __APPLE__
     dispatch_source_cancel(w->source);
     dispatch_release(w->source); // the wait's own reference
@@ -1122,13 +1131,13 @@ static gboolean fd_writable(gint fd, GIOCondition cond, gpointer data) {
     return G_SOURCE_REMOVE;
 }
 #endif
-NATIVE(n_when_writable) {
-    UNUSED_ARGS;
+static JSValueRef when_ready(JSContextRef ctx, size_t argc, const JSValueRef argv[], JSValueRef *exc, bool readable) {
     int fd = (int)num(ctx, ARG(0));
-    if (fd < 0 || !JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "whenWritable(fd, fn)");
+    if (fd < 0 || !JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "whenWritable/whenReadable(fd, fn)");
     writable_wait *w = calloc(1, sizeof *w);
     w->id = ++g_next_writable;
     w->fn = (JSObjectRef)ARG(1);
+    w->reffed = true;
     JSValueProtect(ctx, w->fn);
     w->next = g_writable_waits;
     g_writable_waits = w;
@@ -1136,7 +1145,7 @@ NATIVE(n_when_writable) {
     jsr_ref(rt);
     void *id = (void *)(intptr_t)w->id;
 #ifdef __APPLE__
-    dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, (uintptr_t)fd, 0, dispatch_get_global_queue(0, 0));
+    dispatch_source_t source = dispatch_source_create(readable ? DISPATCH_SOURCE_TYPE_READ : DISPATCH_SOURCE_TYPE_WRITE, (uintptr_t)fd, 0, dispatch_get_global_queue(0, 0));
     w->source = source;
     dispatch_retain(source); // held by the wait; the creation reference goes in the cancel handler
     dispatch_source_set_event_handler(source, ^{
@@ -1146,11 +1155,33 @@ NATIVE(n_when_writable) {
     dispatch_source_set_cancel_handler(source, ^{ dispatch_release(source); });
     dispatch_resume(source);
 #else
-    w->source = g_unix_fd_source_new(fd, G_IO_OUT | G_IO_ERR | G_IO_HUP);
+    w->source = g_unix_fd_source_new(fd, (readable ? G_IO_IN : G_IO_OUT) | G_IO_ERR | G_IO_HUP);
     g_source_set_callback(w->source, (GSourceFunc)(void (*)(void))fd_writable, id, NULL);
     g_source_attach(w->source, (GMainContext *)jsr_glib_context(rt));
 #endif
     return JSValueMakeNumber(ctx, w->id);
+}
+NATIVE(n_when_writable) {
+    UNUSED_ARGS;
+    return when_ready(ctx, argc, argv, exc, false);
+}
+// whenReadable(fd, fn) -> id: as whenWritable, for a listening socket's next
+// connection (the read watch, watchFd, reads the bytes itself).
+NATIVE(n_when_readable) {
+    UNUSED_ARGS;
+    return when_ready(ctx, argc, argv, exc, true);
+}
+// refWait(id, bool): whether a pending wait keeps the loop alive.
+NATIVE(n_ref_wait) {
+    UNUSED_ARGS; (void)exc;
+    int id = (int)num(ctx, ARG(0));
+    bool ref = JSValueToBoolean(ctx, ARG(1));
+    for (writable_wait *w = g_writable_waits; w; w = w->next) {
+        if (w->id != id || w->reffed == ref) continue;
+        w->reffed = ref;
+        if (ref) jsr_ref(jsr_from_context(ctx)); else jsr_unref(jsr_from_context(ctx));
+    }
+    return JSValueMakeUndefined(ctx);
 }
 // cancelWritable(id): drops a pending whenWritable (before its fd closes).
 NATIVE(n_cancel_writable) {
@@ -1167,6 +1198,250 @@ NATIVE(n_which) {
     JSValueRef r = found ? jsr_string(ctx, found) : JSValueMakeNull(ctx);
     free(file); free(search); free(found);
     return r;
+}
+
+
+// --- sockets (net, Bun.listen/connect) -------------------------------------------
+// Nonblocking, close-on-exec unix and TCP sockets. Connects complete through
+// whenWritable + sockError, accepts through whenReadable; reads use watchFd and
+// writes writeFd, as for pipes. Hosts are IP literals; lookup() resolves names
+// on a thread.
+static int new_socket(int domain) {
+#ifdef __APPLE__
+    int fd = socket(domain, SOCK_STREAM, 0);
+    if (fd < 0) return -errno;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#else
+    int fd = socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -errno;
+#endif
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    return fd;
+}
+// An address from (path) or (host literal, port); 0 or a negative errno.
+static int make_addr(JSContextRef ctx, JSValueRef host_or_path, JSValueRef port, struct sockaddr_storage *ss, socklen_t *len) {
+    memset(ss, 0, sizeof *ss);
+    char *s = jsr_to_utf8(ctx, host_or_path);
+    int err = 0;
+    if (!JSValueIsNumber(ctx, port)) {
+        struct sockaddr_un *un = (struct sockaddr_un *)ss;
+        if (strlen(s) >= sizeof un->sun_path) err = -ENAMETOOLONG;
+        else {
+            un->sun_family = AF_UNIX;
+            strcpy(un->sun_path, s);
+            *len = (socklen_t)sizeof *un;
+        }
+    } else {
+        struct sockaddr_in *in4 = (struct sockaddr_in *)ss;
+        struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)ss;
+        uint16_t p = htons((uint16_t)num(ctx, port));
+        if (inet_pton(AF_INET, s, &in4->sin_addr) == 1) {
+            in4->sin_family = AF_INET;
+            in4->sin_port = p;
+            *len = (socklen_t)sizeof *in4;
+        } else if (inet_pton(AF_INET6, s, &in6->sin6_addr) == 1) {
+            in6->sin6_family = AF_INET6;
+            in6->sin6_port = p;
+            *len = (socklen_t)sizeof *in6;
+        } else err = -EINVAL;
+    }
+    free(s);
+    return err;
+}
+// connect(pathOrHost, port | undefined) -> [fd, pending] or a negative errno.
+NATIVE(n_sock_connect) {
+    UNUSED_ARGS; (void)exc;
+    struct sockaddr_storage ss;
+    socklen_t len = 0;
+    int err = make_addr(ctx, ARG(0), ARG(1), &ss, &len);
+    if (err) return JSValueMakeNumber(ctx, err);
+    int fd = new_socket(ss.ss_family);
+    if (fd < 0) return JSValueMakeNumber(ctx, fd);
+    int rc;
+    do rc = connect(fd, (struct sockaddr *)&ss, len); while (rc < 0 && errno == EINTR);
+    if (rc < 0 && errno != EINPROGRESS) {
+        int e = errno;
+        close(fd);
+        return JSValueMakeNumber(ctx, -e);
+    }
+    JSValueRef items[2] = {JSValueMakeNumber(ctx, fd), JSValueMakeBoolean(ctx, rc < 0)};
+    return JSObjectMakeArray(ctx, 2, items, NULL);
+}
+// sockError(fd) -> 0 or the pending error (negative errno): a connect's result.
+NATIVE(n_sock_error) {
+    UNUSED_ARGS; (void)exc;
+    int err = 0;
+    socklen_t len = sizeof err;
+    if (getsockopt((int)num(ctx, ARG(0)), SOL_SOCKET, SO_ERROR, &err, &len) < 0) err = errno;
+    return JSValueMakeNumber(ctx, -err);
+}
+// listen(pathOrHost, port | undefined, backlog) -> fd or a negative errno.
+NATIVE(n_sock_listen) {
+    UNUSED_ARGS; (void)exc;
+    struct sockaddr_storage ss;
+    socklen_t len = 0;
+    int err = make_addr(ctx, ARG(0), ARG(1), &ss, &len);
+    if (err) return JSValueMakeNumber(ctx, err);
+    int fd = new_socket(ss.ss_family);
+    if (fd < 0) return JSValueMakeNumber(ctx, fd);
+    int one = 1, zero = 0;
+    if (ss.ss_family != AF_UNIX) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (ss.ss_family == AF_INET6) setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof zero); // "::" takes IPv4 too
+    int backlog = JSValueIsNumber(ctx, ARG(2)) ? (int)num(ctx, ARG(2)) : 511;
+    if (bind(fd, (struct sockaddr *)&ss, len) < 0 || listen(fd, backlog) < 0) {
+        int e = errno;
+        close(fd);
+        return JSValueMakeNumber(ctx, -e);
+    }
+    return JSValueMakeNumber(ctx, fd);
+}
+// accept(fd) -> a connected nonblocking fd, or a negative errno (-EAGAIN: none waiting).
+NATIVE(n_sock_accept) {
+    UNUSED_ARGS; (void)exc;
+    int fd;
+    do {
+#ifdef __APPLE__
+        fd = accept((int)num(ctx, ARG(0)), NULL, NULL);
+#else
+        fd = accept4((int)num(ctx, ARG(0)), NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+#endif
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) return JSValueMakeNumber(ctx, -errno);
+#ifdef __APPLE__
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    return JSValueMakeNumber(ctx, fd);
+}
+// sockName(fd, peer) -> { address, family, port } / { path } / null.
+NATIVE(n_sock_name) {
+    UNUSED_ARGS; (void)exc;
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof ss;
+    int fd = (int)num(ctx, ARG(0));
+    int rc = JSValueToBoolean(ctx, ARG(1)) ? getpeername(fd, (struct sockaddr *)&ss, &len) : getsockname(fd, (struct sockaddr *)&ss, &len);
+    if (rc < 0) return JSValueMakeNull(ctx);
+    JSObjectRef o = JSObjectMake(ctx, NULL, NULL);
+    char text[INET6_ADDRSTRLEN] = "";
+    if (ss.ss_family == AF_INET) {
+        struct sockaddr_in *in4 = (struct sockaddr_in *)&ss;
+        inet_ntop(AF_INET, &in4->sin_addr, text, sizeof text);
+        set_prop(ctx, o, "address", jsr_string(ctx, text));
+        set_prop(ctx, o, "family", jsr_string(ctx, "IPv4"));
+        set_prop(ctx, o, "port", JSValueMakeNumber(ctx, ntohs(in4->sin_port)));
+    } else if (ss.ss_family == AF_INET6) {
+        struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)&ss;
+        inet_ntop(AF_INET6, &in6->sin6_addr, text, sizeof text);
+        set_prop(ctx, o, "address", jsr_string(ctx, text));
+        set_prop(ctx, o, "family", jsr_string(ctx, "IPv6"));
+        set_prop(ctx, o, "port", JSValueMakeNumber(ctx, ntohs(in6->sin6_port)));
+    } else if (ss.ss_family == AF_UNIX) {
+        struct sockaddr_un *un = (struct sockaddr_un *)&ss;
+        size_t n = len > offsetof(struct sockaddr_un, sun_path) ? strnlen(un->sun_path, len - offsetof(struct sockaddr_un, sun_path)) : 0;
+        char *path = strndup(un->sun_path, n);
+        set_prop(ctx, o, "path", jsr_string(ctx, path));
+        free(path);
+    }
+    return o;
+}
+// shutdown(fd): no more writes (the peer reads EOF).
+NATIVE(n_sock_shutdown) {
+    UNUSED_ARGS; (void)exc;
+    return JSValueMakeNumber(ctx, shutdown((int)num(ctx, ARG(0)), SHUT_WR) == 0 ? 0 : -errno);
+}
+// sockOption(fd, "nodelay" | "keepalive", on, delaySeconds)
+NATIVE(n_sock_option) {
+    UNUSED_ARGS; (void)exc;
+    int fd = (int)num(ctx, ARG(0));
+    char *what = jsr_to_utf8(ctx, ARG(1));
+    int on = JSValueToBoolean(ctx, ARG(2)) ? 1 : 0;
+    if (!strcmp(what, "nodelay")) setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
+    else if (!strcmp(what, "keepalive")) {
+        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof on);
+        int delay = (int)num(ctx, ARG(3));
+        if (on && delay > 0) {
+#ifdef __APPLE__
+            setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &delay, sizeof delay);
+#else
+            setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &delay, sizeof delay);
+#endif
+        }
+    }
+    free(what);
+    return JSValueMakeUndefined(ctx);
+}
+
+// lookup(host, callback(error code | null, [{ address, family }])): getaddrinfo
+// on a thread, as Node's dns.lookup uses libuv's pool.
+typedef struct { char *host; JSObjectRef fn; int rc; struct addrinfo *res; jsr_runtime *rt; } lookup_job;
+static void lookup_done(jsr_runtime *rt, void *data) {
+    lookup_job *j = data;
+    JSContextRef ctx = jsr_context(rt);
+    JSValueRef args[2] = {JSValueMakeNull(ctx), JSValueMakeNull(ctx)};
+    if (j->rc != 0 || !j->res) {
+        args[0] = jsr_string(ctx, j->rc == EAI_NONAME
+#ifdef EAI_NODATA
+            || j->rc == EAI_NODATA
+#endif
+            ? "ENOTFOUND" : j->rc == EAI_AGAIN ? "EAI_AGAIN" : "EAI_FAIL");
+    } else {
+        JSValueRef items[64];
+        size_t n = 0;
+        for (struct addrinfo *a = j->res; a && n < 64; a = a->ai_next) {
+            char text[INET6_ADDRSTRLEN] = "";
+            void *addr = a->ai_family == AF_INET ? (void *)&((struct sockaddr_in *)a->ai_addr)->sin_addr : (void *)&((struct sockaddr_in6 *)a->ai_addr)->sin6_addr;
+            if (!inet_ntop(a->ai_family, addr, text, sizeof text)) continue;
+            bool dup = false;
+            for (struct addrinfo *b = j->res; b != a; b = b->ai_next) {
+                char seen[INET6_ADDRSTRLEN] = "";
+                void *baddr = b->ai_family == AF_INET ? (void *)&((struct sockaddr_in *)b->ai_addr)->sin_addr : (void *)&((struct sockaddr_in6 *)b->ai_addr)->sin6_addr;
+                if (b->ai_family == a->ai_family && inet_ntop(b->ai_family, baddr, seen, sizeof seen) && !strcmp(seen, text)) dup = true;
+            }
+            if (dup) continue;
+            JSObjectRef o = JSObjectMake(ctx, NULL, NULL);
+            set_prop(ctx, o, "address", jsr_string(ctx, text));
+            set_prop(ctx, o, "family", JSValueMakeNumber(ctx, a->ai_family == AF_INET ? 4 : 6));
+            items[n++] = o;
+        }
+        args[1] = JSObjectMakeArray(ctx, n, items, NULL);
+    }
+    if (j->res) freeaddrinfo(j->res);
+    jsr_unref(rt);
+    jsr_call(rt, j->fn, NULL, 2, args);
+    JSValueUnprotect(ctx, j->fn);
+    free(j->host);
+    free(j);
+}
+static void *lookup_thread(void *data) {
+    lookup_job *j = data;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
+    j->rc = getaddrinfo(j->host, NULL, &hints, &j->res);
+    jsr_post(j->rt, lookup_done, j);
+    return NULL;
+}
+NATIVE(n_lookup) {
+    UNUSED_ARGS;
+    if (!JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "lookup(host, fn)");
+    lookup_job *j = calloc(1, sizeof *j);
+    j->host = jsr_to_utf8(ctx, ARG(0));
+    j->fn = (JSObjectRef)ARG(1);
+    j->rt = jsr_from_context(ctx);
+    JSValueProtect(ctx, j->fn);
+    jsr_ref(j->rt);
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, lookup_thread, j) != 0) {
+        j->rc = EAI_FAIL;
+        jsr_post(j->rt, lookup_done, j);
+    } else pthread_detach(thread);
+    return JSValueMakeUndefined(ctx);
 }
 
 void node_install(jsr_runtime *rt) {
@@ -1211,6 +1486,16 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, node, "writeFd", n_write_fd);
     jsr_set_function(ctx, node, "whenWritable", n_when_writable);
     jsr_set_function(ctx, node, "cancelWritable", n_cancel_writable);
+    jsr_set_function(ctx, node, "whenReadable", n_when_readable);
+    jsr_set_function(ctx, node, "refWait", n_ref_wait);
+    jsr_set_function(ctx, node, "sockConnect", n_sock_connect);
+    jsr_set_function(ctx, node, "sockError", n_sock_error);
+    jsr_set_function(ctx, node, "sockListen", n_sock_listen);
+    jsr_set_function(ctx, node, "sockAccept", n_sock_accept);
+    jsr_set_function(ctx, node, "sockName", n_sock_name);
+    jsr_set_function(ctx, node, "sockShutdown", n_sock_shutdown);
+    jsr_set_function(ctx, node, "sockOption", n_sock_option);
+    jsr_set_function(ctx, node, "lookup", n_lookup);
     jsr_set_function(ctx, node, "which", n_which);
     set_prop(ctx, node, "signals", signal_names(ctx));
     // As in Node and Bun: a write to a closed pipe fails with EPIPE instead of
