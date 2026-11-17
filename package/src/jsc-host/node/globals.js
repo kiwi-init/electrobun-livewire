@@ -3,6 +3,9 @@
 import { Buffer } from "buffer";
 import { readFileSync, existsSync, statSync } from "./fs.js";
 import { getRandomValues, randomUUID } from "./crypto.js";
+import { spawn, spawnSync, which } from "./bun-spawn.js";
+import { kill } from "./spawn-common.js";
+import { ReadableStream, Response } from "./web-streams.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
@@ -30,14 +33,23 @@ class BunFile {
 	async arrayBuffer() { const b = readFileSync(this.name); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }
 	async bytes() { return new Uint8Array(await this.arrayBuffer()); }
 }
-const missing = (name) => () => {
-	throw new Error(`Bun.${name} isn't available on the JSC runtime yet`);
-};
+// The system JavaScriptCore has no web streams or fetch types; Bun.spawn's
+// pipes are ReadableStreams that apps read with new Response(stream).text().
+if (typeof globalThis.ReadableStream !== "function") defineGlobal("ReadableStream", ReadableStream);
+if (typeof globalThis.Response !== "function") defineGlobal("Response", Response);
+
+const proc = globalThis["process"];
+if (proc) {
+	proc.kill = kill;
+	proc.stdout.fd = 1;
+	proc.stderr.fd = 2;
+}
+
 if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	file: (path) => new BunFile(path),
-	spawn: missing("spawn"),
-	spawnSync: missing("spawnSync"),
-	which: missing("which"),
-	env: globalThis["process"]?.env ?? {},
+	spawn,
+	spawnSync,
+	which,
+	env: proc?.env ?? {},
 	version: "0.0.0-livewire-jsc",
 });

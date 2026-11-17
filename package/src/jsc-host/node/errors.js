@@ -14,6 +14,7 @@ const messages = {
 	ENOTEMPTY: "directory not empty", ENOSYS: "function not implemented", ETIMEDOUT: "connection timed out",
 	ECONNREFUSED: "connection refused", ECONNRESET: "connection reset by peer", EADDRINUSE: "address already in use",
 	ENOTSUP: "operation not supported on socket", ENOTCONN: "socket is not connected", ECANCELED: "operation canceled",
+	ENOBUFS: "no buffer space available",
 };
 export function errnoCode(errno) {
 	return codes[Math.abs(errno)] ?? "E" + Math.abs(errno);

@@ -1,7 +1,10 @@
 // Natives behind the Node shims (node/*.js) on the Livewire JSC runtime:
-// synchronous fs calls, os facts, randomness, AES-GCM and fd readiness.
-// Installed as globalThis.__node. Errors are thrown as Error objects carrying
-// errno/syscall/path; node/errors.js turns them into Node's shape.
+// synchronous fs calls, os facts, randomness, AES-GCM, fd readiness and child
+// processes. Installed as globalThis.__node. Errors are thrown as Error
+// objects carrying errno/syscall/path; node/errors.js turns them into Node's shape.
+#ifndef __APPLE__
+#define _GNU_SOURCE // pipe2, posix_spawn's SETSID, addchdir_np and addclosefrom_np
+#endif
 #include "runtime.h"
 #include "node.h"
 
@@ -20,6 +23,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <limits.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -359,7 +367,7 @@ static JSObjectRef errno_names(JSContextRef ctx) {
     E(EPERM); E(ENOENT); E(ESRCH); E(EINTR); E(EIO); E(ENXIO); E(E2BIG); E(ENOEXEC); E(EBADF); E(ECHILD); E(EAGAIN); E(ENOMEM);
     E(EACCES); E(EFAULT); E(EBUSY); E(EEXIST); E(EXDEV); E(ENODEV); E(ENOTDIR); E(EISDIR); E(EINVAL); E(ENFILE); E(EMFILE);
     E(ENOTTY); E(EFBIG); E(ENOSPC); E(ESPIPE); E(EROFS); E(EMLINK); E(EPIPE); E(ELOOP); E(ENAMETOOLONG); E(ENOTEMPTY);
-    E(ENOSYS); E(ETIMEDOUT); E(ECONNREFUSED); E(ECONNRESET); E(EADDRINUSE); E(ENOTSUP); E(ENOTCONN); E(ECANCELED);
+    E(ENOSYS); E(ETIMEDOUT); E(ECONNREFUSED); E(ECONNRESET); E(EADDRINUSE); E(ENOTSUP); E(ENOTCONN); E(ECANCELED); E(ENOBUFS);
 #undef E
     return c;
 }
@@ -577,14 +585,15 @@ static fd_watch *find_watch(int id) {
     return NULL;
 }
 static void stop_watch(jsr_runtime *rt, fd_watch *w, bool close_fd) {
-    if (w->closed) return;
+    // Stopped already (at EOF): only the fd may be left to close.
+    if (w->closed) { if (close_fd && w->fd >= 0) { close(w->fd); w->fd = -1; } return; }
     w->closed = true;
 #ifdef __APPLE__
     dispatch_source_cancel(w->source);
 #else
     if (w->source) { g_source_destroy(w->source); g_source_unref(w->source); w->source = NULL; }
 #endif
-    if (close_fd) close(w->fd);
+    if (close_fd) { close(w->fd); w->fd = -1; }
     jsr_unref(rt);
 }
 static void deliver_fd_event(jsr_runtime *rt, void *data) {
@@ -676,6 +685,490 @@ NATIVE(n_ref_fd) {
     return JSValueMakeUndefined(ctx);
 }
 
+
+// --- child processes (child_process, Bun.spawn) -----------------------------
+// posix_spawn with stdio as pipes, /dev/null, the parent's fds or given fds.
+// Async children report their exit on the JS thread: a dispatch proc source
+// (macOS) or a GLib child watch on the JS thread's context (Linux). Sync ones
+// poll their pipes on the calling thread.
+#ifdef __APPLE__
+extern char **environ;
+#endif
+#define SIGNAL_LIST(X) X(SIGHUP) X(SIGINT) X(SIGQUIT) X(SIGILL) X(SIGTRAP) X(SIGABRT) X(SIGBUS) X(SIGFPE) \
+    X(SIGKILL) X(SIGUSR1) X(SIGSEGV) X(SIGUSR2) X(SIGPIPE) X(SIGALRM) X(SIGTERM) X(SIGCHLD) X(SIGCONT) \
+    X(SIGSTOP) X(SIGTSTP) X(SIGTTIN) X(SIGTTOU) X(SIGURG) X(SIGXCPU) X(SIGXFSZ) X(SIGVTALRM) X(SIGPROF) \
+    X(SIGWINCH) X(SIGIO) X(SIGSYS)
+static JSObjectRef signal_names(JSContextRef ctx) {
+    JSObjectRef o = JSObjectMake(ctx, NULL, NULL);
+#define X(s) set_prop(ctx, o, #s, JSValueMakeNumber(ctx, s));
+    SIGNAL_LIST(X)
+#undef X
+    return o;
+}
+
+// An array of strings (or null) as a NULL-terminated char *[]; NULL for null.
+static char **string_list(JSContextRef ctx, JSValueRef v) {
+    if (!JSValueIsObject(ctx, v)) return NULL;
+    JSObjectRef a = (JSObjectRef)v;
+    JSStringRef len_name = JSStringCreateWithUTF8CString("length");
+    size_t n = (size_t)num(ctx, JSObjectGetProperty(ctx, a, len_name, NULL));
+    JSStringRelease(len_name);
+    char **list = calloc(n + 1, sizeof *list);
+    for (size_t i = 0; i < n; i++) list[i] = jsr_to_utf8(ctx, JSObjectGetPropertyAtIndex(ctx, a, (unsigned)i, NULL));
+    return list;
+}
+static void free_list(char **list) {
+    if (!list) return;
+    for (char **p = list; *p; p++) free(*p);
+    free(list);
+}
+static char *optional_string(JSContextRef ctx, JSValueRef v) {
+    return JSValueIsString(ctx, v) ? jsr_to_utf8(ctx, v) : NULL;
+}
+
+// The program to run: a name with a slash as given, else the first
+// executable regular file of that name on search_path (the child's PATH).
+static char *resolve_program(const char *file, const char *search_path) {
+    if (strchr(file, '/')) return strdup(file);
+    if (!search_path) search_path = "/usr/bin:/bin";
+    const char *p = search_path;
+    while (true) {
+        const char *end = strchr(p, ':');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        char *candidate = malloc(len + strlen(file) + 3);
+        if (len == 0) sprintf(candidate, "./%s", file);
+        else sprintf(candidate, "%.*s/%s", (int)len, p, file);
+        struct stat st;
+        if (stat(candidate, &st) == 0 && S_ISREG(st.st_mode) && access(candidate, X_OK) == 0) return candidate;
+        free(candidate);
+        if (!end) return NULL;
+        p = end + 1;
+    }
+}
+
+typedef struct { int kind, fd; } stdio_spec; // kind: 0 inherit, 1 pipe, 2 ignore, 3 the fd
+static stdio_spec stdio_of(JSContextRef ctx, JSValueRef list, unsigned i) {
+    JSValueRef v = JSValueIsObject(ctx, list) ? JSObjectGetPropertyAtIndex(ctx, (JSObjectRef)list, i, NULL) : JSValueMakeUndefined(ctx);
+    stdio_spec s = {1, -1};
+    if (JSValueIsNumber(ctx, v)) {
+        s.fd = (int)num(ctx, v);
+        s.kind = s.fd == (int)i ? 0 : 3;
+    } else if (JSValueIsString(ctx, v)) {
+        char *k = jsr_to_utf8(ctx, v);
+        s.kind = !strcmp(k, "inherit") ? 0 : !strcmp(k, "ignore") ? 2 : 1;
+        free(k);
+    }
+    return s;
+}
+static int cloexec_pipe(int fds[2]) {
+#ifdef __APPLE__
+    if (pipe(fds) != 0) return errno;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+#else
+    return pipe2(fds, O_CLOEXEC) == 0 ? 0 : errno;
+#endif
+}
+
+// Starts the child. parent_fds[i] is the parent's end of stdio i's pipe, or
+// -1. Returns 0 or an errno (ENOENT for a program not found).
+static int start_child(const char *file, char **args, char **env, const char *cwd, const char *search_path,
+                       const stdio_spec stdio[3], bool detached, pid_t *pid, int parent_fds[3]) {
+    int pipes[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
+    for (int i = 0; i < 3; i++) parent_fds[i] = -1;
+    char *program = resolve_program(file, search_path);
+    if (!program) return ENOENT;
+    int err = 0;
+    for (int i = 0; i < 3 && !err; i++)
+        if (stdio[i].kind == 1) err = cloexec_pipe(pipes[i]);
+    if (err) {
+        for (int i = 0; i < 3; i++) { if (pipes[i][0] >= 0) close(pipes[i][0]); if (pipes[i][1] >= 0) close(pipes[i][1]); }
+        free(program);
+        return err;
+    }
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawnattr_init(&attr);
+    for (int i = 0; i < 3; i++) {
+        switch (stdio[i].kind) {
+        case 1: posix_spawn_file_actions_adddup2(&actions, i == 0 ? pipes[i][0] : pipes[i][1], i); break;
+        case 2: posix_spawn_file_actions_addopen(&actions, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0); break;
+        case 3: posix_spawn_file_actions_adddup2(&actions, stdio[i].fd, i); break;
+        default:
+#ifdef __APPLE__
+            posix_spawn_file_actions_addinherit_np(&actions, i);
+#endif
+            break;
+        }
+    }
+    if (cwd) {
+#ifdef __APPLE__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        // The _np name works back to macOS 10.15; its POSIX name needs macOS 26.
+        posix_spawn_file_actions_addchdir_np(&actions, cwd);
+#pragma clang diagnostic pop
+#else
+        posix_spawn_file_actions_addchdir_np(&actions, cwd);
+#endif
+    }
+#if !defined(__APPLE__) && defined(__GLIBC__) && (__GLIBC__ > 2 || __GLIBC_MINOR__ >= 34)
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+#endif
+    // Default dispositions and an empty mask: the runtime ignores SIGPIPE and
+    // the signals the app listens to, and children must not inherit that.
+    sigset_t all, none;
+    sigfillset(&all);
+    sigemptyset(&none);
+    posix_spawnattr_setsigdefault(&attr, &all);
+    posix_spawnattr_setsigmask(&attr, &none);
+    short flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
+#ifdef __APPLE__
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT; // only the fds set up above reach the child
+#endif
+    if (detached) flags |= POSIX_SPAWN_SETSID;
+    posix_spawnattr_setflags(&attr, flags);
+    err = posix_spawn(pid, program, &actions, &attr, args, env ? env : environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    free(program);
+    for (int i = 0; i < 3; i++) {
+        if (pipes[i][0] < 0) continue;
+        int child_end = i == 0 ? pipes[i][0] : pipes[i][1], parent_end = i == 0 ? pipes[i][1] : pipes[i][0];
+        close(child_end);
+        if (err) close(parent_end);
+        else {
+            fcntl(parent_end, F_SETFL, fcntl(parent_end, F_GETFL) | O_NONBLOCK);
+            parent_fds[i] = parent_end;
+        }
+    }
+    return err;
+}
+
+// Exit watches for async children.
+typedef struct child_watch {
+    pid_t pid;
+    JSObjectRef fn;
+    bool reffed;
+    struct child_watch *next;
+} child_watch;
+static child_watch *g_children;
+typedef struct { pid_t pid; int status; } child_exit;
+static void deliver_child_exit(jsr_runtime *rt, void *data) {
+    child_exit *ev = data;
+    child_watch **link = &g_children, *w = NULL;
+    while (*link && (*link)->pid != ev->pid) link = &(*link)->next;
+    if ((w = *link)) *link = w->next;
+    if (w) {
+        if (w->reffed) jsr_unref(rt);
+        JSContextRef ctx = jsr_context(rt);
+        JSValueRef args[2];
+        if (WIFSIGNALED(ev->status)) {
+            args[0] = JSValueMakeNull(ctx);
+            args[1] = JSValueMakeNumber(ctx, WTERMSIG(ev->status));
+        } else {
+            args[0] = JSValueMakeNumber(ctx, WEXITSTATUS(ev->status));
+            args[1] = JSValueMakeNumber(ctx, 0);
+        }
+        JSObjectRef fn = w->fn;
+        free(w);
+        jsr_call(rt, fn, NULL, 2, args);
+        JSValueUnprotect(ctx, fn);
+    }
+    free(ev);
+}
+#ifdef __APPLE__
+static dispatch_queue_t g_child_queue;
+// On g_child_queue: reaps pid if it has exited, once.
+static bool reap_child(jsr_runtime *rt, pid_t pid, dispatch_source_t source) {
+    int status;
+    pid_t r;
+    do r = waitpid(pid, &status, WNOHANG); while (r < 0 && errno == EINTR);
+    if (r != pid) return false;
+    dispatch_source_cancel(source);
+    child_exit *ev = malloc(sizeof *ev);
+    ev->pid = pid;
+    ev->status = status;
+    jsr_post(rt, deliver_child_exit, ev);
+    return true;
+}
+#else
+static void child_exited(GPid pid, gint status, gpointer data) {
+    (void)data;
+    child_exit *ev = malloc(sizeof *ev);
+    ev->pid = pid;
+    ev->status = status;
+    deliver_child_exit(jsr_from_context(NULL), ev);
+}
+#endif
+static void watch_child(jsr_runtime *rt, JSContextRef ctx, pid_t pid, JSObjectRef fn) {
+    child_watch *w = calloc(1, sizeof *w);
+    w->pid = pid;
+    w->fn = fn;
+    w->reffed = true;
+    JSValueProtect(ctx, fn);
+    w->next = g_children;
+    g_children = w;
+    jsr_ref(rt);
+#ifdef __APPLE__
+    if (!g_child_queue) g_child_queue = dispatch_queue_create("livewire.children", DISPATCH_QUEUE_SERIAL);
+    dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, (uintptr_t)pid, DISPATCH_PROC_EXIT, g_child_queue);
+    dispatch_source_set_event_handler(source, ^{ reap_child(rt, pid, source); });
+    dispatch_source_set_cancel_handler(source, ^{ dispatch_release(source); });
+    dispatch_resume(source);
+    // A child that exited before the source was armed: reap it now.
+    dispatch_retain(source);
+    dispatch_async(g_child_queue, ^{
+        if (!dispatch_source_testcancel(source)) reap_child(rt, pid, source);
+        dispatch_release(source);
+    });
+#else
+    GSource *source = g_child_watch_source_new(pid);
+    g_source_set_callback(source, (GSourceFunc)(void (*)(void))child_exited, NULL, NULL);
+    g_source_attach(source, (GMainContext *)jsr_glib_context(rt));
+    g_source_unref(source);
+#endif
+}
+
+// spawn(file, args, env | null, cwd | null, stdio[3], detached, searchPath | null, onExit(code | null, signal))
+// -> [pid, stdinFd, stdoutFd, stderrFd] (-1 where not a pipe), or a negative errno.
+NATIVE(n_spawn) {
+    UNUSED_ARGS;
+    if (!JSValueIsObject(ctx, ARG(7))) return throw_message(ctx, exc, "spawn: onExit must be a function");
+    char *file = jsr_to_utf8(ctx, ARG(0)), *cwd = optional_string(ctx, ARG(3)), *search = optional_string(ctx, ARG(6));
+    char **args = string_list(ctx, ARG(1)), **env = string_list(ctx, ARG(2));
+    stdio_spec stdio[3] = {stdio_of(ctx, ARG(4), 0), stdio_of(ctx, ARG(4), 1), stdio_of(ctx, ARG(4), 2)};
+    pid_t pid = 0;
+    int fds[3];
+    int err = start_child(file, args, env, cwd, search, stdio, JSValueToBoolean(ctx, ARG(5)), &pid, fds);
+    free(file); free(cwd); free(search); free_list(args); free_list(env);
+    if (err) return JSValueMakeNumber(ctx, -err);
+    watch_child(jsr_from_context(ctx), ctx, pid, (JSObjectRef)ARG(7));
+    JSValueRef items[4] = {JSValueMakeNumber(ctx, pid), JSValueMakeNumber(ctx, fds[0]), JSValueMakeNumber(ctx, fds[1]), JSValueMakeNumber(ctx, fds[2])};
+    return JSObjectMakeArray(ctx, 4, items, NULL);
+}
+// childRef(pid, bool): whether a running child keeps the loop alive.
+NATIVE(n_child_ref) {
+    UNUSED_ARGS; (void)exc;
+    pid_t pid = (pid_t)num(ctx, ARG(0));
+    bool ref = JSValueToBoolean(ctx, ARG(1));
+    for (child_watch *w = g_children; w; w = w->next) {
+        if (w->pid != pid || w->reffed == ref) continue;
+        w->reffed = ref;
+        if (ref) jsr_ref(jsr_from_context(ctx)); else jsr_unref(jsr_from_context(ctx));
+    }
+    return JSValueMakeUndefined(ctx);
+}
+// kill(pid, signal) -> 0 or a negative errno.
+NATIVE(n_kill) {
+    UNUSED_ARGS; (void)exc;
+    return JSValueMakeNumber(ctx, kill((pid_t)num(ctx, ARG(0)), (int)num(ctx, ARG(1))) == 0 ? 0 : -errno);
+}
+
+static double monotonic_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
+typedef struct { uint8_t *bytes; size_t len, cap; } byte_buf;
+static void buf_add(byte_buf *b, const uint8_t *data, size_t n) {
+    if (b->len + n > b->cap) {
+        b->cap = (b->len + n) * 2;
+        b->bytes = realloc(b->bytes, b->cap);
+    }
+    memcpy(b->bytes + b->len, data, n);
+    b->len += n;
+}
+// spawnSync(file, args, env, cwd, stdio, detached, searchPath, input | null, timeoutMs, killSignal, maxBuffer)
+// -> { pid, status, signal, stdout, stderr, error (negative errno or 0), timedOut, overflow }
+NATIVE(n_spawn_sync) {
+    UNUSED_ARGS; (void)exc;
+    char *file = jsr_to_utf8(ctx, ARG(0)), *cwd = optional_string(ctx, ARG(3)), *search = optional_string(ctx, ARG(6));
+    char **args = string_list(ctx, ARG(1)), **env = string_list(ctx, ARG(2));
+    stdio_spec stdio[3] = {stdio_of(ctx, ARG(4), 0), stdio_of(ctx, ARG(4), 1), stdio_of(ctx, ARG(4), 2)};
+    size_t input_len = 0;
+    uint8_t *input = bytes_of(ctx, ARG(7), &input_len);
+    double timeout = num(ctx, ARG(8)), max_buffer = num(ctx, ARG(10));
+    int kill_signal = (int)num(ctx, ARG(9));
+    pid_t pid = 0;
+    int fds[3];
+    int err = start_child(file, args, env, cwd, search, stdio, JSValueToBoolean(ctx, ARG(5)), &pid, fds);
+    free(file); free(cwd); free(search); free_list(args); free_list(env);
+    JSObjectRef result = JSObjectMake(ctx, NULL, NULL);
+    if (err) {
+        set_prop(ctx, result, "error", JSValueMakeNumber(ctx, -err));
+        return result;
+    }
+    byte_buf out[3] = {{0}};
+    size_t written = 0;
+    bool timed_out = false, overflow = false;
+    double deadline = timeout > 0 ? monotonic_ms() + timeout : 0;
+    if (fds[0] >= 0 && !input) { close(fds[0]); fds[0] = -1; }
+    while (fds[0] >= 0 || fds[1] >= 0 || fds[2] >= 0) {
+        struct pollfd p[3];
+        int which[3], n = 0;
+        for (int i = 0; i < 3; i++) {
+            if (fds[i] < 0) continue;
+            p[n].fd = fds[i];
+            p[n].events = i == 0 ? POLLOUT : POLLIN;
+            p[n].revents = 0;
+            which[n++] = i;
+        }
+        int wait = -1;
+        if (deadline) {
+            double left = deadline - monotonic_ms();
+            wait = left > 0 ? (int)left + 1 : 0;
+        }
+        int ready = poll(p, (nfds_t)n, wait);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready == 0 && deadline && monotonic_ms() >= deadline) { timed_out = true; break; }
+        for (int k = 0; k < n; k++) {
+            int i = which[k];
+            if (!p[k].revents) continue;
+            if (i == 0) {
+                ssize_t w = write(fds[0], input + written, input_len - written);
+                if (w > 0) written += (size_t)w;
+                if ((w < 0 && errno != EAGAIN && errno != EINTR) || written >= input_len) { close(fds[0]); fds[0] = -1; }
+                continue;
+            }
+            uint8_t chunk[65536];
+            ssize_t r = read(fds[i], chunk, sizeof chunk);
+            if (r > 0) {
+                buf_add(&out[i], chunk, (size_t)r);
+                if (max_buffer > 0 && (double)out[i].len > max_buffer) overflow = true;
+            } else if (r == 0 || (errno != EAGAIN && errno != EINTR)) {
+                close(fds[i]);
+                fds[i] = -1;
+            }
+        }
+        if (overflow) break;
+    }
+    // A timeout or too much output kills the child and stops reading, as Node does.
+    if (timed_out || overflow) kill(pid, kill_signal);
+    for (int i = 0; i < 3; i++) if (fds[i] >= 0) close(fds[i]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    set_prop(ctx, result, "pid", JSValueMakeNumber(ctx, pid));
+    if (WIFSIGNALED(status)) {
+        set_prop(ctx, result, "status", JSValueMakeNull(ctx));
+        set_prop(ctx, result, "signal", JSValueMakeNumber(ctx, WTERMSIG(status)));
+    } else {
+        set_prop(ctx, result, "status", JSValueMakeNumber(ctx, WEXITSTATUS(status)));
+        set_prop(ctx, result, "signal", JSValueMakeNumber(ctx, 0));
+    }
+    set_prop(ctx, result, "stdout", stdio[1].kind == 1 ? make_u8(ctx, out[1].bytes, out[1].len) : JSValueMakeNull(ctx));
+    set_prop(ctx, result, "stderr", stdio[2].kind == 1 ? make_u8(ctx, out[2].bytes, out[2].len) : JSValueMakeNull(ctx));
+    set_prop(ctx, result, "error", JSValueMakeNumber(ctx, 0));
+    set_prop(ctx, result, "timedOut", JSValueMakeBoolean(ctx, timed_out));
+    set_prop(ctx, result, "overflow", JSValueMakeBoolean(ctx, overflow));
+    return result;
+}
+
+// writeFd(fd, view, offset) -> bytes written, or a negative errno (-EAGAIN: full).
+NATIVE(n_write_fd) {
+    UNUSED_ARGS; (void)exc;
+    size_t len;
+    uint8_t *bytes = bytes_of(ctx, ARG(1), &len);
+    size_t offset = (size_t)num(ctx, ARG(2));
+    if (!bytes || offset > len) return JSValueMakeNumber(ctx, -EINVAL);
+    ssize_t n;
+    do n = write((int)num(ctx, ARG(0)), bytes + offset, len - offset); while (n < 0 && errno == EINTR);
+    return JSValueMakeNumber(ctx, n >= 0 ? (double)n : -errno);
+}
+// whenWritable(fd, fn) -> id: fn() once on the JS thread when fd can take
+// more (or has failed); keeps the loop alive until then or cancelWritable(id).
+typedef struct writable_wait {
+    int id;
+    JSObjectRef fn;
+#ifdef __APPLE__
+    dispatch_source_t source;
+#else
+    GSource *source;
+#endif
+    struct writable_wait *next;
+} writable_wait;
+static writable_wait *g_writable_waits;
+static int g_next_writable;
+// Unlinks the wait with this id (NULL if it already fired or was cancelled).
+static writable_wait *take_writable(jsr_runtime *rt, int id) {
+    writable_wait **link = &g_writable_waits;
+    while (*link && (*link)->id != id) link = &(*link)->next;
+    writable_wait *w = *link;
+    if (!w) return NULL;
+    *link = w->next;
+    jsr_unref(rt);
+#ifdef __APPLE__
+    dispatch_source_cancel(w->source);
+    dispatch_release(w->source); // the wait's own reference
+#else
+    g_source_destroy(w->source);
+    g_source_unref(w->source);
+#endif
+    return w;
+}
+static void deliver_writable(jsr_runtime *rt, void *data) {
+    writable_wait *w = take_writable(rt, (int)(intptr_t)data);
+    if (!w) return;
+    jsr_call(rt, w->fn, NULL, 0, NULL);
+    JSValueUnprotect(jsr_context(rt), w->fn);
+    free(w);
+}
+#ifndef __APPLE__
+static gboolean fd_writable(gint fd, GIOCondition cond, gpointer data) {
+    (void)fd; (void)cond;
+    deliver_writable(jsr_from_context(NULL), data);
+    return G_SOURCE_REMOVE;
+}
+#endif
+NATIVE(n_when_writable) {
+    UNUSED_ARGS;
+    int fd = (int)num(ctx, ARG(0));
+    if (fd < 0 || !JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "whenWritable(fd, fn)");
+    writable_wait *w = calloc(1, sizeof *w);
+    w->id = ++g_next_writable;
+    w->fn = (JSObjectRef)ARG(1);
+    JSValueProtect(ctx, w->fn);
+    w->next = g_writable_waits;
+    g_writable_waits = w;
+    jsr_runtime *rt = jsr_from_context(ctx);
+    jsr_ref(rt);
+    void *id = (void *)(intptr_t)w->id;
+#ifdef __APPLE__
+    dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, (uintptr_t)fd, 0, dispatch_get_global_queue(0, 0));
+    w->source = source;
+    dispatch_retain(source); // held by the wait; the creation reference goes in the cancel handler
+    dispatch_source_set_event_handler(source, ^{
+        dispatch_source_cancel(source);
+        jsr_post(rt, deliver_writable, id);
+    });
+    dispatch_source_set_cancel_handler(source, ^{ dispatch_release(source); });
+    dispatch_resume(source);
+#else
+    w->source = g_unix_fd_source_new(fd, G_IO_OUT | G_IO_ERR | G_IO_HUP);
+    g_source_set_callback(w->source, (GSourceFunc)(void (*)(void))fd_writable, id, NULL);
+    g_source_attach(w->source, (GMainContext *)jsr_glib_context(rt));
+#endif
+    return JSValueMakeNumber(ctx, w->id);
+}
+// cancelWritable(id): drops a pending whenWritable (before its fd closes).
+NATIVE(n_cancel_writable) {
+    UNUSED_ARGS; (void)exc;
+    writable_wait *w = take_writable(jsr_from_context(ctx), (int)num(ctx, ARG(0)));
+    if (w) { JSValueUnprotect(ctx, w->fn); free(w); }
+    return JSValueMakeUndefined(ctx);
+}
+// which(file, searchPath | null) -> the path spawn would run, or null.
+NATIVE(n_which) {
+    UNUSED_ARGS; (void)exc;
+    char *file = jsr_to_utf8(ctx, ARG(0)), *search = optional_string(ctx, ARG(1));
+    char *found = strchr(file, '/') ? (access(file, X_OK) == 0 ? strdup(file) : NULL) : resolve_program(file, search);
+    JSValueRef r = found ? jsr_string(ctx, found) : JSValueMakeNull(ctx);
+    free(file); free(search); free(found);
+    return r;
+}
+
 void node_install(jsr_runtime *rt) {
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef node = JSObjectMake(ctx, NULL, NULL);
@@ -711,5 +1204,17 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, node, "watchFd", n_watch_fd);
     jsr_set_function(ctx, node, "unwatchFd", n_unwatch_fd);
     jsr_set_function(ctx, node, "refFd", n_ref_fd);
+    jsr_set_function(ctx, node, "spawn", n_spawn);
+    jsr_set_function(ctx, node, "spawnSync", n_spawn_sync);
+    jsr_set_function(ctx, node, "childRef", n_child_ref);
+    jsr_set_function(ctx, node, "kill", n_kill);
+    jsr_set_function(ctx, node, "writeFd", n_write_fd);
+    jsr_set_function(ctx, node, "whenWritable", n_when_writable);
+    jsr_set_function(ctx, node, "cancelWritable", n_cancel_writable);
+    jsr_set_function(ctx, node, "which", n_which);
+    set_prop(ctx, node, "signals", signal_names(ctx));
+    // As in Node and Bun: a write to a closed pipe fails with EPIPE instead of
+    // killing the process.
+    signal(SIGPIPE, SIG_IGN);
     set_prop(ctx, JSContextGetGlobalObject(ctx), "__node", node);
 }

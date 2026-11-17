@@ -25,6 +25,7 @@ bun package/src/jsc-host/conformance/run.ts [out dir] [name filter]
 | `socket.mjs` | `net.Socket({fd})` over a FIFO: data, chunks, destroy, close |
 | `crypto.mjs` | NIST GCM vectors, seeded AES-GCM up to 256 KB, tamper and tag-length rejection, randomness |
 | `ffi.mjs` | `bun:ffi` calls and callbacks, including threadsafe ones from another thread |
+| `spawn.mjs` | `child_process` (spawn, exec, execFile, sync forms: pipes, stdin, timeouts, kill, ENOENT, maxBuffer, detached), `Bun.spawn`/`spawnSync`/`which`, `process.kill` |
 
 Tests print only deterministic text (no random values, times or paths), so the
 outputs can be compared line by line. A new OS's host passes when this suite
