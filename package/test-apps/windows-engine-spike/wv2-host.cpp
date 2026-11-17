@@ -5,6 +5,7 @@
 #include <wrl.h>
 #include <WebView2.h>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 using Microsoft::WRL::Callback;
@@ -58,8 +59,42 @@ public:
     }
 };
 
-static ComPtr<ICoreWebView2Controller> controller;
-static ComPtr<ICoreWebView2> webview;
+static ComPtr<ICoreWebView2Controller> controllers[2];
+static ComPtr<ICoreWebView2> webviews[2];
+
+static HRESULT on_message(ICoreWebView2 *w, ICoreWebView2WebMessageReceivedEventArgs *args) {
+    LPWSTR message = nullptr;
+    if (FAILED(args->TryGetWebMessageAsString(&message)) || !message) return S_OK;
+    if (wcscmp(message, L"ping") == 0) {
+        w->PostWebMessageAsString(L"pong");
+    } else {
+        print_line(message);
+        if (wcsncmp(message, L"READY", 5) == 0) SetTimer(nullptr, 0, 6000, [](HWND, UINT, UINT_PTR, DWORD) { PostQuitMessage(0); });
+    }
+    CoTaskMemFree(message);
+    return S_OK;
+}
+
+// slot 0: the app's own window (--ui), slot 1: the hidden main process.
+static HRESULT add_webview(ICoreWebView2Environment *env, HWND hwnd, int slot, std::wstring html, bool host_object) {
+    return env->CreateCoreWebView2Controller(hwnd,
+        Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>([slot, html, host_object](HRESULT result, ICoreWebView2Controller *c) -> HRESULT {
+            if (FAILED(result)) { std::fprintf(stderr, "controller failed: 0x%08lx\n", result); PostQuitMessage(1); return result; }
+            controllers[slot] = c;
+            c->get_CoreWebView2(&webviews[slot]);
+            if (host_object) {
+                VARIANT object;
+                VariantInit(&object);
+                object.vt = VT_DISPATCH;
+                object.pdispVal = new Native();
+                webviews[slot]->AddHostObjectToScript(L"native", &object);
+                VariantClear(&object);
+            }
+            EventRegistrationToken token;
+            webviews[slot]->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(on_message).Get(), &token);
+            return webviews[slot]->NavigateToString(html.c_str());
+        }).Get());
+}
 
 int main(int argc, char **argv) {
     QueryPerformanceFrequency(&freq);
@@ -91,42 +126,25 @@ int main(int argc, char **argv) {
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     std::wstring data = std::wstring(temp) + L"wv2-engine-spike";
+    bool ui = false, no_main = false;
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--ui")) ui = true;
+        if (!strcmp(argv[i], "--no-main")) no_main = true;
+    }
+    std::wstring ui_html = no_main
+        ? L"<!doctype html><title>app window</title><script>chrome.webview.postMessage('BOOT');chrome.webview.postMessage('READY {}')</script>"
+        : L"<!doctype html><title>app window</title>";
     HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, data.c_str(), nullptr,
-        Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>([hwnd, html](HRESULT result, ICoreWebView2Environment *env) -> HRESULT {
+        Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>([hwnd, html, ui, no_main, ui_html](HRESULT result, ICoreWebView2Environment *env) -> HRESULT {
             if (FAILED(result)) { std::fprintf(stderr, "environment failed: 0x%08lx\n", result); PostQuitMessage(1); return result; }
-            return env->CreateCoreWebView2Controller(hwnd,
-                Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>([html](HRESULT result, ICoreWebView2Controller *c) -> HRESULT {
-                    if (FAILED(result)) { std::fprintf(stderr, "controller failed: 0x%08lx\n", result); PostQuitMessage(1); return result; }
-                    controller = c;
-                    controller->get_CoreWebView2(&webview);
-                    VARIANT object;
-                    VariantInit(&object);
-                    object.vt = VT_DISPATCH;
-                    object.pdispVal = new Native();
-                    webview->AddHostObjectToScript(L"native", &object);
-                    VariantClear(&object);
-                    EventRegistrationToken token;
-                    webview->add_WebMessageReceived(
-                        Callback<ICoreWebView2WebMessageReceivedEventHandler>([](ICoreWebView2 *w, ICoreWebView2WebMessageReceivedEventArgs *args) -> HRESULT {
-                            LPWSTR message = nullptr;
-                            if (FAILED(args->TryGetWebMessageAsString(&message)) || !message) return S_OK;
-                            if (wcscmp(message, L"ping") == 0) {
-                                w->PostWebMessageAsString(L"pong");
-                            } else {
-                                print_line(message);
-                                if (wcsncmp(message, L"READY", 5) == 0) SetTimer(nullptr, 0, 6000, [](HWND, UINT, UINT_PTR, DWORD) { PostQuitMessage(0); });
-                            }
-                            CoTaskMemFree(message);
-                            return S_OK;
-                        }).Get(),
-                        &token);
-                    return webview->NavigateToString(html.c_str());
-                }).Get());
+            if (ui) add_webview(env, hwnd, 0, ui_html, false);
+            if (!no_main) add_webview(env, hwnd, 1, html, true);
+            return S_OK;
         }).Get());
     if (FAILED(hr)) { std::fprintf(stderr, "CreateCoreWebView2EnvironmentWithOptions: 0x%08lx\n", hr); return 1; }
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
-    controller = nullptr;
-    webview = nullptr;
+    for (auto &c : controllers) c = nullptr;
+    for (auto &w : webviews) w = nullptr;
     return int(msg.wParam);
 }

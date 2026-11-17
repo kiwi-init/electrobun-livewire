@@ -86,6 +86,20 @@ foreach ($e in $engines) {
     $report += [pscustomobject]$row
 }
 
+Write-Host "== A inside an app that already shows a WebView2 window"
+$uiOnly = @(1..5 | ForEach-Object { Invoke-Engine "$Dir\wv2-host.exe" @("$Dir\wv2-idle.js", "--ui", "--no-main") })
+$uiMain = @(1..5 | ForEach-Object { Invoke-Engine "$Dir\wv2-host.exe" @("$Dir\wv2-idle.js", "--ui") })
+$marginal = [ordered]@{
+    app_window_only_private_mb = Median ($uiOnly | ForEach-Object { $_.private_mb })
+    app_window_only_working_set_mb = Median ($uiOnly | ForEach-Object { $_.working_set_mb })
+    app_window_only_processes = $uiOnly[0].processes
+    with_hidden_main_private_mb = Median ($uiMain | ForEach-Object { $_.private_mb })
+    with_hidden_main_working_set_mb = Median ($uiMain | ForEach-Object { $_.working_set_mb })
+    with_hidden_main_processes = $uiMain[0].processes
+    with_hidden_main_launch_ms = Median ($uiMain | ForEach-Object { $_.boot_ms })
+}
+$marginal | ConvertTo-Json | Write-Host
+
 $md = @()
 $md += "### Windows engine spike: the same main process on three engines"
 $md += ""
@@ -107,8 +121,16 @@ $rows = @(
 )
 foreach ($r in $rows) { $md += "| $($r[0]) | " + (($report | ForEach-Object { & $r[1] $_ }) -join " | ") + " |" }
 $md += ""
+$md += "**A inside an app that already shows a WebView2 window** (what the hidden main adds):"
+$md += ""
+$md += "| | App window only | + hidden main | Added |"
+$md += "|---|---|---|---|"
+$md += "| Private memory, whole tree (MB) | $($marginal.app_window_only_private_mb) | $($marginal.with_hidden_main_private_mb) | $([math]::Round($marginal.with_hidden_main_private_mb - $marginal.app_window_only_private_mb, 1)) |"
+$md += "| Working set, whole tree (MB) | $($marginal.app_window_only_working_set_mb) | $($marginal.with_hidden_main_working_set_mb) | $([math]::Round($marginal.with_hidden_main_working_set_mb - $marginal.app_window_only_working_set_mb, 1)) |"
+$md += "| Processes | $($marginal.app_window_only_processes) | $($marginal.with_hidden_main_processes) | $($marginal.with_hidden_main_processes - $marginal.app_window_only_processes) |"
+$md += ""
 $md += "WebView2 runtime on the runner: $(($report | Where-Object { $_.version } | Select-Object -First 1).version) at $($webview2Dir.FullName) (preinstalled, not shipped)."
 $md += "Same results everywhere: $((@($report | ForEach-Object { $_.check }) | Select-Object -Unique).Count -eq 1) ($($report[0].check))"
 $md -join "`n" | Set-Content -Encoding utf8 "$Dir\results.md"
-$report | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "$Dir\results.json"
+@{ engines = $report; webview2_marginal = $marginal } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 "$Dir\results.json"
 Get-Content "$Dir\results.md"
