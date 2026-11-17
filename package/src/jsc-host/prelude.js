@@ -70,7 +70,7 @@
 		env: rt.env,
 		pid: rt.pid,
 		platform: "darwin",
-		arch: "arm64",
+		arch: rt.arch,
 		versions: { livewire_jsc: "0" },
 		release: { name: "livewire-jsc" },
 		cwd: () => rt.cwd(),

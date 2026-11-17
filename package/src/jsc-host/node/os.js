@@ -6,7 +6,7 @@ export const tmpdir = () => info().tmpdir;
 export const hostname = () => info().hostname;
 export const platform = () => "darwin";
 export const type = () => "Darwin";
-export const arch = () => "arm64";
+export const arch = () => globalThis.process.arch;
 export const release = () => info().release;
 export const totalmem = () => info().totalmem;
 export const cpus = () => Array.from({ length: info().cpus }, () => ({ model: "", speed: 0, times: {} }));

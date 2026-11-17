@@ -30,12 +30,20 @@ printf '\0' >> "$TMPP/jsr_prelude_js"
 rm -rf "$TMPP"
 bun "$HOST/ffi/gen.ts" "$WORK/gen" --sdk "$CORE/api/sdks/main" --check-lib "$CORE/libElectrobunCore.dylib" --check-lib "$CORE/libNativeWrapper.dylib"
 
+# Bun.build rather than the bun build CLI, so Hutch's Bun runner works too.
+bundle_js() { # <entry> <target> <outfile>
+  (cd "$WORK" && bun -e 'const [entry, target, outfile] = process.argv.slice(-3);
+const r = await Bun.build({ entrypoints: [entry], target, minify: true });
+if (!r.success) { console.error(r.logs.join("\n")); process.exit(1); }
+await Bun.write(outfile, await r.outputs[0].text());' "$1" "$2" "$3")
+}
+
 make_app() { # <app dir> <name> <identifier> <mainProcess>
   rm -rf "$1"
   mkdir -p "$1/Contents/MacOS" "$1/Contents/Resources/app/bun" "$1/Contents/Resources/app/views/main"
   cp "$CORE/launcher" "$CORE/libElectrobunCore.dylib" "$CORE/libNativeWrapper.dylib" "$CORE/libasar.dylib" "$1/Contents/MacOS/"
   cp "$CORE/preload-full.js" "$CORE/preload-sandboxed.js" "$1/Contents/Resources/"
-  (cd "$WORK" && bun build src/views/main/index.ts --target=browser --outfile "$1/Contents/Resources/app/views/main/index.js" >/dev/null)
+  bundle_js "$WORK/src/views/main/index.ts" browser "$1/Contents/Resources/app/views/main/index.js"
   cp "$HERE/src/views/main/index.html" "$1/Contents/Resources/app/views/main/"
   printf '{"mainProcess":"%s","defaultRenderer":"native","availableRenderers":["native"],"buildEnvironment":"dev","runtime":{"exitOnLastWindowClosed":true}}' "$4" > "$1/Contents/Resources/build.json"
   printf '{"version":"0.0.1","hash":"m1","channel":"dev","baseUrl":"","name":"%s","identifier":"%s"}' "$2" "$3" > "$1/Contents/Resources/version.json"
@@ -69,7 +77,7 @@ if [ -n "$BUN_BIN" ]; then
   make_app "$BAPP" "Bun SDK" "dev.livewire.bun-sdk" "bun"
   cp "$BUN_BIN" "$BAPP/Contents/MacOS/bun"
   cp "$CORE/main.js" "$BAPP/Contents/Resources/"
-  (cd "$WORK" && bun build src/bun/index.ts --target=bun --minify --outfile "$BAPP/Contents/Resources/app/bun/index.js" >/dev/null)
+  bundle_js "$WORK/src/bun/index.ts" bun "$BAPP/Contents/Resources/app/bun/index.js"
   codesign --force --deep -s - "$BAPP" >/dev/null 2>&1 || true
   echo "$BAPP"
 fi

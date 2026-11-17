@@ -1,0 +1,71 @@
+name: JSC host
+
+# mainProcess "jsc" (#141): the runtime's tests, then an app on Livewire's
+# unmodified SDK, built from this tree's core, run on the runner's system
+# JavaScriptCore to a pass/fail exit code.
+on:
+  pull_request:
+    paths:
+      - package/src/jsc-host/**
+      - package/test-apps/jsc-sdk/**
+      - package/src/sdks/main/**
+      - package/src/core/**
+      - package/src/native/macos/**
+      - .github/workflows/jsc-host.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jsc-host-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    # Intel: hosted arm64 macOS runners (macos-15, macos-latest) went unacquired
+    # for 19 minutes at a time (#287). The JSC host is plain C on a system
+    # framework, so the architecture doesn't matter to this check.
+    runs-on: macos-26-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.1'
+      - uses: ./.github/actions/install-hutch
+      # The JSC host's build scripts run on Bun; Hutch runs its pinned Bun.
+      - name: Bun through Hutch
+        run: |
+          shim="$RUNNER_TEMP/bun-shim"
+          mkdir -p "$shim"
+          printf '#!/bin/sh\nHUTCH_RUNTIME=bun exec hutch "$@"\n' > "$shim/bun"
+          chmod +x "$shim/bun"
+          echo "$shim" >> "$GITHUB_PATH"
+      - name: Install dependencies
+        working-directory: package
+        run: hutch run install
+      - name: Build (dev)
+        working-directory: package
+        run: hutch build:dev
+      - name: Runtime tests
+        working-directory: package
+        run: src/jsc-host/test.sh "$RUNNER_TEMP/jsc-runtime"
+      # Exit 0 only when typed RPC works both ways, resize, focus and close
+      # reach the app, and closing the last window quits.
+      - name: SDK app on the system JavaScriptCore
+        working-directory: package
+        env:
+          LIVEWIRE_SDK_FOCUS: '1'
+        run: |
+          test-apps/jsc-sdk/assemble.sh dist "$RUNNER_TEMP/jsc-sdk"
+          app="$RUNNER_TEMP/jsc-sdk/JSC SDK.app"
+          "$app/Contents/MacOS/launcher"
+          {
+            echo "### JSC host: SDK app passed on macOS $(sw_vers -productVersion)"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| .app size | $(du -sh "$app" | cut -f1) |"
+            echo "| MacOS/main | $(du -sh "$app/Contents/MacOS/main" | cut -f1) |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -30,7 +30,7 @@ if (!outDir) {
 mkdirSync(outDir, { recursive: true });
 
 // 1. dlopen tables: recorded by running proc/native.ts against the recorder.
-const extracted = Bun.spawnSync(["bun", join(here, "extract.ts"), sdkDir], { stderr: "inherit" });
+const extracted = Bun.spawnSync([process.execPath, join(here, "extract.ts"), sdkDir], { stderr: "inherit" });
 if (extracted.exitCode !== 0) process.exit(1);
 type Decl = { args?: string[]; returns?: string };
 const record = JSON.parse(extracted.stdout.toString()) as { libraries: { path: string; symbols: Record<string, Decl> }[] };
