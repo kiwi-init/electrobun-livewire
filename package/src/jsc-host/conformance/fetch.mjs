@@ -2,6 +2,8 @@
 // responses, headers, bodies, redirects, streaming, aborts and errors, and
 // the web globals that come with them (Headers, Request, Response, Blob,
 // AbortController, EventTarget).
+import { isMainThread, parentPort, Worker } from "node:worker_threads";
+
 const origin = process.env.LIVEWIRE_HTTP;
 const log = (...a) => console.log(...a);
 const steps = [];
@@ -171,7 +173,23 @@ step(async () => {
 	log("DOMException", d.name, d.message, d.code, d instanceof Error);
 });
 
-(async () => {
-	for (const fn of steps) await fn();
-	log("done");
-})();
+step(async () => {
+	// From a Worker (Channels' keys worker fetches): its events come back on the
+	// worker's own thread while main fetches too.
+	const worker = new Worker(process.argv[1]);
+	const [fromWorker, fromMain] = await Promise.all([new Promise((resolve) => worker.once("message", resolve)), fetch(origin + "/json").then((r) => r.json())]);
+	log("worker fetch", fromWorker, JSON.stringify(fromMain));
+	await worker.terminate();
+});
+
+if (isMainThread) {
+	(async () => {
+		for (const fn of steps) await fn();
+		log("done");
+	})();
+} else {
+	Promise.all([fetch(origin + "/text").then((r) => r.status + " " + r.headers.get("x-custom")), fetch(origin + "/json").then((r) => r.text())]).then(
+		(got) => parentPort.postMessage(got.join(" ")),
+		(e) => parentPort.postMessage("error " + e.message),
+	);
+}
