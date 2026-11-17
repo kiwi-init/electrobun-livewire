@@ -14,7 +14,6 @@
 #else
 #include <glib.h>
 #include <glib-unix.h>
-#include <time.h>
 #endif
 #include <dlfcn.h>
 #include <errno.h>
@@ -25,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/utsname.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -280,14 +280,33 @@ static void loop_wake(jsr_runtime *rt) {
 // in an embedder's loop (48-63 MB after the engine-numbers workload, vs 6-9 MB
 // on Bun). Once the loop has woken and then stays idle for IDLE_GC_DELAY, the
 // host runs one full collection, so memory drops back as it does on Bun. A wake
-// for the collection itself doesn't arm another one.
+// for the collection itself doesn't arm another one, and collections are at
+// least IDLE_GC_INTERVAL apart: an app that ticks every second would otherwise
+// pay a full collection per tick (about 3% of a core with a 40 MB heap).
 #define IDLE_GC_DELAY 0.5
+#define IDLE_GC_INTERVAL 10.0
 
 typedef void (*jsr_sync_gc_fn)(JSContextRef);
 static jsr_sync_gc_fn g_sync_gc;
+static double g_last_gc = -1e9;
+
+static double monotonic_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+// Seconds until the next idle collection may run.
+static double idle_gc_delay(void) {
+    double wait = g_last_gc + IDLE_GC_INTERVAL - monotonic_s();
+    return wait > IDLE_GC_DELAY ? wait : IDLE_GC_DELAY;
+}
 
 static void idle_gc(jsr_runtime *rt) {
     rt->ran_js = false;
+    g_last_gc = monotonic_s();
+    // JSSynchronousGarbageCollectForDebugging is SPI (exported, no public
+    // header): a Mac App Store build may want only JSGarbageCollect's hint.
     if (g_sync_gc) g_sync_gc(rt->ctx); else JSGarbageCollect(rt->ctx);
 }
 
@@ -301,7 +320,7 @@ static void loop_activity(CFRunLoopObserverRef observer, CFRunLoopActivity activ
     (void)observer;
     jsr_runtime *rt = info;
     if (activity == kCFRunLoopAfterWaiting) rt->ran_js = true;
-    else if (rt->ran_js) CFRunLoopTimerSetNextFireDate(rt->gc_timer, CFAbsoluteTimeGetCurrent() + IDLE_GC_DELAY);
+    else if (rt->ran_js) CFRunLoopTimerSetNextFireDate(rt->gc_timer, CFAbsoluteTimeGetCurrent() + idle_gc_delay());
 }
 #else
 static gboolean gc_source_fired(gpointer info) {
@@ -317,7 +336,7 @@ static void arm_idle_gc(jsr_runtime *rt) {
         g_source_destroy(rt->gc_source);
         g_source_unref(rt->gc_source);
     }
-    rt->gc_source = g_timeout_source_new((guint)(IDLE_GC_DELAY * 1000));
+    rt->gc_source = g_timeout_source_new((guint)(idle_gc_delay() * 1000));
     g_source_set_callback(rt->gc_source, gc_source_fired, rt, NULL);
     g_source_attach(rt->gc_source, rt->gctx);
 }
