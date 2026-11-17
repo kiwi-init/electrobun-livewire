@@ -37,16 +37,21 @@ const shims: Record<string, string> = {
 	"stream/promises": join(here, "node/stream-promises.js"),
 	url: join(here, "node/url.js"),
 	worker_threads: join(here, "node/worker_threads.js"),
+	tty: join(here, "node/tty.js"),
+	dns: join(here, "node/dns-callback.js"),
+	"dns/promises": join(here, "node/dns.js"),
+	process: join(here, "node/process.js"),
+	util: join(here, "node/util.js"),
 };
 const shimFor = (specifier: string) => shims[specifier.replace(/^node:/, "")];
 // For target "bun", builtins never reach a plugin's onResolve, so imports
 // are rewritten in the source as it loads.
 const importPattern = /(from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)(["'])((?:node:)?[a-z_/]+|bun:ffi|bun:sqlite)\2/g;
 
-const result = await Bun.build({
+const build = (format: "iife" | "esm") => Bun.build({
 	entrypoints: [join(here, "node/entry.js")],
 	target: "browser",
-	format: "iife",
+	format,
 	minify: process.argv.includes("--minify"),
 	define: { "process.env.NODE_ENV": JSON.stringify("production") },
 	plugins: [
@@ -80,16 +85,29 @@ export const appEnginePageScript = "";`,
 				build.onLoad({ filter: /\.(ts|tsx|js|mjs)$/ }, async (args: OnLoadArgs) => {
 					const source = await Bun.file(args.path).text();
 					if (Object.values(shims).includes(args.path)) return { contents: source, loader: "js" };
-					const contents = source.replace(importPattern, (match: string, lead: string, quote: string, specifier: string) => {
-						const shim = shimFor(specifier);
-						return shim ? lead + quote + shim + quote : match;
-					});
+					const contents = source
+						.replace(importPattern, (match: string, lead: string, quote: string, specifier: string) => {
+							const shim = shimFor(specifier);
+							return shim ? lead + quote + shim + quote : match;
+						})
+						// A browser build makes import.meta.main false; the app's entry is
+						// the main module here, as when Bun runs it.
+						.replace(/\bimport\.meta\.main\b/g, args.path === resolve(entry) ? "true" : "false");
 					return { contents, loader: args.path.endsWith(".tsx") ? "tsx" : args.path.endsWith(".ts") ? "ts" : "js" };
 				});
 			},
 		},
 	],
 });
+// A classic script can't await at its top level, so an app (or worker) that
+// does is bundled as one ES module, with nothing imported, and run as the body
+// of an async function: the same order as a module's top-level await. Its
+// failure is an unhandled rejection, which ends the process with 1 as Bun's
+// does.
+const attempt = (format: "iife" | "esm") => build(format).catch((e: { errors?: unknown[] }) => ({ success: false, logs: e?.errors ?? [e], outputs: [] }));
+let result = await attempt("iife");
+const topLevelAwait = !result.success && result.logs.some((log) => String(log).includes('"await" can only be used inside an "async" function'));
+if (topLevelAwait) result = await attempt("esm");
 if (!result.success) {
 	console.error(result.logs.join("\n"));
 	process.exit(1);
@@ -99,4 +117,15 @@ if (!output) {
 	console.error("bundle.ts: the bundle produced no output");
 	process.exit(1);
 }
-await Bun.write(outfile, await output.text());
+let code = await output.text();
+if (topLevelAwait) {
+	// A module's import.meta, for the bundle's file (Bun.main).
+	const meta = `const __livewireImportMeta = (() => {
+	const path = globalThis.Bun?.main ?? "";
+	const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+	const require = (id) => { throw new Error("import.meta.require(" + JSON.stringify(id) + ") isn't available on the JSC host"); };
+	return { url: "file://" + path, path, filename: path, dir, dirname: dir, file: path.slice(dir.length + 1), main: true, require, resolve: (s) => s, env: globalThis.process?.env ?? {} };
+})();\n`;
+	code = meta + "(async () => {\n" + code.replace(/^\s*export\s*\{\s*\};?\s*$/m, "").replace(/\bimport\.meta\b/g, "__livewireImportMeta") + "\n})();\n";
+}
+await Bun.write(outfile, code);

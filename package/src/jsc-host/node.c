@@ -45,6 +45,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -1963,6 +1965,60 @@ NATIVE(n_ws_close) {
     return JSValueMakeUndefined(ctx);
 }
 
+// umask(mask?) -> the old mask; ppid().
+NATIVE(n_umask) {
+    UNUSED_ARGS; (void)exc;
+    mode_t old;
+    if (JSValueIsNumber(ctx, ARG(0))) old = umask((mode_t)num(ctx, ARG(0)));
+    else { old = umask(0); umask(old); }
+    return JSValueMakeNumber(ctx, (double)old);
+}
+NATIVE(n_ppid) {
+    UNUSED_ARGS; (void)exc; (void)argc; (void)argv;
+    return JSValueMakeNumber(ctx, (double)getppid());
+}
+
+// --- tty -----------------------------------------------------------------------
+// isatty(fd); ttySize(fd) -> [columns, rows] or undefined; setRawMode(fd, on),
+// with the terminal's own mode put back at exit.
+NATIVE(n_isatty) {
+    UNUSED_ARGS; (void)exc;
+    return JSValueMakeBoolean(ctx, isatty((int)num(ctx, ARG(0))) == 1);
+}
+NATIVE(n_tty_size) {
+    UNUSED_ARGS; (void)exc;
+    struct winsize ws;
+    if (ioctl((int)num(ctx, ARG(0)), TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0) return JSValueMakeUndefined(ctx);
+    JSValueRef v[2] = {JSValueMakeNumber(ctx, ws.ws_col), JSValueMakeNumber(ctx, ws.ws_row)};
+    return JSObjectMakeArray(ctx, 2, v, NULL);
+}
+static struct termios g_cooked;
+static int g_cooked_fd = -1;
+static void restore_tty(void) {
+    if (g_cooked_fd >= 0) tcsetattr(g_cooked_fd, TCSANOW, &g_cooked);
+}
+NATIVE(n_set_raw_mode) {
+    UNUSED_ARGS;
+    int fd = (int)num(ctx, ARG(0));
+    if (g_cooked_fd < 0) {
+        if (tcgetattr(fd, &g_cooked) != 0) return throw_message(ctx, exc, "setRawMode: not a terminal");
+        g_cooked_fd = fd;
+        atexit(restore_tty);
+    }
+    struct termios t = g_cooked;
+    if (JSValueToBoolean(ctx, ARG(1))) {
+        // As libuv's UV_TTY_MODE_RAW.
+        t.c_iflag &= ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+        t.c_oflag |= ONLCR;
+        t.c_cflag |= CS8;
+        t.c_lflag &= ~(tcflag_t)(ECHO | ICANON | IEXTEN | ISIG);
+        t.c_cc[VMIN] = 1;
+        t.c_cc[VTIME] = 0;
+    }
+    tcsetattr(fd, TCSADRAIN, &t);
+    return JSValueMakeUndefined(ctx);
+}
+
 void node_install(jsr_runtime *rt) {
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef node = JSObjectMake(ctx, NULL, NULL);
@@ -2025,6 +2081,11 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, node, "wsSend", n_ws_send);
     jsr_set_function(ctx, node, "wsClose", n_ws_close);
     jsr_set_function(ctx, node, "which", n_which);
+    jsr_set_function(ctx, node, "isatty", n_isatty);
+    jsr_set_function(ctx, node, "umask", n_umask);
+    jsr_set_function(ctx, node, "ppid", n_ppid);
+    jsr_set_function(ctx, node, "ttySize", n_tty_size);
+    jsr_set_function(ctx, node, "setRawMode", n_set_raw_mode);
     set_prop(ctx, node, "signals", signal_names(ctx));
     // As in Node and Bun: a write to a closed pipe fails with EPIPE instead of
     // killing the process.
