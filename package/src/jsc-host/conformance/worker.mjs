@@ -59,6 +59,11 @@ if (!isMainThread) {
 			parentPort.postMessage({ hit: db.query("SELECT rowid AS seq FROM hits WHERE hits MATCH ?").get("worker"), bytes: db.serialize().length > 0 });
 			db.close();
 		});
+	} else if (mode === "spawn") {
+		// Child processes from a worker: their exit comes back on the worker's loop.
+		import("node:child_process").then(({ execFile }) => {
+			execFile("/bin/echo", ["from a worker's child"], (err, out) => parentPort.postMessage(err ? "error " + err.message : out.trim()));
+		});
 	} else if (mode === "busy") {
 		let n = 0;
 		for (let i = 0; i < 2e6; i++) n += i % 7;
@@ -98,6 +103,7 @@ async function main() {
 	await run("exit", {});
 	await run("spin", { onMessage: (w) => setTimeout(() => w.terminate(), 50) });
 	await run("sqlite", { onMessage: (w) => w.terminate() });
+	await run("spawn", { onMessage: (w) => w.terminate() });
 	await run("nested", { onMessage: (w, d) => { if (d === "inner closed") w.terminate(); } });
 
 	// Several at once, each on its own thread.

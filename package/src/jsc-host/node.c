@@ -41,6 +41,7 @@
 #include <limits.h>
 #include <pwd.h>
 #include <stdio.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -589,13 +590,20 @@ typedef struct fd_watch {
     bool closed;
     struct fd_watch *next;
 } fd_watch;
+// The fd, child and writable lists are shared by every runtime's JS thread
+// (a Worker's too), so their links change under g_lists_lock; each entry is
+// used only by the runtime that made it.
+static pthread_mutex_t g_lists_lock = PTHREAD_MUTEX_INITIALIZER;
 static fd_watch *g_watches;
 static int g_next_watch;
 
 typedef struct { int id; uint8_t *bytes; ssize_t len; int err; } fd_event;
 static fd_watch *find_watch(int id) {
-    for (fd_watch *w = g_watches; w; w = w->next) if (w->id == id) return w;
-    return NULL;
+    pthread_mutex_lock(&g_lists_lock);
+    fd_watch *w = g_watches;
+    while (w && w->id != id) w = w->next;
+    pthread_mutex_unlock(&g_lists_lock);
+    return w;
 }
 static void stop_watch(jsr_runtime *rt, fd_watch *w, bool close_fd) {
     // Stopped already (at EOF): only the fd may be left to close.
@@ -649,12 +657,14 @@ NATIVE(n_watch_fd) {
     if (fd < 0 || !JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "watchFd(fd, fn)");
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     fd_watch *w = calloc(1, sizeof *w);
-    w->id = ++g_next_watch;
     w->fd = fd;
     w->fn = (JSObjectRef)ARG(1);
     JSValueProtect(ctx, w->fn);
+    pthread_mutex_lock(&g_lists_lock);
+    w->id = ++g_next_watch;
     w->next = g_watches;
     g_watches = w;
+    pthread_mutex_unlock(&g_lists_lock);
     jsr_runtime *rt = jsr_from_context(ctx);
     jsr_ref(rt);
     int id = w->id;
@@ -872,8 +882,10 @@ typedef struct { pid_t pid; int status; } child_exit;
 static void deliver_child_exit(jsr_runtime *rt, void *data) {
     child_exit *ev = data;
     child_watch **link = &g_children, *w = NULL;
+    pthread_mutex_lock(&g_lists_lock);
     while (*link && (*link)->pid != ev->pid) link = &(*link)->next;
     if ((w = *link)) *link = w->next;
+    pthread_mutex_unlock(&g_lists_lock);
     if (w) {
         if (w->reffed) jsr_unref(rt);
         JSContextRef ctx = jsr_context(rt);
@@ -922,11 +934,15 @@ static void watch_child(jsr_runtime *rt, JSContextRef ctx, pid_t pid, JSObjectRe
     w->fn = fn;
     w->reffed = true;
     JSValueProtect(ctx, fn);
+    pthread_mutex_lock(&g_lists_lock);
     w->next = g_children;
     g_children = w;
-    jsr_ref(rt);
 #ifdef __APPLE__
     if (!g_child_queue) g_child_queue = dispatch_queue_create("livewire.children", DISPATCH_QUEUE_SERIAL);
+#endif
+    pthread_mutex_unlock(&g_lists_lock);
+    jsr_ref(rt);
+#ifdef __APPLE__
     dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, (uintptr_t)pid, DISPATCH_PROC_EXIT, g_child_queue);
     dispatch_source_set_event_handler(source, ^{ reap_child(rt, pid, source); });
     dispatch_source_set_cancel_handler(source, ^{ dispatch_release(source); });
@@ -967,11 +983,13 @@ NATIVE(n_child_ref) {
     UNUSED_ARGS; (void)exc;
     pid_t pid = (pid_t)num(ctx, ARG(0));
     bool ref = JSValueToBoolean(ctx, ARG(1));
+    pthread_mutex_lock(&g_lists_lock);
     for (child_watch *w = g_children; w; w = w->next) {
         if (w->pid != pid || w->reffed == ref) continue;
         w->reffed = ref;
         if (ref) jsr_ref(jsr_from_context(ctx)); else jsr_unref(jsr_from_context(ctx));
     }
+    pthread_mutex_unlock(&g_lists_lock);
     return JSValueMakeUndefined(ctx);
 }
 // kill(pid, signal) -> 0 or a negative errno.
@@ -1107,11 +1125,13 @@ static writable_wait *g_writable_waits;
 static int g_next_writable;
 // Unlinks the wait with this id (NULL if it already fired or was cancelled).
 static writable_wait *take_writable(jsr_runtime *rt, int id) {
+    pthread_mutex_lock(&g_lists_lock);
     writable_wait **link = &g_writable_waits;
     while (*link && (*link)->id != id) link = &(*link)->next;
     writable_wait *w = *link;
+    if (w) *link = w->next;
+    pthread_mutex_unlock(&g_lists_lock);
     if (!w) return NULL;
-    *link = w->next;
     if (w->reffed) jsr_unref(rt);
 #ifdef __APPLE__
     dispatch_source_cancel(w->source);
@@ -1140,12 +1160,14 @@ static JSValueRef when_ready(JSContextRef ctx, size_t argc, const JSValueRef arg
     int fd = (int)num(ctx, ARG(0));
     if (fd < 0 || !JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "whenWritable/whenReadable(fd, fn)");
     writable_wait *w = calloc(1, sizeof *w);
-    w->id = ++g_next_writable;
     w->fn = (JSObjectRef)ARG(1);
     w->reffed = true;
     JSValueProtect(ctx, w->fn);
+    pthread_mutex_lock(&g_lists_lock);
+    w->id = ++g_next_writable;
     w->next = g_writable_waits;
     g_writable_waits = w;
+    pthread_mutex_unlock(&g_lists_lock);
     jsr_runtime *rt = jsr_from_context(ctx);
     jsr_ref(rt);
     void *id = (void *)(intptr_t)w->id;
