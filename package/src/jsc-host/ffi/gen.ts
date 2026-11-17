@@ -12,10 +12,15 @@ import { basename, join } from "node:path";
 
 const here = import.meta.dir;
 const outDir = process.argv[2];
-const extras = process.argv.flatMap((arg, i) => (arg === "--extra" && process.argv[i + 1] ? [process.argv[i + 1]] : []));
+const flagValues = (name: string): string[] =>
+	process.argv.flatMap((arg, i) => {
+		const value = process.argv[i + 1];
+		return arg === name && value ? [value] : [];
+	});
+const extras = flagValues("--extra");
 // --check-lib <dylib>: fail when the SDK declares a symbol that library (same
 // file name) doesn't export.
-const checkLibs = process.argv.flatMap((arg, i) => (arg === "--check-lib" && process.argv[i + 1] ? [process.argv[i + 1]] : []));
+const checkLibs = flagValues("--check-lib");
 if (!outDir) {
 	console.error("usage: gen.ts <out dir>");
 	process.exit(2);
@@ -58,7 +63,7 @@ for (const [n, start] of sites.entries()) {
 	const m = chunk.match(/args:\s*\[([^\]]*)\]\s*,\s*returns:\s*([^,\n}]+)/s);
 	if (!m) throw new Error("gen: can't read the JSCallback signature at native.ts:" + (start + 1));
 	const norm = (t: string) => t.replace(/\/\/.*$/gm, "").trim().replace(/^FFIType\./, "").replace(/["']/g, "");
-	const sig = { args: m[1].split(",").map(norm).filter(Boolean), returns: norm(m[2]) };
+	const sig = { args: (m[1] ?? "").split(",").map(norm).filter(Boolean), returns: norm(m[2] ?? "void") };
 	callbackSigs.set(sigKey(sig.args, sig.returns), sig);
 }
 for (const extraPath of extras) {
@@ -95,11 +100,11 @@ for (const lib of record.libraries) {
 	const id = key.replace(/[^A-Za-z0-9]/g, "_");
 	const names = Object.keys(lib.symbols);
 	c += "// " + key + ": " + names.length + " symbols\n";
-	names.forEach((name, i) => {
+	names.forEach((_, i) => {
 		c += "static void *" + id + "_p" + i + ";\n";
 	});
 	names.forEach((name, i) => {
-		const decl = lib.symbols[name];
+		const decl = lib.symbols[name] ?? {};
 		const args = (decl.args ?? []).map(canon);
 		const ret = canon(decl.returns ?? "void");
 		const fnType = ctype(ret) + " (*)(" + (args.length ? args.map(ctype).join(", ") : "void") + ")";
@@ -136,7 +141,7 @@ for (const lib of record.libraries) {
 	});
 	c += "static const ffi_symbol " + id + "_table[] = {\n";
 	names.forEach((name, i) => {
-		const decl = lib.symbols[name];
+		const decl = lib.symbols[name] ?? {};
 		c += "    {\"" + name + "\", \"" + sigKey(decl.args ?? [], decl.returns ?? "void") + "\", " + id + "_f" + i + ", &" + id + "_p" + i + "},\n";
 	});
 	c += "};\n\n";

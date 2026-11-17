@@ -32,16 +32,22 @@ if (!result.success) {
 	console.error(result.logs.join("\n"));
 	process.exit(1);
 }
-if (process.env.DEBUG) console.error("recorder in bundle:", (await result.outputs[0].text()).includes("__ffiRecord"));
-const bundle = join(process.env.TMPDIR || "/tmp", `ffi-extract-${process.pid}.js`);
-await Bun.write(bundle, await result.outputs[0].text());
-process.env.ELECTROBUN_FFI_EXTRACT = "1";
+const output = result.outputs[0];
+if (!output) {
+	console.error("extract: the bundle produced no output");
+	process.exit(1);
+}
+const bundled = await output.text();
+if (process.env["DEBUG"]) console.error("recorder in bundle:", bundled.includes("__ffiRecord"));
+const bundle = join(process.env["TMPDIR"] || "/tmp", `ffi-extract-${process.pid}.js`);
+await Bun.write(bundle, bundled);
+process.env["ELECTROBUN_FFI_EXTRACT"] = "1";
 try {
 	await import(bundle);
 } catch (error) {
 	// Top-level code past the declarations may throw on the stubs; the record is
 	// complete by then, and an empty record fails below.
-	if (process.env.DEBUG) console.error(error);
+	if (process.env["DEBUG"]) console.error(error);
 }
 const record = (globalThis as { __ffiRecord?: { libraries: unknown[]; callbacks: unknown[] } }).__ffiRecord;
 if (!record || record.libraries.length === 0) {
