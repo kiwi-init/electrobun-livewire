@@ -23,7 +23,8 @@ concurrency:
 
 jobs:
   macos:
-    runs-on: macos-15
+    # macos-latest, as in release.yml (#287): macos-15 arm64 jobs went unacquired.
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
