@@ -1,0 +1,44 @@
+name: Engine numbers (Linux)
+
+# #226: the same main process on Bun and on the system JavaScriptCore host,
+# on Arch Linux and Ubuntu: size, launch, idle memory, workload timings and
+# native-call cost (package/test-apps/engine-numbers).
+on:
+  pull_request:
+    paths:
+      - 'package/test-apps/engine-numbers/**'
+      - '.github/workflows/engine-numbers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 30
+    steps:
+      - name: System JavaScriptCore (webkit2gtk-4.1), GLib, libgcrypt
+        run: |
+          pacman -Syu --noconfirm --needed webkit2gtk-4.1 glib2 libgcrypt base-devel pkgconf unzip git tinyxxd || pacman -S --noconfirm --needed vim
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: Measure
+        run: |
+          set -o pipefail
+          bun package/test-apps/engine-numbers/measure.ts "$RUNNER_TEMP/engine" | tee -a "$GITHUB_STEP_SUMMARY"
+  ubuntu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: System JavaScriptCore, GLib, libgcrypt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev xxd pkg-config
+      - name: Measure
+        run: |
+          set -o pipefail
+          bun package/test-apps/engine-numbers/measure.ts "$RUNNER_TEMP/engine" | tee -a "$GITHUB_STEP_SUMMARY"

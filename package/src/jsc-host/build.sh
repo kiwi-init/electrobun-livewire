@@ -20,6 +20,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
   clang -O2 -dynamiclib -o "$OUT/libjsctest.dylib" "$HERE/tests/ffi/testlib.c"
   # shellcheck disable=SC2086
   clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -o "$OUT/jsc-run" $SOURCES
+  # The system JavaScriptCore only JITs in a process with this entitlement;
+  # without it, everything runs in the interpreter (6-8x slower).
+  codesign --force -s - --entitlements "$HERE/jit.entitlements" "$OUT/jsc-run"
 else
   CC=${CC:-cc}
   "$CC" -O2 -shared -fPIC -o "$OUT/libjsctest.so" "$HERE/tests/ffi/testlib.c"

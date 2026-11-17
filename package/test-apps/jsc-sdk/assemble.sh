@@ -87,7 +87,13 @@ else
 fi
 (cd "$WORK" && bun "$HOST/bundle.ts" src/bun/index.ts "$(res_dir "$APP")/app/bun/index.js" --minify \
   --alias "electrobun/bun=$CORE/api/sdks/main/index.ts" --preload-dir "$CORE")
-if [ "$OS" = "Darwin" ]; then codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true; fi
+if [ "$OS" = "Darwin" ]; then
+  # The JSC host gets allow-jit (the system JavaScriptCore only JITs with it),
+  # then the bundle is sealed around it without re-signing nested code.
+  codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
+  codesign --force -s - --entitlements "$HOST/jit.entitlements" "$(bin_dir "$APP")/main"
+  codesign --force -s - "$APP" >/dev/null 2>&1 || true
+fi
 echo "$APP"
 
 if [ -n "$BUN_BIN" ]; then
