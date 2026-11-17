@@ -19,7 +19,7 @@ SOURCES="$HERE/runtime.c $HERE/node.c $OUT/gen/ffi_glue.c $HERE/jsc-run.c"
 if [ "$(uname -s)" = "Darwin" ]; then
   clang -O2 -dynamiclib -o "$OUT/libjsctest.dylib" "$HERE/tests/ffi/testlib.c"
   # shellcheck disable=SC2086
-  clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -o "$OUT/jsc-run" $SOURCES
+  clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -framework Security -lz -o "$OUT/jsc-run" $SOURCES
   # The system JavaScriptCore only JITs in a process with this entitlement;
   # without it, everything runs in the interpreter (6-8x slower).
   codesign --force -s - --entitlements "$HERE/jit.entitlements" "$OUT/jsc-run"
@@ -28,5 +28,5 @@ else
   "$CC" -O2 -shared -fPIC -o "$OUT/libjsctest.so" "$HERE/tests/ffi/testlib.c"
   # shellcheck disable=SC2086
   "$CC" $CFLAGS $(pkg-config --cflags javascriptcoregtk-4.1 glib-2.0) -o "$OUT/jsc-run" $SOURCES \
-    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -ldl -lpthread
+    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -lz -ldl -lpthread
 fi

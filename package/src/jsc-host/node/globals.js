@@ -46,6 +46,42 @@ if (proc) {
 	proc.stderr.fd = 2;
 }
 
+const secretOptions = (method, args, withValue) => {
+	const [options] = args;
+	const fail = (message) => {
+		const err = new TypeError(message);
+		err.code = "ERR_INVALID_ARG_TYPE";
+		return err;
+	};
+	if (args.length === 0) throw fail(`secrets.${method} requires an options object`);
+	if (options === null || typeof options !== "object") throw fail("Expected options to be an object");
+	if (typeof options.service !== "string" || typeof options.name !== "string") throw fail("Expected service and name to be strings");
+	if (!options.service || !options.name) throw fail("Expected service and name to not be empty");
+	if (withValue && typeof options.value !== "string") throw fail("Expected 'value' to be a string");
+	return options;
+};
+const secretsCall = (op, options) =>
+	new Promise((resolve, reject) =>
+		globalThis.__node.secrets(op, options.service, options.name, options.value, Boolean(options.allowUnrestrictedAccess), (err, result) =>
+			err ? reject(err) : resolve(op === 1 ? undefined : result),
+		),
+	);
+const secrets = {
+	get: async (...args) => secretsCall(0, secretOptions("get", args, false)),
+	set: async (...args) => secretsCall(1, secretOptions("set", args, true)),
+	delete: async (...args) => secretsCall(2, secretOptions("delete", args, false)),
+};
+const zlibBytes = (data) => (typeof data === "string" ? new TextEncoder().encode(data) : data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+const zlibCall = (compress, wbits) => (data, options) => {
+	try {
+		return zlibRaw(compress, wbits, data, options);
+	} catch (e) {
+		// Bun's own zlib errors carry only the message.
+		throw new Error(e.message);
+	}
+};
+const zlibRaw = (compress, wbits, data, options) =>
+	globalThis.__node.zlib(compress, options?.windowBits !== undefined ? (wbits < 0 ? -options.windowBits : options.windowBits + (wbits - 15)) : wbits, zlibBytes(data), compress ? (options?.level ?? -1) : undefined);
 if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	file: (path) => new BunFile(path),
 	spawn,
@@ -53,6 +89,11 @@ if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	which,
 	listen,
 	connect,
+	secrets,
+	gzipSync: zlibCall(true, 31),
+	gunzipSync: zlibCall(false, 31),
+	deflateSync: zlibCall(true, -15),
+	inflateSync: zlibCall(false, -15),
 	env: proc?.env ?? {},
 	version: "0.0.0-livewire-jsc",
 });
