@@ -4,13 +4,23 @@
 #pragma once
 #include "../runtime.h"
 
-#include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <pthread.h>
+#include <time.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// LIVEWIRE_FFI_TRACE=1 prints every native call and callback to stderr, with
+// whether it ran on the JS thread: for debugging a host on a new platform.
+static int g_ffi_trace = -1;
+#define FFI_TRACE(what) do { \
+    if (g_ffi_trace < 0) g_ffi_trace = getenv("LIVEWIRE_FFI_TRACE") != NULL; \
+    if (g_ffi_trace) fprintf(stderr, "[ffi] %s%s\n", what, g_ffi_rt && jsr_on_js_thread(g_ffi_rt) ? "" : " (other thread)"); \
+} while (0)
 
 // --- arguments ---------------------------------------------------------------
 // A pointer argument: a typed array or ArrayBuffer (its bytes), a number or
@@ -79,6 +89,38 @@ typedef struct ffi_slot {
     char *last_cstring;  // keeps a cstring return alive until the next call
 } ffi_slot;
 
+// A one-shot signal a foreign thread waits on for a JS result (portable: a
+// mutex and a condition variable, instead of a dispatch semaphore).
+typedef struct ffi_waiter {
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    bool signaled;
+} ffi_waiter;
+static ffi_waiter *ffi_waiter_create(void) {
+    ffi_waiter *w = calloc(1, sizeof *w);
+    pthread_mutex_init(&w->lock, NULL);
+    pthread_cond_init(&w->cond, NULL);
+    return w;
+}
+static void ffi_waiter_signal(ffi_waiter *w) {
+    pthread_mutex_lock(&w->lock);
+    w->signaled = true;
+    pthread_cond_signal(&w->cond);
+    pthread_mutex_unlock(&w->lock);
+}
+// True once signaled, false after timeout_s seconds.
+static bool ffi_waiter_wait(ffi_waiter *w, int timeout_s) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_s;
+    pthread_mutex_lock(&w->lock);
+    int rc = 0;
+    while (!w->signaled && rc != ETIMEDOUT) rc = pthread_cond_timedwait(&w->cond, &w->lock, &deadline);
+    bool ok = w->signaled;
+    pthread_mutex_unlock(&w->lock);
+    return ok;
+}
+
 typedef struct ffi_call {
     ffi_slot *slot;
     int argc;
@@ -86,7 +128,7 @@ typedef struct ffi_call {
     union { uint32_t u32; int32_t i32; uint64_t u64; double f64; bool b; void *p; char *s; } a[8];
     bool owns_string[8];
     JSValueRef result;
-    dispatch_semaphore_t done; // set when someone waits for the result
+    ffi_waiter *done;          // set when someone waits for the result
     bool timed_out;
 } ffi_call;
 
@@ -95,6 +137,11 @@ static jsr_runtime *g_ffi_rt;
 static void ffi_free_call(ffi_call *call) {
     for (int i = 0; i < call->argc; i++)
         if (call->owns_string[i]) free(call->a[i].s);
+    if (call->done) {
+        pthread_mutex_destroy(&call->done->lock);
+        pthread_cond_destroy(&call->done->cond);
+        free(call->done);
+    }
     free(call);
 }
 
@@ -106,7 +153,7 @@ static void ffi_run_call(jsr_runtime *rt, void *data) {
     call->result = call->slot->fn ? jsr_call(rt, call->slot->fn, NULL, (size_t)call->argc, args) : NULL;
     if (call->done) {
         if (call->result) JSValueProtect(ctx, call->result);
-        dispatch_semaphore_signal(call->done);
+        ffi_waiter_signal(call->done);
     } else {
         ffi_free_call(call);
     }
@@ -128,9 +175,9 @@ static JSValueRef ffi_dispatch(ffi_call *call, bool wants_result) {
         jsr_post(rt, ffi_run_call, call);
         return NULL;
     }
-    call->done = dispatch_semaphore_create(0);
+    call->done = ffi_waiter_create();
     jsr_post(rt, ffi_run_call, call);
-    if (dispatch_semaphore_wait(call->done, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) != 0) {
+    if (!ffi_waiter_wait(call->done, 3)) {
         fprintf(stderr, "[jsc-ffi] a non-threadsafe callback timed out waiting for the JS thread\n");
         call->timed_out = true;
         return NULL; // the call still runs later; it leaks its record

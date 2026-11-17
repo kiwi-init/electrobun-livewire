@@ -1,5 +1,6 @@
-// The app host for mainProcess "jsc": the app's MacOS/main binary on macOS.
-// The main thread runs Livewire's core (AppKit) the way Bun's launcher does;
+// The app host for mainProcess "jsc": the app's MacOS/main binary on macOS,
+// bin/main on Linux. The main thread runs Livewire's core (AppKit or GTK) the
+// way Bun's launcher does;
 // a JS thread runs the app's bundled main process (Resources/app/bun/index.js)
 // on the system JavaScriptCore, with the runtime, the Node shims and the
 // generated bun:ffi glue installed.
@@ -9,7 +10,12 @@
 
 #include <dlfcn.h>
 #include <limits.h>
+#ifdef __APPLE__
 #include <mach-o/dyld.h>
+#define CORE_LIB "libElectrobunCore.dylib"
+#else
+#define CORE_LIB "libElectrobunCore.so"
+#endif
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +31,7 @@ static void *js_main(void *arg) {
     jsr_runtime *rt = jsr_create(g_argc, g_argv);
     ffi_install(rt);
     node_install(rt);
-    char app[PATH_MAX];
+    char app[PATH_MAX + 64];
     snprintf(app, sizeof app, "%s/../Resources/app/bun/index.js", g_exe_dir);
     if (jsr_eval_file(rt, app)) jsr_run(rt, false);
     // process.exit(), or an app that failed to load: the whole app ends, as
@@ -42,19 +48,10 @@ static char *version_field(JSGlobalContextRef ctx, JSValueRef version, const cha
     return JSValueIsString(ctx, v) ? jsr_to_utf8(ctx, v) : strdup("");
 }
 
-int main(int argc, const char **argv) {
-    g_argc = argc;
-    g_argv = argv;
-    char exe[PATH_MAX], real[PATH_MAX];
-    uint32_t size = sizeof exe;
-    if (_NSGetExecutablePath(exe, &size) != 0 || !realpath(exe, real)) return 1;
-    snprintf(g_exe_dir, sizeof g_exe_dir, "%s", real);
-    *strrchr(g_exe_dir, '/') = 0;
-    // The SDK reads ../Resources/... relative to the working directory, as
-    // under Bun's launcher.
-    if (chdir(g_exe_dir) != 0) return 1;
-
-    char path[PATH_MAX];
+typedef struct { char *identifier, *name, *channel; } version_info;
+static void *read_version(void *arg) {
+    version_info *info = arg;
+    char path[PATH_MAX + 64];
     snprintf(path, sizeof path, "%s/../Resources/version.json", g_exe_dir);
     FILE *f = fopen(path, "rb");
     char json[16384] = "{}";
@@ -63,12 +60,42 @@ int main(int argc, const char **argv) {
     JSStringRef js = JSStringCreateWithUTF8CString(json);
     JSValueRef version = JSValueMakeFromJSONString(ctx, js);
     JSStringRelease(js);
-    char *identifier = version_field(ctx, version, "identifier");
-    char *name = version_field(ctx, version, "name");
-    char *channel = version_field(ctx, version, "channel");
+    info->identifier = version_field(ctx, version, "identifier");
+    info->name = version_field(ctx, version, "name");
+    info->channel = version_field(ctx, version, "channel");
     JSGlobalContextRelease(ctx);
+    return NULL;
+}
 
-    snprintf(path, sizeof path, "%s/libElectrobunCore.dylib", g_exe_dir);
+int main(int argc, const char **argv) {
+    g_argc = argc;
+    g_argv = argv;
+    char real[PATH_MAX];
+#ifdef __APPLE__
+    char exe[PATH_MAX];
+    uint32_t size = sizeof exe;
+    if (_NSGetExecutablePath(exe, &size) != 0 || !realpath(exe, real)) return 1;
+#else
+    if (!realpath("/proc/self/exe", real)) return 1;
+#endif
+    snprintf(g_exe_dir, sizeof g_exe_dir, "%s", real);
+    *strrchr(g_exe_dir, '/') = 0;
+    // The SDK reads ../Resources/... relative to the working directory, as
+    // under Bun's launcher.
+    if (chdir(g_exe_dir) != 0) return 1;
+
+    // identifier/name/channel from version.json, parsed on a short-lived
+    // thread: the main thread must not touch JavaScriptCore before WebKit
+    // does. On Linux, WebKitGTK shares this process's JSC, and a VM created
+    // on the main thread first gives it a private GMainContext that becomes
+    // WebKit's main run loop. GTK never iterates that context, so pages never load.
+    version_info info = {0};
+    pthread_t reader;
+    if (pthread_create(&reader, NULL, read_version, &info) != 0) return 1;
+    pthread_join(reader, NULL);
+    char *identifier = info.identifier, *name = info.name, *channel = info.channel;
+    char path[PATH_MAX + 64];
+    snprintf(path, sizeof path, "%s/" CORE_LIB, g_exe_dir);
     void *core = dlopen(path, RTLD_NOW);
     if (!core) { fprintf(stderr, "[jsc-host] %s\n", dlerror()); return 1; }
     int (*run_main_thread)(const char *, const char *, const char *, int) = dlsym(core, "electrobun_core_run_main_thread");

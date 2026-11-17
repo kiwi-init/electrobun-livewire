@@ -1,23 +1,30 @@
-// See runtime.h. The loop is the JS thread's CFRunLoop: timers are
-// CFRunLoopTimers, cross-thread work is a CFRunLoopSource, and JSC drains
+// See runtime.h. The loop is the JS thread's CFRunLoop on macOS and its own
+// GMainContext on Linux: timers are CFRunLoopTimers / GLib timeout sources,
+// cross-thread work is a CFRunLoopSource / an idle source, and JSC drains
 // promise jobs when each outermost API call into JS returns, so a callback that
 // resolves a promise runs its continuations before the loop moves on.
 #include "runtime.h"
 #include "prelude.h"
 
+#ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
+#include <mach-o/dyld.h>
+#include <mach/mach_time.h>
+#else
+#include <glib.h>
+#include <glib-unix.h>
+#include <time.h>
+#endif
 #include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
-#include <mach-o/dyld.h>
-#include <sys/utsname.h>
-#include <mach/mach_time.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -31,7 +38,11 @@ typedef struct jsr_task {
 typedef struct jsr_timer {
     uint32_t id;
     JSObjectRef fn;
+#ifdef __APPLE__
     CFRunLoopTimerRef cf;
+#else
+    GSource *source;
+#endif
     bool repeat;
     bool refed;
     struct jsr_timer *next;
@@ -41,8 +52,13 @@ struct jsr_runtime {
     JSGlobalContextRef ctx;
     JSObjectRef internal;      // __rt: natives the prelude wraps
     JSObjectRef dispatch_fn;   // prelude's __rt.dispatchEvent(name, ...args)
+#ifdef __APPLE__
     CFRunLoopRef loop;
     CFRunLoopSourceRef source;
+#else
+    GMainContext *gctx;
+    bool drain_scheduled;      // an idle source for drain_tasks is attached (under lock)
+#endif
     pthread_t thread;
     pthread_mutex_t lock;
     jsr_task *head, *tail;
@@ -61,6 +77,9 @@ jsr_runtime *jsr_from_context(JSContextRef ctx) { (void)ctx; return g_runtime; }
 JSGlobalContextRef jsr_context(jsr_runtime *rt) { return rt->ctx; }
 JSObjectRef jsr_internal(jsr_runtime *rt) { return rt->internal; }
 bool jsr_on_js_thread(jsr_runtime *rt) { return pthread_equal(pthread_self(), rt->thread); }
+#ifndef __APPLE__
+void *jsr_glib_context(jsr_runtime *rt) { return rt->gctx; }
+#endif
 int jsr_exit_code(jsr_runtime *rt) { return rt->exit_code; }
 
 // --- strings ---------------------------------------------------------------
@@ -192,6 +211,9 @@ static void drain_tasks(void *info) {
     jsr_runtime *rt = info;
     for (;;) {
         pthread_mutex_lock(&rt->lock);
+#ifndef __APPLE__
+        rt->drain_scheduled = false;
+#endif
         jsr_task *task = rt->head;
         if (task) {
             rt->head = task->next;
@@ -206,6 +228,13 @@ static void drain_tasks(void *info) {
     maybe_stop_when_idle(rt);
 }
 
+#ifndef __APPLE__
+static gboolean drain_tasks_source(gpointer info) {
+    drain_tasks(info);
+    return G_SOURCE_REMOVE;
+}
+#endif
+
 void jsr_post(jsr_runtime *rt, jsr_task_fn fn, void *data) {
     jsr_task *task = calloc(1, sizeof *task);
     task->fn = fn;
@@ -213,28 +242,54 @@ void jsr_post(jsr_runtime *rt, jsr_task_fn fn, void *data) {
     pthread_mutex_lock(&rt->lock);
     if (rt->tail) rt->tail->next = task; else rt->head = task;
     rt->tail = task;
+#ifdef __APPLE__
     pthread_mutex_unlock(&rt->lock);
     CFRunLoopSourceSignal(rt->source);
     CFRunLoopWakeUp(rt->loop);
+#else
+    bool schedule = !rt->drain_scheduled;
+    rt->drain_scheduled = true;
+    pthread_mutex_unlock(&rt->lock);
+    if (schedule) {
+        // g_source_attach is thread-safe and wakes the context.
+        GSource *idle = g_idle_source_new();
+        g_source_set_callback(idle, drain_tasks_source, rt, NULL);
+        g_source_attach(idle, rt->gctx);
+        g_source_unref(idle);
+    }
+#endif
+}
+
+// Ends the current loop iteration so jsr_run re-checks whether to stop.
+static void loop_wake(jsr_runtime *rt) {
+#ifdef __APPLE__
+    CFRunLoopStop(rt->loop);
+#else
+    g_main_context_wakeup(rt->gctx);
+#endif
 }
 
 static bool g_until_idle;
 static void maybe_stop_when_idle(jsr_runtime *rt) {
-    if (g_until_idle && rt->refs == 0 && queue_empty(rt)) CFRunLoopStop(rt->loop);
+    if (g_until_idle && rt->refs == 0 && queue_empty(rt)) loop_wake(rt);
 }
 
 void jsr_run(jsr_runtime *rt, bool until_idle) {
     g_until_idle = until_idle;
     while (!rt->stopped) {
         if (until_idle && rt->refs == 0 && queue_empty(rt)) break;
+#ifdef __APPLE__
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1e10, false);
+#else
+        g_main_context_iteration(rt->gctx, TRUE);
+#endif
     }
     emit_exit(rt);
 }
 
 void jsr_stop(jsr_runtime *rt) {
     rt->stopped = true;
-    CFRunLoopStop(rt->loop);
+    loop_wake(rt);
 }
 
 // --- timers ------------------------------------------------------------------
@@ -250,17 +305,20 @@ static void free_timer(jsr_runtime *rt, uint32_t id) {
     jsr_timer *t = find_timer(rt, id, &link);
     if (!t) return;
     *link = t->next;
+#ifdef __APPLE__
     CFRunLoopTimerInvalidate(t->cf);
     CFRelease(t->cf);
+#else
+    g_source_destroy(t->source);
+    g_source_unref(t->source);
+#endif
     JSValueUnprotect(rt->ctx, t->fn);
     if (t->refed) jsr_unref(rt);
     free(t);
 }
 
-static void timer_fired(CFRunLoopTimerRef cf, void *info) {
-    (void)cf;
+static void timer_fired_id(uint32_t id) {
     jsr_runtime *rt = g_runtime;
-    uint32_t id = (uint32_t)(uintptr_t)info;
     jsr_timer *t = find_timer(rt, id, NULL);
     if (!t) return;
     JSObjectRef fn = t->fn;
@@ -270,6 +328,18 @@ static void timer_fired(CFRunLoopTimerRef cf, void *info) {
     JSValueUnprotect(rt->ctx, fn);
     maybe_stop_when_idle(rt);
 }
+#ifdef __APPLE__
+static void timer_fired(CFRunLoopTimerRef cf, void *info) {
+    (void)cf;
+    timer_fired_id((uint32_t)(uintptr_t)info);
+}
+#else
+static gboolean timer_fired(gpointer info) {
+    // free_timer destroys this source, so its return value is ignored then.
+    timer_fired_id((uint32_t)(uintptr_t)info);
+    return G_SOURCE_CONTINUE;
+}
+#endif
 
 // __rt.setTimer(fn, ms, repeat) -> id
 static JSValueRef rt_set_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
@@ -285,10 +355,16 @@ static JSValueRef rt_set_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self
     JSValueProtect(ctx, t->fn);
     t->repeat = repeat;
     t->refed = true;
+#ifdef __APPLE__
     CFRunLoopTimerContext tctx = {0, (void *)(uintptr_t)t->id, NULL, NULL, NULL};
     double seconds = ms / 1000.0;
     t->cf = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent() + seconds, repeat ? seconds : 0, 0, 0, timer_fired, &tctx);
     CFRunLoopAddTimer(rt->loop, t->cf, kCFRunLoopCommonModes);
+#else
+    t->source = g_timeout_source_new((guint)(ms > (double)G_MAXUINT ? G_MAXUINT : ms));
+    g_source_set_callback(t->source, timer_fired, (void *)(uintptr_t)t->id, NULL);
+    g_source_attach(t->source, rt->gctx);
+#endif
     t->next = rt->timers;
     rt->timers = t;
     jsr_ref(rt);
@@ -372,15 +448,25 @@ static JSValueRef rt_chdir(JSContextRef ctx, JSObjectRef f, JSObjectRef self, si
 }
 static JSValueRef rt_now(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)argc; (void)argv; (void)exc;
+#ifdef __APPLE__
     static mach_timebase_info_data_t tb;
     static uint64_t start;
     if (!tb.denom) { mach_timebase_info(&tb); start = mach_absolute_time(); }
     double ns = (double)(mach_absolute_time() - start) * tb.numer / tb.denom;
+#else
+    static double start = -1;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double now_ns = (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
+    if (start < 0) start = now_ns;
+    double ns = now_ns - start;
+#endif
     return JSValueMakeNumber(ctx, ns / 1e6);
 }
 
-// Signals: a dispatch source posts the signal to the JS thread, where the
-// prelude emits it on process. Installed when JS first listens.
+// Signals: a dispatch source (macOS) posts the signal to the JS thread, or a
+// GLib unix signal source on the JS thread's context (Linux) delivers it there;
+// the prelude emits it on process. Installed when JS first listens.
 typedef struct { int signo; } signal_task;
 static void deliver_signal(jsr_runtime *rt, void *data) {
     signal_task *task = data;
@@ -390,12 +476,27 @@ static void deliver_signal(jsr_runtime *rt, void *data) {
     jsr_call(rt, rt->dispatch_fn, NULL, 1, args);
     free(task);
 }
+#ifndef __APPLE__
+static gboolean signal_fired(gpointer data) {
+    signal_task *task = malloc(sizeof *task);
+    task->signo = (int)(intptr_t)data;
+    deliver_signal(g_runtime, task);
+    return G_SOURCE_CONTINUE;
+}
+#endif
 static JSValueRef rt_watch_signal(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
     (void)f; (void)self; (void)exc;
     char *name = argc > 0 ? jsr_to_utf8(ctx, argv[0]) : strdup("");
     int signo = !strcmp(name, "SIGINT") ? SIGINT : !strcmp(name, "SIGTERM") ? SIGTERM : !strcmp(name, "SIGHUP") ? SIGHUP : 0;
     free(name);
     if (!signo) return JSValueMakeBoolean(ctx, false);
+#ifndef __APPLE__
+    GSource *src = g_unix_signal_source_new(signo);
+    g_source_set_callback(src, signal_fired, (void *)(intptr_t)signo, NULL);
+    g_source_attach(src, g_runtime->gctx); // lives for the process
+    g_source_unref(src);
+    return JSValueMakeBoolean(ctx, true);
+#else
     signal(signo, SIG_IGN);
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, (uintptr_t)signo, 0, dispatch_get_global_queue(0, 0));
     dispatch_source_set_event_handler(src, ^{
@@ -405,6 +506,7 @@ static JSValueRef rt_watch_signal(JSContextRef ctx, JSObjectRef f, JSObjectRef s
     });
     dispatch_resume(src); // lives for the process
     return JSValueMakeBoolean(ctx, true);
+#endif
 }
 
 static JSObjectRef make_env(JSContextRef ctx) {
@@ -425,13 +527,23 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     rt->argc = argc;
     rt->argv = argv;
     rt->thread = pthread_self();
-    rt->loop = CFRunLoopGetCurrent();
     pthread_mutex_init(&rt->lock, NULL);
+#ifdef __APPLE__
+    rt->loop = CFRunLoopGetCurrent();
     CFRunLoopSourceContext sctx = {0};
     sctx.info = rt;
     sctx.perform = drain_tasks;
     rt->source = CFRunLoopSourceCreate(NULL, 0, &sctx);
     CFRunLoopAddSource(rt->loop, rt->source, kCFRunLoopCommonModes);
+#else
+    // The JS thread's own context: the main thread's default context belongs
+    // to GTK in an app host.
+    // Not pushed as this thread's default context: WebKitGTK and other GLib
+    // code the core runs from this thread would bind to it instead of GTK's
+    // loop (under Bun this thread has no default context). Every runtime
+    // source is attached to rt->gctx explicitly.
+    rt->gctx = g_main_context_new();
+#endif
 
     rt->ctx = JSGlobalContextCreate(NULL);
     JSContextRef ctx = rt->ctx;
@@ -452,11 +564,21 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
     jsr_set_function(ctx, rt->internal, "cwd", rt_cwd);
     jsr_set_function(ctx, rt->internal, "chdir", rt_chdir);
     {
-        char exe[PATH_MAX], real[PATH_MAX];
+        char real[PATH_MAX];
+#ifdef __APPLE__
+        char exe[PATH_MAX];
         uint32_t size = sizeof exe;
         if (_NSGetExecutablePath(exe, &size) == 0 && realpath(exe, real))
             set_value(ctx, rt->internal, "execPath", jsr_string(ctx, real));
+#else
+        if (realpath("/proc/self/exe", real)) set_value(ctx, rt->internal, "execPath", jsr_string(ctx, real));
+#endif
     }
+#ifdef __APPLE__
+    set_value(ctx, rt->internal, "platform", jsr_string(ctx, "darwin"));
+#elif defined(__linux__)
+    set_value(ctx, rt->internal, "platform", jsr_string(ctx, "linux"));
+#endif
     jsr_set_function(ctx, rt->internal, "watchSignal", rt_watch_signal);
     set_value(ctx, rt->internal, "env", make_env(ctx));
     JSValueRef *args = calloc((size_t)argc + 1, sizeof *args);
@@ -475,8 +597,8 @@ jsr_runtime *jsr_create(int argc, const char **argv) {
         JSValueProtect(ctx, dispatch);
     }
     // Unhandled rejections reach __rt.onUnhandledRejection(promise, reason).
-    // JavaScriptCore exports the setter (macOS 10.15.4+) without a public
-    // header, so it's looked up rather than linked.
+    // JavaScriptCore exports the setter (macOS 10.15.4+, WebKitGTK) without a
+    // public header, so it's looked up rather than linked.
     typedef void (*set_rejection_fn)(JSGlobalContextRef, JSObjectRef, JSValueRef *);
     set_rejection_fn set_rejection = (set_rejection_fn)dlsym(RTLD_DEFAULT, "JSGlobalContextSetUnhandledRejectionCallback");
     JSStringRef on_name = JSStringCreateWithUTF8CString("onUnhandledRejection");

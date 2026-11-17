@@ -43,7 +43,9 @@ for (const extraPath of extras) {
 for (const libPath of checkLibs) {
 	const lib = record.libraries.find((l) => basename(l.path) === basename(libPath));
 	if (!lib) continue;
-	const nm = Bun.spawnSync(["nm", "-gU", libPath]);
+	// Exports: Mach-O's global defined symbols; an ELF .so's dynamic table (its
+	// .symtab may be stripped).
+	const nm = Bun.spawnSync(process.platform === "darwin" ? ["nm", "-gU", libPath] : ["nm", "-D", "--defined-only", libPath]);
 	const exported = new Set(nm.stdout.toString().split("\n").map((line: string) => line.trim().split(/\s+/).pop()?.replace(/^_/, "")));
 	const missing = Object.keys(lib.symbols).filter((name) => !exported.has(name));
 	if (missing.length) {
@@ -144,6 +146,7 @@ for (const lib of record.libraries) {
 		c += "static JSValueRef " + id + "_f" + i + "(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {\n";
 		c += "    (void)f; (void)self; (void)exc; (void)argc; (void)argv;\n";
 		c += "    if (!" + id + "_p" + i + ") { *exc = jsr_string(ctx, \"" + name + " is not loaded\"); return NULL; }\n";
+		c += "    FFI_TRACE(\"call " + name + "\");\n";
 		c += body + "    return " + ret_ + ";\n}\n";
 	});
 	c += "static const ffi_symbol " + id + "_table[] = {\n";
@@ -178,6 +181,7 @@ cbs.forEach(([key, sig], s) => {
 	c += "    return NULL;\n}\n";
 	const wants = ret !== "void";
 	c += "static " + ctype(ret) + " " + p + "_invoke(int slot" + (args.length ? ", " + params : "") + ") {\n";
+	c += "    FFI_TRACE(\"callback " + p + "\");\n";
 	c += "    ffi_call *call = calloc(1, sizeof *call);\n    call->slot = &" + p + "_slots[slot];\n    call->argc = " + args.length + ";\n    call->make_args = " + p + "_args;\n";
 	args.forEach((t, j) => {
 		const field: Record<string, string> = { bool: "b", u32: "u32", i32: "i32", f64: "f64", u64: "u64", ptr: "p", function: "p" };

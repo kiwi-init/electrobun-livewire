@@ -1,8 +1,9 @@
 // Livewire JSC runtime: the event loop and core globals a main process needs on
-// the system JavaScriptCore.framework (macOS). One JS thread owns the context;
+// the system JavaScriptCore (JavaScriptCore.framework on macOS, WebKitGTK's
+// libjavascriptcoregtk on Linux). One JS thread owns the context;
 // other threads hand it work through jsr_post().
 #pragma once
-#include <JavaScriptCore/JavaScriptCore.h>
+#include <JavaScriptCore/JavaScript.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -28,6 +29,11 @@ int jsr_exit_code(jsr_runtime *rt);
 typedef void (*jsr_task_fn)(jsr_runtime *rt, void *data);
 void jsr_post(jsr_runtime *rt, jsr_task_fn fn, void *data);
 bool jsr_on_js_thread(jsr_runtime *rt);
+#ifndef __APPLE__
+// The runtime's own GMainContext (a GMainContext *): sources that must run on
+// the JS thread attach to it. It is not the thread's default context.
+void *jsr_glib_context(jsr_runtime *rt);
+#endif
 
 // Handles that keep the loop alive while ref'd (sockets, child processes).
 void jsr_ref(jsr_runtime *rt);
