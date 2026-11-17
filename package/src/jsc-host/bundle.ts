@@ -58,4 +58,9 @@ if (!result.success) {
 	console.error(result.logs.join("\n"));
 	process.exit(1);
 }
-await Bun.write(outfile, await result.outputs[0].text());
+const output = result.outputs[0];
+if (!output) {
+	console.error("bundle.ts: the bundle produced no output");
+	process.exit(1);
+}
+await Bun.write(outfile, await output.text());

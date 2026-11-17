@@ -3,7 +3,11 @@
 import { Buffer } from "buffer";
 import { readFileSync, existsSync, statSync } from "./fs.js";
 
-globalThis.Buffer = Buffer;
+// Defined, not assigned: the package typecheck reads this file (allowJs), and
+// an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
+const defineGlobal = (name, value) =>
+	Object.defineProperty(globalThis, name, { value, writable: true, configurable: true, enumerable: false });
+defineGlobal("Buffer", Buffer);
 
 const mime = {
 	html: "text/html", htm: "text/html", js: "text/javascript", mjs: "text/javascript", css: "text/css", json: "application/json",
@@ -27,11 +31,11 @@ class BunFile {
 const missing = (name) => () => {
 	throw new Error(`Bun.${name} isn't available on the JSC runtime yet`);
 };
-globalThis.Bun = globalThis.Bun ?? {
+if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	file: (path) => new BunFile(path),
 	spawn: missing("spawn"),
 	spawnSync: missing("spawnSync"),
 	which: missing("which"),
-	env: globalThis.process?.env ?? {},
+	env: globalThis["process"]?.env ?? {},
 	version: "0.0.0-livewire-jsc",
-};
+});
