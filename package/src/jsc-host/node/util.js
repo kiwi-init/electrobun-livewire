@@ -1,7 +1,9 @@
 // node:util: Bun's browser polyfill plus parseArgs, which it lacks.
 import * as base from "util";
 
-const util = base.default ?? base;
+// The polyfill's default export is only part of it; its named exports are all of it.
+const util = { ...base.default, ...base };
+delete util.default;
 export const { inspect, format, formatWithOptions, promisify, callbackify, inherits, deprecate, debuglog, isDeepStrictEqual, types, TextEncoder, TextDecoder } = util;
 
 const argError = (code, message) => Object.assign(new TypeError(message), { code });

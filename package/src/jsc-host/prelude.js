@@ -57,7 +57,8 @@
 	}
 	function off(name, fn) {
 		const list = listeners.get(name);
-		if (list) { const i = list.indexOf(fn); if (i >= 0) list.splice(i, 1); }
+		// A once() listener is removed by the function given to once(), as in Node.
+		if (list) { const i = list.findIndex((l) => l === fn || l.listener === fn); if (i >= 0) list.splice(i, 1); }
 		return process;
 	}
 	// Called from C. Returns true when a listener handled the event.
@@ -104,7 +105,7 @@
 			if (dn < 0) { ds -= 1; dn += 1e9; }
 			return [ds, dn];
 		}, { bigint: () => BigInt(Math.round(rt.now() * 1e6)) }),
-		on, addListener: on, once(name, fn) { const w = (...a) => { off(name, w); fn(...a); }; return on(name, w); },
+		on, addListener: on, once(name, fn) { const w = (...a) => { off(name, w); fn(...a); }; w.listener = fn; return on(name, w); },
 		off, removeListener: off, removeAllListeners(name) { if (name) listeners.delete(name); else listeners.clear(); return process; },
 		emit(name, ...args) { return rt.dispatchEvent(name, ...args); },
 		listenerCount(name) { return (listeners.get(name) || []).length; },

@@ -48,6 +48,26 @@ const shimFor = (specifier: string) => shims[specifier.replace(/^node:/, "")];
 // are rewritten in the source as it loads.
 const importPattern = /(from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)(["'])((?:node:)?[a-z_/]+|bun:ffi|bun:sqlite)\2/g;
 
+// Bun's own bundles (target "bun") require builtins from CommonJS code with
+// import.meta.require, which a script can't do at run time; each literal one
+// becomes a static import of the shim (or Bun's browser fallback).
+function staticRequires(source: string): string {
+	const aliases = [...source.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*import\.meta\.require\b/g)].map((m) => m[1]!);
+	const callee = ["import\\.meta\\.require", ...aliases.map((a) => a.replace(/\$/g, "\\$"))].join("|");
+	const calls = new RegExp("(?<![\\w$.])(?:" + callee + ")\\(\\s*([\"'])((?:node:)?[a-z_/]+)\\1\\s*\\)", "g");
+	const imports = new Map<string, string>();
+	const rewritten = source.replace(calls, (_match: string, _quote: string, specifier: string) => {
+		const name = specifier.replace(/^node:/, "");
+		if (!imports.has(name)) imports.set(name, "__livewireRequire" + imports.size);
+		const id = imports.get(name)!;
+		return "(" + id + ".default ?? " + id + ")";
+	});
+	if (!imports.size) return source;
+	const head = [...imports].map(([name, id]) => "import * as " + id + " from " + JSON.stringify(shimFor(name) ?? name) + ";").join("\n");
+	const bang = rewritten.startsWith("#!") ? rewritten.indexOf("\n") + 1 : 0;
+	return rewritten.slice(0, bang) + head + "\n" + rewritten.slice(bang);
+}
+
 const build = (format: "iife" | "esm") => Bun.build({
 	entrypoints: [join(here, "node/entry.js")],
 	target: "browser",
@@ -93,7 +113,7 @@ export const appEnginePageScript = "";`,
 						// A browser build makes import.meta.main false; the app's entry is
 						// the main module here, as when Bun runs it.
 						.replace(/\bimport\.meta\.main\b/g, args.path === resolve(entry) ? "true" : "false");
-					return { contents, loader: args.path.endsWith(".tsx") ? "tsx" : args.path.endsWith(".ts") ? "ts" : "js" };
+					return { contents: staticRequires(contents), loader: args.path.endsWith(".tsx") ? "tsx" : args.path.endsWith(".ts") ? "ts" : "js" };
 				});
 			},
 		},
