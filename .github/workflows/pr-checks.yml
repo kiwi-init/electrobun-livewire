@@ -14,7 +14,10 @@ concurrency:
 
 jobs:
   macos:
-    runs-on: macos-15
+    # Intel for now: hosted arm64 macOS runners (macos-15) left PR checks
+    # unacquired for 45 minutes at a time on 2026-11-17 (#294). Back to arm64
+    # when capacity returns.
+    runs-on: macos-26-intel
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
