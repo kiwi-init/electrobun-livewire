@@ -1,0 +1,73 @@
+name: Windows engine spike
+
+# #226, T241: Windows has no standalone system JS engine, so measure the
+# same main process on the two candidates against Bun: A, a hidden WebView2
+# (Edge's V8, preinstalled); B, QuickJS-ng linked into the host (no JIT).
+on:
+  pull_request:
+    paths:
+      - 'package/test-apps/windows-engine-spike/**'
+      - '.github/workflows/windows-engine-spike.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: WebView2 runtime (preinstalled on Windows 11; install if this image lacks it)
+        run: |
+          $dir = "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application"
+          if (-not (Test-Path $dir)) {
+            Invoke-WebRequest "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "$env:RUNNER_TEMP\wv2setup.exe"
+            Start-Process "$env:RUNNER_TEMP\wv2setup.exe" -ArgumentList "/silent", "/install" -Wait
+          }
+          Get-ChildItem $dir
+      - name: WebView2 SDK and QuickJS-ng
+        working-directory: package/test-apps/windows-engine-spike
+        run: |
+          nuget install Microsoft.Web.WebView2 -OutputDirectory vendors -ExcludeVersion -NonInteractive
+          git clone --depth 1 https://github.com/quickjs-ng/quickjs vendors/quickjs
+          git -C vendors/quickjs log -1 --format="QuickJS-ng %h %cs"
+          cmake -S vendors/quickjs -B vendors/qb -DCMAKE_BUILD_TYPE=Release
+          cmake --build vendors/qb --config Release --target qjs
+      - name: Build the three hosts
+        working-directory: package/test-apps/windows-engine-spike
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $qjsLib = (Get-ChildItem vendors/qb -Recurse -Filter qjs.lib | Select-Object -First 1).FullName
+          $wv2 = "vendors/Microsoft.Web.WebView2/build/native"
+          cl /nologo /O2 /LD echo.c /Fe:out/echo.dll
+          if ($LASTEXITCODE) { exit 1 }
+          cl /nologo /O2 /MD /std:c11 /experimental:c11atomics /I vendors/quickjs qjs-host.c $qjsLib /Fe:out/qjs-host.exe /Fo:out/
+          if ($LASTEXITCODE) { exit 1 }
+          cl /nologo /O2 /MD /EHsc /std:c++17 /I "$wv2/include" wv2-host.cpp "$wv2/x64/WebView2LoaderStatic.lib" ole32.lib oleaut32.lib user32.lib advapi32.lib shell32.lib version.lib /Fe:out/wv2-host.exe /Fo:out/
+          if ($LASTEXITCODE) { exit 1 }
+          foreach ($engine in "qjs", "wv2", "bun") {
+            foreach ($mode in "idle", "work") {
+              $idle = if ($mode -eq "idle") { "true" } else { "false" }
+              "const IDLE = $idle;`n" + (Get-Content -Raw workload.js) + (Get-Content -Raw "$engine-main.js") | Set-Content -Encoding utf8NoBOM "out/$engine-$mode.js"
+            }
+          }
+          Get-ChildItem out | Format-Table Name, Length
+      - name: Measure
+        working-directory: package/test-apps/windows-engine-spike/out
+        run: |
+          ../measure.ps1 -Dir (Get-Location).Path
+          Get-Content results.md | Add-Content $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-engine-spike
+          path: package/test-apps/windows-engine-spike/out/results.*
