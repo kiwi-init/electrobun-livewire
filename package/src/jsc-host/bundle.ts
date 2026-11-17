@@ -33,6 +33,7 @@ const shims: Record<string, string> = {
 	path: join(here, "node/path.js"),
 	zlib: join(here, "node/zlib.js"),
 	readline: join(here, "node/readline.js"),
+	"stream/promises": join(here, "node/stream-promises.js"),
 	url: join(here, "node/url.js"),
 };
 const shimFor = (specifier: string) => shims[specifier.replace(/^node:/, "")];

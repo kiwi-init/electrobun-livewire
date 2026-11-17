@@ -1,7 +1,8 @@
 // Natives behind the Node shims (node/*.js) on the Livewire JSC runtime:
-// synchronous fs calls, os facts, randomness, AES-GCM, fd readiness and child
-// processes and sockets. Installed as globalThis.__node. Errors are thrown as Error
-// objects carrying errno/syscall/path; node/errors.js turns them into Node's shape.
+// synchronous fs calls, os facts, randomness, AES-GCM, fd readiness, child
+// processes, sockets, zlib and the OS secret store. Installed as
+// globalThis.__node. Errors are thrown as Error objects carrying
+// errno/syscall/path; node/errors.js turns them into Node's shape.
 #ifndef __APPLE__
 #define _GNU_SOURCE // pipe2, posix_spawn's SETSID, addchdir_np and addclosefrom_np
 #endif
@@ -10,6 +11,7 @@
 
 #ifdef __APPLE__
 #include <CommonCrypto/CommonCryptor.h>
+#include <Security/Security.h>
 #include <dispatch/dispatch.h>
 #include <sys/sysctl.h>
 #else
@@ -43,7 +45,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <dlfcn.h>
+#include <pthread.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #define NATIVE(name) static JSValueRef name(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc)
 #define UNUSED_ARGS (void)f; (void)self
@@ -1444,6 +1449,293 @@ NATIVE(n_lookup) {
     return JSValueMakeUndefined(ctx);
 }
 
+// --- zlib ----------------------------------------------------------------------
+// __node.zlib(compress, windowBits, bytes, level): one-shot deflate or inflate on
+// the system libz. windowBits picks the format as in zlib: 8..15 zlib, -8..-15
+// raw, +16 gzip, +32 (inflate only) zlib or gzip by header. Inflating gzip goes
+// on through concatenated members, as Node's gunzip does.
+static const char *zlib_code(int rc) {
+    switch (rc) {
+    case Z_NEED_DICT: return "Z_NEED_DICT";
+    case Z_ERRNO: return "Z_ERRNO";
+    case Z_STREAM_ERROR: return "Z_STREAM_ERROR";
+    case Z_DATA_ERROR: return "Z_DATA_ERROR";
+    case Z_MEM_ERROR: return "Z_MEM_ERROR";
+    case Z_BUF_ERROR: return "Z_BUF_ERROR";
+    case Z_VERSION_ERROR: return "Z_VERSION_ERROR";
+    default: return "Z_UNKNOWN";
+    }
+}
+
+static JSValueRef throw_zlib(JSContextRef ctx, JSValueRef *exc, int rc, const char *message) {
+    JSValueRef msg = jsr_string(ctx, message);
+    JSObjectRef e = JSObjectMakeError(ctx, 1, &msg, NULL);
+    set_prop(ctx, e, "errno", JSValueMakeNumber(ctx, rc));
+    set_prop(ctx, e, "code", jsr_string(ctx, zlib_code(rc)));
+    *exc = e;
+    return NULL;
+}
+
+NATIVE(n_zlib) {
+    UNUSED_ARGS;
+    bool compress = JSValueToBoolean(ctx, ARG(0));
+    int wbits = (int)num(ctx, ARG(1));
+    int level = JSValueIsNumber(ctx, ARG(3)) ? (int)num(ctx, ARG(3)) : Z_DEFAULT_COMPRESSION;
+    size_t len = 0;
+    const uint8_t *in = bytes_of(ctx, ARG(2), &len);
+    if (!in) { in = (const uint8_t *)""; len = 0; }
+    z_stream s;
+    memset(&s, 0, sizeof s);
+    int rc = compress ? deflateInit2(&s, level, Z_DEFLATED, wbits, 8, Z_DEFAULT_STRATEGY) : inflateInit2(&s, wbits);
+    if (rc != Z_OK) return throw_zlib(ctx, exc, rc, s.msg ? s.msg : zError(rc));
+    size_t cap = compress ? deflateBound(&s, (uLong)len) + 16 : len * 4 + 256;
+    uint8_t *out = malloc(cap);
+    s.next_in = (Bytef *)in;
+    s.avail_in = (uInt)len;
+    bool gzip = !compress && wbits > 15;
+    for (;;) {
+        size_t used = (size_t)(s.next_out ? (uint8_t *)s.next_out - out : 0);
+        if (used == cap) {
+            cap *= 2;
+            out = realloc(out, cap);
+        }
+        s.next_out = out + used;
+        s.avail_out = (uInt)(cap - used);
+        rc = compress ? deflate(&s, Z_FINISH) : inflate(&s, Z_FINISH);
+        if (rc == Z_STREAM_END) {
+            if (gzip && s.avail_in > 0 && s.next_in[0] == 0x1f) {
+                inflateReset(&s);
+                continue;
+            }
+            break;
+        }
+        if ((rc == Z_OK || rc == Z_BUF_ERROR) && s.avail_out == 0) continue;
+        char message[160];
+        if (rc == Z_OK || rc == Z_BUF_ERROR) {
+            rc = Z_BUF_ERROR;
+            snprintf(message, sizeof message, "unexpected end of file");
+        } else {
+            snprintf(message, sizeof message, "%s", s.msg ? s.msg : zError(rc));
+        }
+        if (compress) deflateEnd(&s); else inflateEnd(&s);
+        free(out);
+        return throw_zlib(ctx, exc, rc, message);
+    }
+    size_t out_len = (size_t)((uint8_t *)s.next_out - out);
+    if (compress) deflateEnd(&s); else inflateEnd(&s);
+    return make_u8(ctx, out, out_len);
+}
+
+NATIVE(n_crc32) {
+    UNUSED_ARGS;
+    (void)exc;
+    size_t len = 0;
+    const uint8_t *in = bytes_of(ctx, ARG(0), &len);
+    uLong value = JSValueIsNumber(ctx, ARG(1)) ? (uLong)(uint32_t)num(ctx, ARG(1)) : 0;
+    return JSValueMakeNumber(ctx, (double)(uint32_t)crc32(value, in ? in : (const Bytef *)"", (uInt)len));
+}
+
+// --- secrets -------------------------------------------------------------------
+// __node.secrets(op, service, name, value, unrestricted, callback): Bun.secrets
+// on the OS store, off the JS thread (a keychain prompt can block), with the
+// same items Bun reads and writes: on macOS a generic password keyed by
+// service and account; on Linux libsecret's "com.oven-sh.bun.Secret" schema,
+// loaded at run time as Bun does. callback(error, result) runs on the JS thread.
+enum { SECRET_GET, SECRET_SET, SECRET_DELETE };
+
+typedef struct {
+    int op;
+    char *service, *name, *value;
+    bool unrestricted;
+    JSObjectRef callback;
+    char *result;           // get: the value; NULL when there's none
+    bool deleted;
+    char *error, *code;
+    jsr_runtime *rt;        // the runtime that asked (a Worker's too)
+} secret_job;
+
+#ifdef __APPLE__
+static void secret_fail(secret_job *j, OSStatus status) {
+    CFStringRef text = SecCopyErrorMessageString(status, NULL);
+    char buf[256] = "Keychain error";
+    if (text) {
+        CFStringGetCString(text, buf, sizeof buf, kCFStringEncodingUTF8);
+        CFRelease(text);
+    }
+    j->error = strdup(buf);
+    const char *code = "ERR_SECRETS_PLATFORM_ERROR";
+    if (status == errSecUserCanceled) code = "ERR_SECRETS_USER_CANCELED";
+    else if (status == errSecAuthFailed) code = "ERR_SECRETS_AUTH_FAILED";
+    else if (status == errSecInteractionRequired) code = "ERR_SECRETS_INTERACTION_REQUIRED";
+    else if (status == errSecInteractionNotAllowed) code = "ERR_SECRETS_INTERACTION_NOT_ALLOWED";
+    else if (status == errSecNotAvailable || status == errSecReadOnlyAttr) code = "ERR_SECRETS_ACCESS_DENIED";
+    j->code = strdup(code);
+}
+
+static CFMutableDictionaryRef secret_query(secret_job *j) {
+    CFMutableDictionaryRef q = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFStringRef service = CFStringCreateWithCString(NULL, j->service, kCFStringEncodingUTF8);
+    CFStringRef account = CFStringCreateWithCString(NULL, j->name, kCFStringEncodingUTF8);
+    CFDictionaryAddValue(q, kSecClass, kSecClassGenericPassword);
+    CFDictionaryAddValue(q, kSecAttrAccount, account);
+    CFDictionaryAddValue(q, kSecAttrService, service);
+    CFRelease(service);
+    CFRelease(account);
+    return q;
+}
+
+static void secret_delete(secret_job *j) {
+    CFMutableDictionaryRef q = secret_query(j);
+    OSStatus status = SecItemDelete(q);
+    CFRelease(q);
+    j->deleted = status == errSecSuccess;
+    if (status != errSecSuccess && status != errSecItemNotFound) secret_fail(j, status);
+}
+
+static void secret_run(secret_job *j) {
+    if (j->op == SECRET_DELETE || (j->op == SECRET_SET && !j->value[0])) {
+        secret_delete(j);
+        return;
+    }
+    CFMutableDictionaryRef q = secret_query(j);
+    if (j->op == SECRET_GET) {
+        CFDictionaryAddValue(q, kSecReturnData, kCFBooleanTrue);
+        CFTypeRef data = NULL;
+        OSStatus status = SecItemCopyMatching(q, &data);
+        if (status == errSecSuccess && data) {
+            CFIndex n = CFDataGetLength(data);
+            j->result = malloc((size_t)n + 1);
+            memcpy(j->result, CFDataGetBytePtr(data), (size_t)n);
+            j->result[n] = 0;
+        } else if (status != errSecItemNotFound) {
+            secret_fail(j, status);
+        }
+        if (data) CFRelease(data);
+        CFRelease(q);
+        return;
+    }
+    CFDataRef value = CFDataCreate(NULL, (const UInt8 *)j->value, (CFIndex)strlen(j->value));
+    CFDictionaryAddValue(q, kSecValueData, value);
+    if (j->unrestricted) {
+        // SecAccessCreate is deprecated without a replacement for this (any app
+        // may read the item, for headless CI), so it's looked up as Bun does.
+        typedef OSStatus (*access_create_fn)(CFStringRef, CFArrayRef, void **);
+        access_create_fn access_create = (access_create_fn)dlsym(RTLD_DEFAULT, "SecAccessCreate");
+        void *access = NULL;
+        if (access_create && access_create(CFSTR("Bun secrets access"), NULL, &access) == errSecSuccess && access) {
+            CFDictionaryAddValue(q, kSecAttrAccess, access);
+            CFRelease(access);
+        }
+    }
+    OSStatus status = SecItemAdd(q, NULL);
+    if (status == errSecDuplicateItem) {
+        CFMutableDictionaryRef match = secret_query(j);
+        CFMutableDictionaryRef update = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFDictionaryAddValue(update, kSecValueData, value);
+        status = SecItemUpdate(match, update);
+        CFRelease(match);
+        CFRelease(update);
+    }
+    CFRelease(value);
+    CFRelease(q);
+    if (status != errSecSuccess) secret_fail(j, status);
+}
+#else
+typedef struct { const char *name; int type; } lw_secret_attr;
+typedef struct { const char *name; int flags; lw_secret_attr attributes[32]; int reserved; void *reserved1, *reserved2, *reserved3, *reserved4, *reserved5, *reserved6, *reserved7; } lw_secret_schema;
+static const lw_secret_schema bun_schema = {"com.oven-sh.bun.Secret", 0, {{"service", 0}, {"account", 0}, {NULL, 0}}, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+
+static void secret_run(secret_job *j) {
+    static void *lib;
+    if (!lib) lib = dlopen("libsecret-1.so.0", RTLD_NOW | RTLD_LOCAL);
+    typedef gboolean (*store_fn)(const lw_secret_schema *, const char *, const char *, const char *, void *, GError **, ...);
+    typedef char *(*lookup_fn)(const lw_secret_schema *, void *, GError **, ...);
+    typedef gboolean (*clear_fn)(const lw_secret_schema *, void *, GError **, ...);
+    typedef void (*free_fn)(char *);
+    store_fn store = lib ? (store_fn)dlsym(lib, "secret_password_store_sync") : NULL;
+    lookup_fn lookup = lib ? (lookup_fn)dlsym(lib, "secret_password_lookup_sync") : NULL;
+    clear_fn clear = lib ? (clear_fn)dlsym(lib, "secret_password_clear_sync") : NULL;
+    free_fn pw_free = lib ? (free_fn)dlsym(lib, "secret_password_free") : NULL;
+    if (!store || !lookup || !clear || !pw_free) {
+        j->error = strdup("libsecret not available");
+        j->code = strdup("ERR_SECRETS_PLATFORM_ERROR");
+        return;
+    }
+    GError *err = NULL;
+    if (j->op == SECRET_GET) {
+        char *pw = lookup(&bun_schema, NULL, &err, "service", j->service, "account", j->name, NULL);
+        if (pw) {
+            j->result = strdup(pw);
+            pw_free(pw);
+        }
+    } else if (j->op == SECRET_DELETE || !j->value[0]) {
+        j->deleted = clear(&bun_schema, NULL, &err, "service", j->service, "account", j->name, NULL);
+    } else {
+        char *label = g_strdup_printf("%s/%s", j->service, j->name);
+        store(&bun_schema, NULL, label, j->value, NULL, &err, "service", j->service, "account", j->name, NULL);
+        g_free(label);
+    }
+    if (err) {
+        j->error = strdup(err->message);
+        j->code = strdup("ERR_SECRETS_PLATFORM_ERROR");
+        g_error_free(err);
+    }
+}
+#endif
+
+static void secret_done(jsr_runtime *rt, void *data) {
+    secret_job *j = data;
+    JSContextRef ctx = jsr_context(rt);
+    JSValueRef args[2] = {JSValueMakeNull(ctx), JSValueMakeNull(ctx)};
+    if (j->error) {
+        JSValueRef msg = jsr_string(ctx, j->error);
+        JSObjectRef e = JSObjectMakeError(ctx, 1, &msg, NULL);
+        set_prop(ctx, e, "code", jsr_string(ctx, j->code));
+        args[0] = e;
+    } else if (j->op == SECRET_GET) {
+        if (j->result) args[1] = jsr_string(ctx, j->result);
+    } else if (j->op == SECRET_DELETE) {
+        args[1] = JSValueMakeBoolean(ctx, j->deleted);
+    }
+    JSValueRef exception = NULL;
+    JSObjectCallAsFunction(ctx, j->callback, NULL, 2, args, &exception);
+    if (exception) jsr_report_exception(rt, exception);
+    JSValueUnprotect(ctx, j->callback);
+    jsr_unref(rt);
+    if (j->result) memset(j->result, 0, strlen(j->result));
+    if (j->value) memset(j->value, 0, strlen(j->value));
+    free(j->service); free(j->name); free(j->value); free(j->result); free(j->error); free(j->code);
+    free(j);
+}
+
+static void *secret_thread(void *data) {
+    secret_run(data);
+    jsr_post(((secret_job *)data)->rt, secret_done, data);
+    return NULL;
+}
+
+NATIVE(n_secrets) {
+    UNUSED_ARGS;
+    (void)exc;
+    secret_job *j = calloc(1, sizeof *j);
+    j->op = (int)num(ctx, ARG(0));
+    j->service = jsr_to_utf8(ctx, ARG(1));
+    j->name = jsr_to_utf8(ctx, ARG(2));
+    j->value = JSValueIsString(ctx, ARG(3)) ? jsr_to_utf8(ctx, ARG(3)) : strdup("");
+    j->unrestricted = JSValueToBoolean(ctx, ARG(4));
+    j->callback = JSValueToObject(ctx, ARG(5), NULL);
+    JSValueProtect(ctx, j->callback);
+    j->rt = jsr_from_context(ctx);
+    jsr_ref(j->rt);
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, secret_thread, j) != 0) {
+        j->error = strdup("couldn't start a thread for the secret store");
+        j->code = strdup("ERR_SECRETS_PLATFORM_ERROR");
+        jsr_post(j->rt, secret_done, j);
+    } else pthread_detach(thread);
+    return JSValueMakeUndefined(ctx);
+}
+
 void node_install(jsr_runtime *rt) {
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef node = JSObjectMake(ctx, NULL, NULL);
@@ -1476,6 +1768,9 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, node, "osInfo", n_os_info);
     jsr_set_function(ctx, node, "randomFill", n_random_fill);
     jsr_set_function(ctx, node, "aesGcm", n_aes_gcm);
+    jsr_set_function(ctx, node, "zlib", n_zlib);
+    jsr_set_function(ctx, node, "crc32", n_crc32);
+    jsr_set_function(ctx, node, "secrets", n_secrets);
     jsr_set_function(ctx, node, "watchFd", n_watch_fd);
     jsr_set_function(ctx, node, "unwatchFd", n_unwatch_fd);
     jsr_set_function(ctx, node, "refFd", n_ref_fd);
