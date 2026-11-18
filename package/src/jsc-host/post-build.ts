@@ -96,6 +96,7 @@ if (bundled.exitCode !== 0) fail("bundling " + entry + " failed");
 
 // 1c. Scripts the app runs as `MacOS/main script.js` (they are self-contained
 // Bun bundles, so they get the shims but no SDK aliases or preload).
+const scripted = new Set<string>();
 for (const rel of scriptsAsked()) {
 	const file = resolve(app.resources, rel);
 	if (!file.startsWith(app.resources + "/") || !existsSync(file)) fail("--script " + rel + ": no such file in " + app.resources);
@@ -103,6 +104,7 @@ for (const rel of scriptsAsked()) {
 	const script = Bun.spawnSync([process.execPath, join(here, "bundle.ts"), file, out, "--minify"], { cwd: projectDir, stdout: "inherit", stderr: "inherit" });
 	if (script.exitCode !== 0) fail("bundling the script " + rel + " failed");
 	copyFileSync(out, file);
+	scripted.add(file);
 	rmSync(join(out, ".."), { recursive: true, force: true });
 }
 
@@ -111,8 +113,8 @@ for (const rel of scriptsAsked()) {
 // host, in place, with the same runtime globals and shims.
 const bunDir = join(app.resources, "app", "bun");
 for (const name of readdirSync(bunDir)) {
-	if (name === "index.js" || !/\.(js|mjs)$/.test(name)) continue;
 	const file = join(bunDir, name);
+	if (name === "index.js" || !/\.(js|mjs)$/.test(name) || scripted.has(file)) continue;
 	const out = join(mkdtempSync(join(tmpdir(), "livewire-jsc-worker-")), name);
 	const worker = Bun.spawnSync([process.execPath, join(here, "bundle.ts"), file, out, "--minify", ...aliases, "--preload-dir", app.resources], {
 		cwd: projectDir,
@@ -129,6 +131,15 @@ const main = join(app.exeDir, "main");
 copyFileSync(host, main);
 chmodSync(main, 0o755);
 for (const path of [join(app.exeDir, "bun"), join(app.resources, "main.js")]) rmSync(path, { force: true });
+
+// 2b. A launcher beside the hook (overlay-devkit.sh --launcher) replaces the
+// devkit's, whose release may predate mainProcess "jsc" and would start Bun.
+const ownLauncher = join(here, "launcher");
+if (existsSync(ownLauncher)) {
+	const launcher = join(app.exeDir, "launcher");
+	copyFileSync(ownLauncher, launcher);
+	chmodSync(launcher, 0o755);
+}
 
 // 3. The launcher runs MacOS/main for "jsc".
 buildJson.mainProcess = "jsc";
