@@ -5,6 +5,7 @@
 //   bun package/src/jsc-host/bundle.ts <entry> <outfile> [--minify]
 //     [--alias electrobun/bun=/path/to/sdks/main/index.ts ...]
 //     [--preload-dir <dir with preload-full.js and preload-sandboxed.js>]
+//     [--define NAME=VALUE ...]  (as Bun.build's define: VALUE is code)
 import type { OnLoadArgs, OnResolveArgs, PluginBuilder } from "bun";
 import { join, resolve } from "node:path";
 
@@ -14,10 +15,11 @@ const flag = (name: string): string[] =>
 		const value = process.argv[i + 1];
 		return arg === name && value ? [value] : [];
 	});
-const valueFlags = new Set(["--alias", "--preload-dir"]);
+const valueFlags = new Set(["--alias", "--preload-dir", "--define"]);
 const [entry, outfile] = process.argv.slice(2).filter((a, i, all) => !a.startsWith("--") && !valueFlags.has(all[i - 1] ?? ""));
 const aliases = Object.fromEntries(flag("--alias").map((pair) => pair.split("=") as [string, string]));
 const preloadDir = flag("--preload-dir")[0];
+const defines = Object.fromEntries(flag("--define").map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
 if (!entry || !outfile) {
 	console.error("usage: bundle.ts <entry> <outfile> [--minify]");
 	process.exit(2);
@@ -69,7 +71,7 @@ const build = (format: "iife" | "esm") => Bun.build({
 	target: "browser",
 	format,
 	minify: process.argv.includes("--minify"),
-	define: { "process.env.NODE_ENV": JSON.stringify("production") },
+	define: { "process.env.NODE_ENV": JSON.stringify("production"), ...defines },
 	plugins: [
 		{
 			name: "livewire-jsc",
