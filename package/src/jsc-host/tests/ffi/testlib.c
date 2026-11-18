@@ -1,5 +1,5 @@
-// A small native library for the ffi glue's tests: every argument and return
-// type the SDK uses, and callbacks called on the caller's thread and on another.
+// A small native library for bun:ffi's tests: every argument and return type,
+// and callbacks called on the caller's thread and on another.
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -55,10 +55,8 @@ const char *tl_str_via_thread(str_cb cb) {
     return job.out;
 }
 
-// Not in tests/ffi/decls.json, so the host binds these through libffi
-// (ffi/dynamic.inc), as it does an app's own library: every argument and
-// return type, more arguments than registers, callbacks of signatures the
-// glue has no trampolines for.
+// Every argument and return type, more arguments than registers, and
+// callbacks of the less common signatures.
 int64_t tl_dyn_mix(int8_t a, uint8_t b, int16_t c, uint16_t d, int32_t e, uint32_t f, int64_t g, float h, double i, const char *s, int8_t j, uint16_t k) {
     return a + b + c + d + e + (int64_t)f + g + (int64_t)(h * 4) + (int64_t)(i * 8) + (s ? (int64_t)strlen(s) : 0) + j * 1000 + k * 100000;
 }

@@ -1,7 +1,7 @@
 // jsc-run: runs a script on the Livewire JSC runtime until the loop is idle,
 // exiting with process.exitCode. Used by the runtime's own tests.
 #include "runtime.h"
-#include "ffi/glue.h"
+#include "ffi/natives.h"
 #include "node.h"
 
 #include <pthread.h>

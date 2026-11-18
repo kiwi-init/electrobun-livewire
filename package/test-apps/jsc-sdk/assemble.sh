@@ -26,13 +26,13 @@ ln -s "$CORE/api" "$WORK/node_modules/electrobun/api"
 printf '{"name":"electrobun","type":"module","exports":{"./bun":"./api/sdks/main/index.ts","./view":"./api/browser/index.ts"}}' > "$WORK/node_modules/electrobun/package.json"
 cp -R "$HERE/src" "$WORK/src"
 
-# Runtime: prelude, ffi glue from this release's SDK (checked against its core), host.
+# Runtime: prelude, this release's SDK bun:ffi declarations checked (against its core), host.
 TMPP=$(mktemp -d)
 cp "$HOST/prelude.js" "$TMPP/jsr_prelude_js"
 printf '\0' >> "$TMPP/jsr_prelude_js"
 (cd "$TMPP" && xxd -i jsr_prelude_js) > "$WORK/gen/prelude.h"
 rm -rf "$TMPP"
-bun "$HOST/ffi/gen.ts" "$WORK/gen" --sdk "$CORE/api/sdks/main" --check-lib "$CORE/libElectrobunCore.$LIB_EXT" --check-lib "$CORE/libNativeWrapper.$LIB_EXT"
+bun "$HOST/ffi/check.ts" --sdk "$CORE/api/sdks/main" --check-lib "$CORE/libElectrobunCore.$LIB_EXT" --check-lib "$CORE/libNativeWrapper.$LIB_EXT"
 
 # Where an app's binaries and Resources live.
 bin_dir() { if [ "$OS" = "Darwin" ]; then echo "$1/Contents/MacOS"; else echo "$1/bin"; fi; }
@@ -73,7 +73,7 @@ PLIST
 
 if [ "$OS" = "Darwin" ]; then APP="$OUT/JSC SDK.app"; else APP="$OUT/JSC SDK"; fi
 make_app "$APP" "JSC SDK" "dev.livewire.jsc-sdk" "zig"   # the launcher runs <bin>/main for native main processes
-HOST_SOURCES="$HOST/runtime.c $HOST/worker.c $HOST/node.c $HOST/sqlite.c $HOST/vendor/monocypher/monocypher.c $HOST/vendor/monocypher/monocypher-ed25519.c $WORK/gen/ffi_glue.c $HOST/app-host.c"
+HOST_SOURCES="$HOST/runtime.c $HOST/worker.c $HOST/node.c $HOST/sqlite.c $HOST/vendor/monocypher/monocypher.c $HOST/vendor/monocypher/monocypher-ed25519.c $HOST/ffi/natives.c $HOST/app-host.c"
 HOST_CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$WORK/gen -I$HOST -I$HOST/ffi"
 if [ "$OS" = "Darwin" ]; then
   # shellcheck disable=SC2086

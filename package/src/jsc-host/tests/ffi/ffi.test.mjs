@@ -20,15 +20,13 @@
 // expect: dyn cb args bigint -5 1.5 200 mix
 // expect: dyn cb 21
 // expect: dyn cb via thread 106 fast
-// expect: callback past 16 slots 7 sync
+// expect: callback 20 of 20 7 sync
 // expect: redeclared binds as declared -56
 // expect: sync cb 7 sync
 // expect: thread cb 20 from thread 20
 // expect: closed
 // expect: dyn thread cb 7 0.25
-// The bun:ffi shim over the generated glue, against tests/ffi/testlib.c, and
-// over libffi for what the glue doesn't have (the tl_dyn_* symbols, which
-// tests/ffi/decls.json leaves out, as an app's own library).
+// The bun:ffi shim over libffi, against tests/ffi/testlib.c.
 import { dlopen, FFIType, JSCallback, CString, ptr, toArrayBuffer, read } from "../../ffi/bun-ffi.js";
 
 const lib = dlopen(process.env.LIVEWIRE_TESTLIB, {
@@ -101,18 +99,17 @@ console.log("dyn mix", String(mixed), typeof mixed);
 console.log("dyn i8", dyn.tl_dyn_i8(200), "u16", dyn.tl_dyn_u16(-1), "f32", dyn.tl_dyn_f32(1.25), "bool", dyn.tl_dyn_bool(2), dyn.tl_dyn_bool(1));
 console.log("dyn i64", String(dyn.tl_dyn_i64(-(2n ** 62n))), typeof dyn.tl_dyn_i64(5));
 console.log("dyn u64_fast", dyn.tl_dyn_u64(42), typeof dyn.tl_dyn_u64(42), String(dyn.tl_dyn_u64(2n ** 63n)), typeof dyn.tl_dyn_u64(2n ** 63n));
-// Callbacks of signatures the glue has no trampolines for: libffi closures.
 const mixCb = new JSCallback((a, b, c, s) => { console.log("dyn cb args", typeof a, String(a), b, c, String(s)); return 10.5; }, { args: ["i64", "f32", "u8", "cstring"], returns: "f64" });
 console.log("dyn cb", dyn.tl_dyn_call_mix(mixCb));
 const i8Cb = new JSCallback((v) => v * 50, { args: ["i8"], returns: "i8" });
 const i8Started = performance.now();
 const i8Out = dyn.tl_dyn_i8_via_thread(i8Cb.ptr);
 console.log("dyn cb via thread", i8Out, performance.now() - i8Started < 1000 ? "fast" : "slow");
-// A signature's 16 generated slots taken: the rest are libffi closures.
-const many = Array.from({ length: 20 }, (_, i) => new JSCallback((id, text) => console.log("callback past 16 slots", id, text), { args: ["u32", "cstring"], returns: "void" }));
+// No fixed number of callbacks per signature (the generated glue had 16).
+const many = Array.from({ length: 20 }, (_, i) => new JSCallback((id, text) => console.log("callback " + (i + 1) + " of 20", id, text), { args: ["u32", "cstring"], returns: "void" }));
 lib.tl_call_sync(many[19].ptr);
 for (const cb of many) cb.close();
-// A symbol the glue has under another signature is bound as declared, as Bun does.
+// A symbol declared with another signature is bound as declared, as Bun does.
 const redeclared = dlopen(process.env.LIVEWIRE_TESTLIB, { tl_add: { args: ["i32", "i32"], returns: "i8" } }).symbols;
 console.log("redeclared binds as declared", redeclared.tl_add(100, 100));
 
