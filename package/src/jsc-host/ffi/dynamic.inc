@@ -126,7 +126,7 @@ static JSValueRef ffi_dyn_call(JSContextRef ctx, JSObjectRef f, JSObjectRef self
     (void)self; (void)exc;
     ffi_dyn_fn *d = JSObjectGetPrivate(f);
     if (!d) return JSValueMakeUndefined(ctx);
-    FFI_TRACE(d->name);
+    if (ffi_tracing() && !g_ffi_trace_out) ffi_trace_line("%s", d->name); // to a file: only slow calls, below
     ffi_dyn_value v[FFI_DYN_MAX_ARGS];
     void *values[FFI_DYN_MAX_ARGS];
     char *owned[FFI_DYN_MAX_ARGS];
@@ -139,9 +139,11 @@ static JSValueRef ffi_dyn_call(JSContextRef ctx, JSObjectRef f, JSObjectRef self
     }
     ffi_dyn_value r;
     memset(&r, 0, sizeof r);
+    double started = g_ffi_trace > 0 ? ffi_trace_now() : 0;
     ffi_enter_native();
     ffi_call(&d->cif, FFI_FN(d->fn), &r, values);
     ffi_leave_native();
+    if (started > 0 && ffi_trace_now() - started >= 1.0) ffi_trace_line("done %s after %.1f ms", d->name, ffi_trace_now() - started);
     for (int i = 0; i < nowned; i++) free(owned[i]);
     ffi_dyn_narrow(d->ret, &r);
     return ffi_dyn_to_js(ctx, d->ret, &r);
@@ -293,9 +295,9 @@ static void ffi_dyn_cb_return(ffi_dyn_cb *cb, JSValueRef r, void *ret) {
 static void ffi_dyn_cb_run(ffi_cif *cif, void *ret, void **args, void *user) {
     (void)cif;
     ffi_dyn_cb *cb = user;
-    FFI_TRACE(cb->key);
     ffi_cb_call *call = calloc(1, sizeof *call);
     call->slot = &cb->slot;
+    call->name = cb->key;
     call->argc = cb->argc;
     call->make_args = ffi_dyn_cb_args;
     for (int i = 0; i < cb->argc; i++) {
@@ -308,6 +310,12 @@ static void ffi_dyn_cb_run(ffi_cif *cif, void *ret, void **args, void *user) {
         } else {
             memcpy(&call->a[i], &v, sizeof v);
         }
+    }
+    if (ffi_tracing()) { // the first string argument says which event it is
+        const char *text = NULL;
+        for (int i = 0; i < cb->argc && !text; i++) if (cb->args[i] == DT_CSTRING) text = call->a[i].s;
+        ffi_trace_line("callback %s%s %.80s", cb->key, cb->slot.threadsafe ? " threadsafe" : "", text ? text : "");
+        call->made_at = ffi_trace_now();
     }
     bool wants = cb->ret != DT_VOID;
     bool direct = ffi_runs_js_here() && !cb->slot.threadsafe;

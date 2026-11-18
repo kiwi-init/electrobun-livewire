@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <time.h>
 #include <stdbool.h>
@@ -17,11 +18,44 @@
 
 // LIVEWIRE_FFI_TRACE=1 prints every native call and callback to stderr, with
 // whether it ran on the JS thread: for debugging a host on a new platform.
+// LIVEWIRE_FFI_TRACE=<path> appends the same to that file, each line with the
+// wall-clock time in ms (performance.timeOrigin's clock), plus how long a
+// native call took (when 1 ms or more) and how long a callback queued for the
+// JS thread waited: for finding where startup time goes.
 static int g_ffi_trace = -1;
-#define FFI_TRACE(what) do { \
-    if (g_ffi_trace < 0) g_ffi_trace = getenv("LIVEWIRE_FFI_TRACE") != NULL; \
-    if (g_ffi_trace) fprintf(stderr, "[ffi] %s%s\n", what, g_ffi_rt && jsr_on_js_thread(g_ffi_rt) ? "" : " (other thread)"); \
-} while (0)
+static FILE *g_ffi_trace_out;
+static pthread_mutex_t g_ffi_trace_lock = PTHREAD_MUTEX_INITIALIZER;
+static jsr_runtime *g_ffi_rt;
+static double ffi_trace_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (double)t.tv_sec * 1e3 + (double)t.tv_nsec / 1e6;
+}
+static bool ffi_tracing(void) {
+    if (g_ffi_trace < 0) {
+        const char *to = getenv("LIVEWIRE_FFI_TRACE");
+        g_ffi_trace = to != NULL;
+        if (to && strchr(to, '/')) g_ffi_trace_out = fopen(to, "a");
+    }
+    return g_ffi_trace > 0;
+}
+__attribute__((format(printf, 1, 2))) static void ffi_trace_line(const char *format, ...) {
+    char line[512];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    bool js = g_ffi_rt && jsr_on_js_thread(g_ffi_rt);
+    pthread_mutex_lock(&g_ffi_trace_lock);
+    if (g_ffi_trace_out) {
+        fprintf(g_ffi_trace_out, "%.1f %d %s %s\n", ffi_trace_now(), (int)getpid(), js ? "js" : "other", line);
+        fflush(g_ffi_trace_out);
+    } else {
+        fprintf(stderr, "[ffi] %s%s\n", line, js ? "" : " (other thread)");
+    }
+    pthread_mutex_unlock(&g_ffi_trace_lock);
+}
+#define FFI_TRACE(what) do { if (ffi_tracing()) ffi_trace_line("%s", what); } while (0)
 
 // --- arguments ---------------------------------------------------------------
 // A pointer argument: a typed array or ArrayBuffer (its bytes), a number or
@@ -150,9 +184,13 @@ typedef struct ffi_cb_call {
     JSValueRef result;
     ffi_waiter *done;          // set when someone waits for the result
     bool timed_out;
+    const char *name;          // for the trace: the callback's signature
+    double made_at;            // for the trace: when native code called it
 } ffi_cb_call;
-
-static jsr_runtime *g_ffi_rt;
+// A callback that waited for the JS thread, in the trace.
+static void ffi_trace_ran(const ffi_cb_call *call, const char *how) {
+    if (ffi_tracing() && call->made_at > 0) ffi_trace_line("ran %s %s after %.1f ms", call->name ? call->name : "callback", how, ffi_trace_now() - call->made_at);
+}
 
 // --- native calls and borrowed JS --------------------------------------------
 // While the JS thread is inside a native call, JavaScriptCore has dropped its
@@ -186,6 +224,7 @@ static void ffi_call_unref(ffi_cb_call *call) {
 
 // Runs a call with the borrow lock held (the caller took it).
 static void ffi_run_borrowed(ffi_cb_call *call) {
+    ffi_trace_ran(call, "borrowed");
     t_ffi_borrowed++;
     JSContextRef ctx = jsr_context(g_ffi_rt);
     JSValueRef args[8];
@@ -202,6 +241,7 @@ static void ffi_run_call(jsr_runtime *rt, void *data) {
         ffi_call_unref(call);
         return;
     }
+    ffi_trace_ran(call, "queued");
     JSContextRef ctx = jsr_context(rt);
     JSValueRef args[8];
     call->make_args(ctx, call, args);
