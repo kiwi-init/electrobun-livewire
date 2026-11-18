@@ -3,21 +3,11 @@
 // and Ed25519, with raw/pkcs8/spki/jwk keys. Errors are DOMExceptions with
 // WebCrypto's names; messages aren't Bun's.
 import { Buffer } from "buffer";
+import { DOMException } from "./web-events.js";
 
 const n = globalThis.__node;
 const c = n.crypto;
 
-// JavaScriptCore has no DOMException (WebCore defines it); globals.js installs
-// this one when it's missing.
-const CODES = { IndexSizeError: 1, NotFoundError: 8, NotSupportedError: 9, InvalidStateError: 11, SyntaxError: 12, InvalidAccessError: 15, TypeMismatchError: 17, AbortError: 20, TimeoutError: 23, DataCloneError: 25, InvalidCharacterError: 5 };
-class DOMExceptionShim extends Error {
-	constructor(message = "", name = "Error") {
-		super(message);
-		Object.defineProperty(this, "name", { value: String(name), configurable: true, writable: true });
-	}
-	get code() { return CODES[this.name] ?? 0; }
-}
-export const DOMException = typeof globalThis.DOMException === "function" ? globalThis.DOMException : DOMExceptionShim;
 const fail = (name, message) => { throw new DOMException(message, name); };
 // Usages in the order browsers and Bun list them.
 const USAGE_ORDER = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits", "wrapKey", "unwrapKey"];
