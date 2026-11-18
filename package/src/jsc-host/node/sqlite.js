@@ -61,7 +61,8 @@ const fromNative = (row) => {
 // handle number is reused once freed, so the ref must still match.
 // FinalizationRegistry callbacks never run on WebKitGTK's JSC here (its
 // deferred work waits on a GLib context the host doesn't run), so
-// sweepStatements() also finalizes collected ones on prepare and close.
+// sweepStatements() also finalizes collected ones: soon after a prepare,
+// when the map has doubled, and on close.
 const unreachable = new FinalizationRegistry(({ live, h, ref }) => {
 	if (live.get(h) !== ref) return;
 	live.delete(h);
@@ -75,6 +76,16 @@ function sweepStatements(db) {
 	}
 	db._sweepAt = Math.max(64, db._statements.size * 2);
 }
+// A second after the last prepare (the loop has gone idle and collected by
+// then), without keeping the process alive.
+function sweepSoon(db) {
+	if (db._sweepTimer) return;
+	db._sweepTimer = setTimeout(() => {
+		db._sweepTimer = null;
+		if (db._h) sweepStatements(db);
+	}, 1000);
+	db._sweepTimer.unref?.();
+}
 
 export class Statement {
 	constructor(db, sql, persistent) {
@@ -86,6 +97,7 @@ export class Statement {
 		const ref = new WeakRef(this);
 		db._statements.set(p.handle, ref);
 		unreachable.register(this, { live: db._statements, h: p.handle, ref }, this);
+		sweepSoon(db);
 		this._params = p.params;
 		this.columnNames = p.columns;
 		this.paramsCount = p.params.length;
@@ -140,6 +152,7 @@ export class Database {
 		this._safeIntegers = !!options.safeIntegers;
 		this._statements = new Map(); // handle -> WeakRef of its Statement
 		this._sweepAt = 64;
+		this._sweepTimer = null;
 		this._cache = new Map();
 		this._h = options._handle ?? wrap(() => s.open(this.filename, flags));
 	}
@@ -219,6 +232,8 @@ export class Database {
 		sweepStatements(this); // collected ones can't be in use: close(true) too
 		if (!throwOnError) for (const [, ref] of [...this._statements]) ref.deref()?.finalize();
 		wrap(() => s.close(this._h, throwOnError));
+		if (this._sweepTimer) clearTimeout(this._sweepTimer);
+		this._sweepTimer = null;
 		this._h = 0;
 		this._cache.clear();
 	}

@@ -2,7 +2,8 @@
 // expect: collected ones finalized true
 // expect: strict close ok
 // Statements nobody finalizes are finalized once collected (as on Bun): by
-// the FinalizationRegistry where it runs, else by the sweep in prepare().
+// the FinalizationRegistry where it runs, else by the sweep a second after
+// the last prepare().
 // close(true), which fails while any statement is open, then succeeds.
 import { Database } from "bun:sqlite";
 
