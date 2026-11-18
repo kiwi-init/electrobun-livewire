@@ -139,18 +139,18 @@ static bool ffi_waiter_wait_ms(ffi_waiter *w, int64_t timeout_ms) {
     return ok;
 }
 
-typedef struct ffi_call {
+typedef struct ffi_cb_call {
     _Atomic int refs;          // the trampoline and the queued task; the last frees it
     _Atomic int claimed;       // 0 until a thread starts running it (exactly once)
     ffi_slot *slot;
     int argc;
-    JSValueRef (*make_args)(JSContextRef ctx, struct ffi_call *call, JSValueRef *out);
+    JSValueRef (*make_args)(JSContextRef ctx, struct ffi_cb_call *call, JSValueRef *out);
     union { uint32_t u32; int32_t i32; uint64_t u64; double f64; bool b; void *p; char *s; } a[8];
     bool owns_string[8];
     JSValueRef result;
     ffi_waiter *done;          // set when someone waits for the result
     bool timed_out;
-} ffi_call;
+} ffi_cb_call;
 
 static jsr_runtime *g_ffi_rt;
 
@@ -170,7 +170,7 @@ static inline void ffi_enter_native(void) { if (jsr_on_js_thread(g_ffi_rt)) atom
 static inline void ffi_leave_native(void) { if (jsr_on_js_thread(g_ffi_rt)) atomic_fetch_sub(&g_ffi_in_native, 1); }
 static inline bool ffi_runs_js_here(void) { return t_ffi_borrowed > 0 || jsr_on_js_thread(g_ffi_rt); }
 
-static void ffi_free_call(ffi_call *call) {
+static void ffi_free_call(ffi_cb_call *call) {
     for (int i = 0; i < call->argc; i++)
         if (call->owns_string[i]) free(call->a[i].s);
     if (call->done) {
@@ -180,12 +180,12 @@ static void ffi_free_call(ffi_call *call) {
     }
     free(call);
 }
-static void ffi_call_unref(ffi_call *call) {
+static void ffi_call_unref(ffi_cb_call *call) {
     if (atomic_fetch_sub(&call->refs, 1) == 1) ffi_free_call(call);
 }
 
 // Runs a call with the borrow lock held (the caller took it).
-static void ffi_run_borrowed(ffi_call *call) {
+static void ffi_run_borrowed(ffi_cb_call *call) {
     t_ffi_borrowed++;
     JSContextRef ctx = jsr_context(g_ffi_rt);
     JSValueRef args[8];
@@ -197,7 +197,7 @@ static void ffi_run_borrowed(ffi_call *call) {
 }
 
 static void ffi_run_call(jsr_runtime *rt, void *data) {
-    ffi_call *call = data;
+    ffi_cb_call *call = data;
     if (call->done && atomic_exchange(&call->claimed, 1)) { // the waiter ran it
         ffi_call_unref(call);
         return;
@@ -217,7 +217,7 @@ static void ffi_run_call(jsr_runtime *rt, void *data) {
 
 // Runs the call on the JS thread; returns the JS result (protected when it
 // came from another thread, see ffi_release_result) or NULL.
-static JSValueRef ffi_dispatch(ffi_call *call, bool wants_result) {
+static JSValueRef ffi_dispatch(ffi_cb_call *call, bool wants_result) {
     jsr_runtime *rt = g_ffi_rt;
     if (ffi_runs_js_here() && !call->slot->threadsafe) {
         call->done = NULL;

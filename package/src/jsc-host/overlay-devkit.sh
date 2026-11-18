@@ -37,7 +37,7 @@ done
 HOST="$OUT/api/jsc-host"
 sh "$HERE/build-host.sh" "$HOST/main" --sdk "$DEVKIT/api/sdks/main" "$@"
 cp -R "$HERE/node" "$HOST/node"
-cp "$HERE/ffi/bun-ffi.js" "$HOST/ffi/bun-ffi.js"
+cp "$HERE/ffi/bun-ffi.js" "$HERE/ffi/extract-app.ts" "$HOST/ffi/"
 cp "$HERE/bundle.ts" "$HERE/post-build.ts" "$HOST/"
 if [ -n "$LAUNCHER" ]; then
   version=$(sed -n 's/^export const ZIG_VERSION = "\(.*\)";$/\1/p' "$HERE/../shared/build-dependencies.ts")

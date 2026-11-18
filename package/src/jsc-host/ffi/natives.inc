@@ -1,5 +1,6 @@
 // Hand-written natives behind the bun:ffi shim (bun-ffi.js), included at the
-// end of the generated ffi_glue.c so they can see its tables.
+// end of the generated ffi_glue.c so they can see its tables. What the tables
+// don't have goes through libffi (dynamic.inc).
 
 static const ffi_library *ffi_find_library(const char *key) {
     for (size_t i = 0; i < sizeof ffi_libraries / sizeof ffi_libraries[0]; i++)
@@ -18,6 +19,8 @@ static void ffi_set(JSContextRef ctx, JSObjectRef obj, const char *name, JSValue
 }
 #define NATIVE(name) static JSValueRef name(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc)
 #define NATIVE_UNUSED (void)f; (void)self; (void)exc
+
+#include "dynamic.inc"
 
 // signatures(libKey) -> { symbol: "args->ret" } or null
 NATIVE(n_signatures) {
@@ -73,34 +76,36 @@ NATIVE(n_open) {
     return out;
 }
 
-// callbackCreate(sigKey, fn, threadsafe) -> pointer number
+// callbackCreate(sigKey, fn, threadsafe) -> pointer number: a generated
+// trampoline's when the signature has a free one, else a libffi closure's.
 NATIVE(n_callback_create) {
     NATIVE_UNUSED;
     if (argc < 2 || !JSValueIsObject(ctx, argv[1])) return ffi_throw(ctx, exc, "callbackCreate(sig, fn, threadsafe)");
     if (jsr_from_context(ctx) != g_ffi_rt) return ffi_throw(ctx, exc, "JSCallback isn't available in a Worker on the JSC runtime");
     char *key = jsr_to_utf8(ctx, argv[0]);
+    bool threadsafe = argc > 2 && JSValueToBoolean(ctx, argv[2]);
     for (size_t i = 0; i < sizeof ffi_callback_sigs / sizeof ffi_callback_sigs[0]; i++) {
         const ffi_callback_sig *sig = &ffi_callback_sigs[i];
         if (strcmp(sig->key, key)) continue;
-        free(key);
         for (int s = 0; s < FFI_CALLBACK_SLOTS; s++) {
             if (sig->slots[s].fn) continue;
+            free(key);
             sig->slots[s].fn = (JSObjectRef)argv[1];
-            sig->slots[s].threadsafe = argc > 2 && JSValueToBoolean(ctx, argv[2]);
+            sig->slots[s].threadsafe = threadsafe;
             JSValueProtect(ctx, argv[1]);
             return JSValueMakeNumber(ctx, (double)(uintptr_t)sig->tramps[s]);
         }
-        return ffi_throw(ctx, exc, "JSCallback: every slot for this signature is taken; close() unused callbacks");
     }
-    char message[512];
-    snprintf(message, sizeof message, "JSCallback: no generated trampoline for signature %s", key);
+    const char *error = NULL;
+    void *code = ffi_dyn_callback_create(ctx, key, (JSObjectRef)argv[1], threadsafe, &error);
     free(key);
-    return ffi_throw(ctx, exc, message);
+    return code ? JSValueMakeNumber(ctx, (double)(uintptr_t)code) : ffi_throw(ctx, exc, error);
 }
 
 NATIVE(n_callback_close) {
     NATIVE_UNUSED;
     void *p = argc > 0 ? ffi_arg_ptr(ctx, argv[0]) : NULL;
+    if (p && ffi_dyn_callback_close(ctx, p)) return JSValueMakeUndefined(ctx);
     for (size_t i = 0; p && i < sizeof ffi_callback_sigs / sizeof ffi_callback_sigs[0]; i++)
         for (int s = 0; s < FFI_CALLBACK_SLOTS; s++)
             if (ffi_callback_sigs[i].tramps[s] == p && ffi_callback_sigs[i].slots[s].fn) {
@@ -172,13 +177,14 @@ NATIVE(n_read) {
     return v ? v : ffi_throw(ctx, exc, "read: unknown kind");
 }
 
-#include "ffi.h"
+#include "glue.h"
 void ffi_install(jsr_runtime *rt) {
     if (!g_ffi_rt) g_ffi_rt = rt; // JSCallbacks run on the main runtime
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef ffi = JSObjectMake(ctx, NULL, NULL);
     jsr_set_function(ctx, ffi, "signatures", n_signatures);
     jsr_set_function(ctx, ffi, "open", n_open);
+    jsr_set_function(ctx, ffi, "bind", n_bind);
     jsr_set_function(ctx, ffi, "callbackCreate", n_callback_create);
     jsr_set_function(ctx, ffi, "callbackClose", n_callback_close);
     jsr_set_function(ctx, ffi, "ptr", n_ptr);

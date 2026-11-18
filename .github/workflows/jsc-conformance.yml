@@ -38,7 +38,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev zlib1g-dev libsqlite3-dev libsoup-3.0-dev xxd pkg-config
+          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libffi-dev libgcrypt20-dev zlib1g-dev libsqlite3-dev libsoup-3.0-dev xxd pkg-config
       - name: Conformance against Bun and Node
         env:
           # secrets.mjs writes to the keychain only on the throwaway macOS runner.

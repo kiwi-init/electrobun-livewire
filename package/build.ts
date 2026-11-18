@@ -1016,12 +1016,12 @@ async function copyToDist() {
 	if (OS === "macos") await buildJscHost(".dylib");
 	else if (OS === "linux") {
 		// Optional on Linux: needs WebKitGTK's JavaScriptCore headers
-		// (libjavascriptcoregtk-4.1-dev), GLib, SQLite (libsqlite3-dev), libgcrypt (libgcrypt20-dev) and libsoup (libsoup-3.0-dev).
+		// (libjavascriptcoregtk-4.1-dev), GLib, SQLite (libsqlite3-dev), libgcrypt (libgcrypt20-dev), libsoup (libsoup-3.0-dev) and libffi (libffi-dev).
 		// Without them, or if the host fails to build, the devkit ships no JSC host.
 		const has = (command: string, args: string[]) => spawnSync(command, args).status === 0;
-		const deps = has("pkg-config", ["--exists", "javascriptcoregtk-4.1", "glib-2.0", "sqlite3", "libsoup-3.0"]) &&
+		const deps = has("pkg-config", ["--exists", "javascriptcoregtk-4.1", "glib-2.0", "sqlite3", "libsoup-3.0", "libffi"]) &&
 			(has("pkg-config", ["--exists", "libgcrypt"]) || has("libgcrypt-config", ["--version"]));
-		if (!deps) console.warn("JSC host: no javascriptcoregtk-4.1/glib-2.0/sqlite3/libsoup-3.0/libgcrypt headers, so this devkit has no JSC host");
+		if (!deps) console.warn("JSC host: no javascriptcoregtk-4.1/glib-2.0/sqlite3/libsoup-3.0/libffi/libgcrypt headers, so this devkit has no JSC host");
 		else {
 			try {
 				await buildJscHost(".so");
@@ -1058,7 +1058,7 @@ async function buildJscHost(libExt: ".dylib" | ".so") {
 		BUN: process.execPath,
 	});
 	cpSync(join("src", "jsc-host", "node"), join(out, "node"), { recursive: true, force: true });
-	cpSync(join("src", "jsc-host", "ffi", "bun-ffi.js"), join(out, "ffi", "bun-ffi.js"), { force: true });
+	for (const name of ["bun-ffi.js", "extract-app.ts"]) cpSync(join("src", "jsc-host", "ffi", name), join(out, "ffi", name), { force: true });
 	for (const name of ["bundle.ts", "post-build.ts"]) cpSync(join("src", "jsc-host", name), join(out, name), { force: true });
 }
 

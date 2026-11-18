@@ -37,7 +37,7 @@ jobs:
       - name: System JavaScriptCore, GLib, libgcrypt
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libgcrypt20-dev libsqlite3-dev xxd pkg-config
+          sudo apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev libglib2.0-dev libffi-dev libgcrypt20-dev libsqlite3-dev xxd pkg-config
       - name: Measure
         run: |
           set -o pipefail

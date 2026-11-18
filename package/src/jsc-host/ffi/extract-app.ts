@@ -3,6 +3,12 @@
 // signature the bundles contain. It reads the code instead of running it, so a
 // declaration inside a function or behind a platform check counts too.
 //   bun extract-app.ts [--os macos|linux] [--libs <dir>] [--sdk <sdks/main>] <bundle.js>... > app-ffi.json
+//   bun extract-app.ts --check <bundle.js>...
+// --check is the postBuild hook's (post-build.ts): the host binds what its glue
+// doesn't have through libffi at run time, so instead of recording libraries
+// it fails when a declaration uses a type the host can't call (bun-ffi.js's
+// SUPPORTED_TYPES), so that fails the build rather than the app. A path it
+// can't resolve, or a declaration it can't read, is no error then.
 // The bundles hold the SDK's own dlopen calls too, which its glue covers:
 // modules under the devkit's api/ (Bun marks each module with a "// path"
 // comment) are skipped, and --sdk also skips a table the SDK's proc/native.ts
@@ -15,6 +21,7 @@
 // symbols. A site whose library is only another platform's is skipped; one
 // neither way resolves fails the extraction.
 import { FFIType } from "bun:ffi";
+import { CALLBACK_MAX_ARGS, canonicalType, SUPPORTED_TYPES } from "./bun-ffi.js";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -29,7 +36,8 @@ const flag = (name: string): string | undefined => {
 const os = flag("--os") ?? (process.platform === "darwin" ? "macos" : "linux");
 const libsDir = flag("--libs");
 const sdkDir = flag("--sdk");
-const files = argv;
+const check = argv.includes("--check");
+const files = argv.filter((arg) => arg !== "--check");
 if (files.length === 0) {
 	console.error("usage: extract-app.ts [--os macos|linux] [--libs <dir>] <bundle.js>...");
 	process.exit(2);
@@ -93,6 +101,10 @@ function literal(src: string, file: string, expression: string): unknown {
 	try {
 		return new Function("scope", "with (scope) { return (" + text + "); }")(scope);
 	} catch (error) {
+		if (check) {
+			console.warn("extract-app: can't read the declaration " + text.slice(0, 80) + " in " + file + ", so its types are checked at run time");
+			return undefined;
+		}
 		throw new Error("extract-app: can't read the declaration " + text.slice(0, 200) + " in " + file + ": " + error);
 	}
 }
@@ -146,13 +158,14 @@ function sdkCovers(src: string, expression: string): boolean {
 
 const libraries = new Map<string, { path: string; symbols: Record<string, Decl> }>();
 const callbacks = new Map<string, Decl>();
+const checked: { where: string; what: string; decl: Decl; callback: boolean }[] = [];
 const unresolved: string[] = [];
 const add = (path: string, symbols: Record<string, Decl>, where: string) => {
 	const key = libraryKey(path);
 	const lib = libraries.get(key) ?? { path, symbols: {} };
 	for (const [name, d] of Object.entries(symbols)) {
 		const had = lib.symbols[name];
-		if (had && JSON.stringify(had) !== JSON.stringify(d)) throw new Error("extract-app: " + key + "." + name + " is declared two ways (" + where + ")");
+		if (had && !check && JSON.stringify(had) !== JSON.stringify(d)) throw new Error("extract-app: " + key + "." + name + " is declared two ways (" + where + ")");
 		lib.symbols[name] = d;
 	}
 	libraries.set(key, lib);
@@ -189,14 +202,22 @@ for (const file of files) {
 				const where = file + " at " + (src.slice(0, m.index).split("\n").length);
 				if (kind === "JSCallback") {
 					if (!args[1]) continue;
-					const sig = decl(literal(src, file, args[1]) as Decl);
+					const read = literal(src, file, args[1]) as Decl | undefined;
+					if (!read) continue;
+					const sig = decl(read);
+					if (check) checked.push({ where, what: "a JSCallback", decl: sig, callback: true });
 					callbacks.set(sig.args.join(",") + "->" + sig.returns, sig);
 					continue;
 				}
 				if (!args[1]) continue;
 				if (sdkSymbols.size && sdkCovers(src, args[1])) continue;
-				const table = literal(src, file, args[1]) as Record<string, { args?: unknown[]; returns?: unknown }>;
+				const table = literal(src, file, args[1]) as Record<string, { args?: unknown[]; returns?: unknown }> | undefined;
+				if (!table || typeof table !== "object") continue;
 				const symbols = Object.fromEntries(Object.entries(table).map(([s, d]) => [s, decl(d)]));
+				if (check) {
+					for (const [s, d] of Object.entries(symbols)) checked.push({ where, what: s, decl: d, callback: false });
+					continue;
+				}
 				if (sdkSymbols.size && Object.keys(symbols).every((s) => sdkSymbols.has(s))) continue;
 				const { here, any } = libraryPaths(src, args[0] ?? "");
 				if (here.length === 0 && any.length > 0) continue;
@@ -210,6 +231,25 @@ for (const file of files) {
 			}
 		}
 	}
+}
+if (check) {
+	const supported = new Set<string>(SUPPORTED_TYPES);
+	const problems = checked.flatMap(({ where, what, decl: d, callback }) => {
+		const out: string[] = [];
+		for (const t of d.args) {
+			const c = canonicalType(t);
+			if (c === "void" || !(supported.has(c) || (c === "buffer" && !callback))) out.push(where + ": " + what + " takes a " + t);
+		}
+		if (!supported.has(canonicalType(d.returns))) out.push(where + ": " + what + " returns a " + d.returns);
+		if (callback && d.args.length > CALLBACK_MAX_ARGS) out.push(where + ": a JSCallback takes " + d.args.length + " arguments (at most " + CALLBACK_MAX_ARGS + ")");
+		return out;
+	});
+	if (problems.length) {
+		console.error("extract-app: the JSC host can't call these bun:ffi declarations:\n  " + problems.join("\n  "));
+		process.exit(1);
+	}
+	console.error("extract-app: " + checked.length + " bun:ffi declarations use types the JSC host binds");
+	process.exit(0);
 }
 if (unresolved.length) {
 	console.error("extract-app: no library found for:\n  " + unresolved.join("\n  ") + (libsDir ? "" : "\n(--libs <dir> matches them to the app's libraries by their symbols)"));

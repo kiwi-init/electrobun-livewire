@@ -80,6 +80,17 @@ if (buildJson.mainProcess !== "bun") fail('build.mainProcess must be "bun" (the 
 const host = join(here, "main");
 if (!existsSync(host)) fail("this devkit has no JSC host for " + os + " (" + host + ")");
 
+// 0. The app's own bun:ffi declarations, read from Hutch's Bun bundles before
+// they are replaced: the host binds them through libffi at run time, and a
+// type it can't call fails the build here instead (ffi/extract-app.ts).
+const bunDir = join(app.resources, "app", "bun");
+const ffiSources = [
+	...readdirSync(bunDir).filter((name) => /\.(js|mjs)$/.test(name)).map((name) => join(bunDir, name)),
+	...scriptsAsked().map((rel) => resolve(app.resources, rel)).filter((file) => existsSync(file)),
+];
+const ffiChecked = Bun.spawnSync([process.execPath, join(here, "ffi", "extract-app.ts"), "--check", ...ffiSources], { cwd: projectDir, stdout: "ignore", stderr: "inherit" });
+if (ffiChecked.exitCode !== 0) fail("the app declares bun:ffi types the JSC host can't call (above)");
+
 // 1. The main process, bundled for the JSC host against this devkit's SDK.
 const bunBuild = await bunBuildConfig();
 const entry = process.env["LIVEWIRE_JSC_ENTRYPOINT"] || bunBuild.entrypoint || "src/bun/index.ts";
@@ -111,7 +122,6 @@ for (const rel of scriptsAsked()) {
 // 1b. Workers: any other script in app/bun (a `new Worker(file)` target the
 // app's build put there) is a Bun bundle too, so each is bundled again for the
 // host, in place, with the same runtime globals and shims.
-const bunDir = join(app.resources, "app", "bun");
 for (const name of readdirSync(bunDir)) {
 	const file = join(bunDir, name);
 	if (name === "index.js" || !/\.(js|mjs)$/.test(name) || scripted.has(file)) continue;
