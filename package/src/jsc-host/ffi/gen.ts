@@ -40,6 +40,31 @@ for (const extraPath of extras) {
 	record.libraries.push(...(extra.libraries ?? []));
 }
 
+// One entry per library: the SDK and an app (--extra) may both declare one
+// (Channels' message box calls NativeWrapper's showMessageBox). A symbol
+// declared two ways fails, since the glue has one signature per symbol.
+{
+	const keyOf = (path: string) => basename(path).replace(/^lib/, "").replace(/\.(dylib|so|dll)$/, "");
+	const merged = new Map<string, { path: string; symbols: Record<string, Decl> }>();
+	for (const lib of record.libraries) {
+		const into = merged.get(keyOf(lib.path));
+		if (!into) {
+			merged.set(keyOf(lib.path), { path: lib.path, symbols: { ...lib.symbols } });
+			continue;
+		}
+		for (const [name, d] of Object.entries(lib.symbols)) {
+			const had = into.symbols[name];
+			const same = (a?: Decl) => JSON.stringify({ args: (a?.args ?? []).map(canon), returns: canon(a?.returns ?? "void") });
+			if (had && same(had) !== same(d)) {
+				console.error("gen: " + keyOf(lib.path) + "." + name + " is declared two ways: " + same(had) + " and " + same(d));
+				process.exit(1);
+			}
+			into.symbols[name] = d;
+		}
+	}
+	record.libraries = [...merged.values()];
+}
+
 for (const libPath of checkLibs) {
 	const lib = record.libraries.find((l) => basename(l.path) === basename(libPath));
 	if (!lib) continue;
