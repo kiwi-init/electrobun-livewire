@@ -772,7 +772,19 @@ static jsr_runtime *create_runtime(int argc, const char **argv, struct jsr_worke
     bool set_sab = g_main_runtime == rt && !getenv("JSC_useSharedArrayBuffer");
     if (set_traps) setenv("JSC_usePollingTraps", "true", 0);
     if (set_sab) setenv("JSC_useSharedArrayBuffer", "true", 0);
+#ifndef __APPLE__
+    // JSC's own timers (FinalizationRegistry callbacks, its GC timers) go on
+    // the RunLoop WebKit makes for this thread along with the VM, and that
+    // RunLoop takes whatever context is the thread default at that moment.
+    // Without this it makes a private one nobody iterates, and those timers
+    // never fire. rt->gctx is the default only while the VM is made (see above
+    // for why it isn't left pushed).
+    g_main_context_push_thread_default(rt->gctx);
+#endif
     rt->ctx = JSGlobalContextCreate(NULL); // its own context group: a VM per thread
+#ifndef __APPLE__
+    g_main_context_pop_thread_default(rt->gctx);
+#endif
     // Not passed on to child processes.
     if (set_traps) unsetenv("JSC_usePollingTraps");
     if (set_sab) unsetenv("JSC_useSharedArrayBuffer");
