@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isLivewireVersion, nextLivewireVersion } from "./set-livewire-version.mjs";
+import { isLivewireVersion, nextLivewireVersion, updateTestAppPin } from "./set-livewire-version.mjs";
 
 test("Livewire versions are CalVer YYYY.M.PATCH", () => {
 	for (const version of ["2026.10.0", "2026.10.1", "2026.1.0", "2027.12.31", "2099.9.120"]) {
@@ -35,4 +35,13 @@ test("the next version bumps PATCH within a month and restarts it in a new one",
 	assert.equal(nextLivewireVersion("2025.10.4", october), "2026.10.0");
 	assert.equal(nextLivewireVersion("2.1.0-livewire.rc.5", october), "2026.10.0");
 	assert.equal(nextLivewireVersion("2026.12.3", new Date("2027-01-01T00:00:00Z")), "2027.1.0");
+});
+
+test("a test app's electrobun pin follows the release; a config without one is left alone", () => {
+	assert.equal(
+		updateTestAppPin('export default {\n\telectrobun: { version: "2026.11.4" },\n};\n', "2026.11.6"),
+		'export default {\n\telectrobun: { version: "2026.11.6" },\n};\n',
+	);
+	const derived = "export default {\n\telectrobun: {\n\t\tversion: electrobunVersion,\n\t},\n};\n";
+	assert.equal(updateTestAppPin(derived, "2026.11.6"), derived);
 });

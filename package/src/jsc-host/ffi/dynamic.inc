@@ -53,7 +53,7 @@ static int64_t ffi_dyn_num_i64(double d) {
 }
 static int64_t ffi_dyn_arg_i64(JSContextRef ctx, JSValueRef v) {
     if (!v) return 0;
-    if (JSValueIsBigInt(ctx, v)) return JSValueToInt64(ctx, v, NULL);
+    if (ffi_is_bigint(ctx, v)) return ffi_bigint_i64(ctx, v);
     return ffi_dyn_num_i64(JSValueToNumber(ctx, v, NULL));
 }
 
@@ -100,9 +100,9 @@ static JSValueRef ffi_dyn_to_js(JSContextRef ctx, int t, const ffi_dyn_value *v)
     case DT_U16: return JSValueMakeNumber(ctx, v->u16);
     case DT_I32: return JSValueMakeNumber(ctx, v->i32);
     case DT_U32: return JSValueMakeNumber(ctx, v->u32);
-    case DT_I64: return JSBigIntCreateWithInt64(ctx, v->i64, NULL);
+    case DT_I64: return ffi_bigint_from_i64(ctx, v->i64);
     case DT_U64: return ffi_ret_u64(ctx, v->u64);
-    case DT_I64_FAST: return v->i64 >= -safe && v->i64 <= safe ? JSValueMakeNumber(ctx, (double)v->i64) : JSBigIntCreateWithInt64(ctx, v->i64, NULL);
+    case DT_I64_FAST: return v->i64 >= -safe && v->i64 <= safe ? JSValueMakeNumber(ctx, (double)v->i64) : ffi_bigint_from_i64(ctx, v->i64);
     case DT_U64_FAST: return v->u64 <= (uint64_t)safe ? JSValueMakeNumber(ctx, (double)v->u64) : ffi_ret_u64(ctx, v->u64);
     case DT_F32: return JSValueMakeNumber(ctx, v->f32);
     case DT_F64: return JSValueMakeNumber(ctx, v->f64);

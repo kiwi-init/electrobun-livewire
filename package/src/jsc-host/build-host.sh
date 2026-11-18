@@ -22,7 +22,7 @@ CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$GEN -I$HERE -I$HERE/ffi"
 SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $HERE/vendor/monocypher/monocypher.c $HERE/vendor/monocypher/monocypher-ed25519.c $HERE/ffi/natives.c $HERE/app-host.c"
 if [ "$(uname -s)" = "Darwin" ]; then
   # shellcheck disable=SC2086
-  clang $CFLAGS -fobjc-arc -framework JavaScriptCore -framework CoreFoundation -framework Foundation -framework Security -lz -lsqlite3 -lffi -Wl,-rpath,@executable_path \
+  clang $CFLAGS -mmacosx-version-min="${MACOSX_DEPLOYMENT_TARGET:-14.0}" -fobjc-arc -framework JavaScriptCore -framework CoreFoundation -framework Foundation -framework Security -lz -lsqlite3 -lffi -Wl,-rpath,@executable_path \
     -o "$OUT" $SOURCES "$HERE/http-darwin.m"
 else
   # shellcheck disable=SC2086

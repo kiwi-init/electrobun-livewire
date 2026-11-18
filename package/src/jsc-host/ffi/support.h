@@ -23,6 +23,85 @@ static int g_ffi_trace = -1;
     if (g_ffi_trace) fprintf(stderr, "[ffi] %s%s\n", what, g_ffi_rt && jsr_on_js_thread(g_ffi_rt) ? "" : " (other thread)"); \
 } while (0)
 
+// --- bigints -------------------------------------------------------------------
+// JavaScriptCore's bigint C API is macOS 15+, and the host runs on macOS 14
+// too: there, a bigint goes through its decimal string and the global BigInt.
+// LIVEWIRE_FFI_NO_BIGINT_API=1 takes that path anywhere, to test it.
+static bool ffi_bigint_api_off(void) {
+    static int off = -1;
+    if (off < 0) off = getenv("LIVEWIRE_FFI_NO_BIGINT_API") != NULL;
+    return off;
+}
+// Returns expr when the C API is there; clang wants __builtin_available as the if's condition.
+#ifdef __APPLE__
+#define FFI_BIGINT_API(expr) do { if (!ffi_bigint_api_off()) { if (__builtin_available(macOS 15.0, *)) return (expr); } } while (0)
+#else
+#define FFI_BIGINT_API(expr) do { if (!ffi_bigint_api_off()) return (expr); } while (0)
+#endif
+static bool ffi_is_bigint(JSContextRef ctx, JSValueRef v) {
+    FFI_BIGINT_API(JSValueIsBigInt(ctx, v));
+    return !JSValueIsUndefined(ctx, v) && !JSValueIsNull(ctx, v) && !JSValueIsBoolean(ctx, v) && !JSValueIsNumber(ctx, v) &&
+           !JSValueIsString(ctx, v) && !JSValueIsObject(ctx, v) && !JSValueIsSymbol(ctx, v);
+}
+static JSValueRef ffi_bigint_global(JSContextRef ctx) {
+    JSStringRef name = JSStringCreateWithUTF8CString("BigInt");
+    JSValueRef ctor = JSObjectGetProperty(ctx, JSContextGetGlobalObject(ctx), name, NULL);
+    JSStringRelease(name);
+    return ctor;
+}
+// v's decimal digits after BigInt.asUintN or asIntN(64, v), so a bigint out of
+// range wraps as the C API does.
+static char *ffi_bigint_digits(JSContextRef ctx, JSValueRef v, const char *as) {
+    JSValueRef ctor = ffi_bigint_global(ctx);
+    if (!JSValueIsObject(ctx, ctor)) return NULL;
+    JSStringRef name = JSStringCreateWithUTF8CString(as);
+    JSValueRef fn = JSObjectGetProperty(ctx, (JSObjectRef)ctor, name, NULL);
+    JSStringRelease(name);
+    if (!JSValueIsObject(ctx, fn)) return NULL;
+    JSValueRef args[2] = {JSValueMakeNumber(ctx, 64), v};
+    JSValueRef wrapped = JSObjectCallAsFunction(ctx, (JSObjectRef)fn, (JSObjectRef)ctor, 2, args, NULL);
+    JSStringRef s = wrapped ? JSValueToStringCopy(ctx, wrapped, NULL) : NULL;
+    if (!s) return NULL;
+    size_t cap = JSStringGetMaximumUTF8CStringSize(s);
+    char *out = malloc(cap);
+    if (out) JSStringGetUTF8CString(s, out, cap);
+    JSStringRelease(s);
+    return out;
+}
+static uint64_t ffi_bigint_u64(JSContextRef ctx, JSValueRef v) {
+    FFI_BIGINT_API(JSValueToUInt64(ctx, v, NULL));
+    char *d = ffi_bigint_digits(ctx, v, "asUintN");
+    uint64_t r = d ? strtoull(d, NULL, 10) : 0;
+    free(d);
+    return r;
+}
+static int64_t ffi_bigint_i64(JSContextRef ctx, JSValueRef v) {
+    FFI_BIGINT_API(JSValueToInt64(ctx, v, NULL));
+    char *d = ffi_bigint_digits(ctx, v, "asIntN");
+    int64_t r = d ? strtoll(d, NULL, 10) : 0;
+    free(d);
+    return r;
+}
+static JSValueRef ffi_bigint_from_digits(JSContextRef ctx, const char *digits) {
+    JSValueRef ctor = ffi_bigint_global(ctx);
+    JSValueRef arg = jsr_string(ctx, digits);
+    if (!JSValueIsObject(ctx, ctor)) return JSValueMakeUndefined(ctx);
+    JSValueRef r = JSObjectCallAsFunction(ctx, (JSObjectRef)ctor, NULL, 1, &arg, NULL);
+    return r ? r : JSValueMakeUndefined(ctx);
+}
+static JSValueRef ffi_bigint_from_u64(JSContextRef ctx, uint64_t v) {
+    FFI_BIGINT_API(JSBigIntCreateWithUInt64(ctx, v, NULL));
+    char d[24];
+    snprintf(d, sizeof d, "%llu", (unsigned long long)v);
+    return ffi_bigint_from_digits(ctx, d);
+}
+static JSValueRef ffi_bigint_from_i64(JSContextRef ctx, int64_t v) {
+    FFI_BIGINT_API(JSBigIntCreateWithInt64(ctx, v, NULL));
+    char d[24];
+    snprintf(d, sizeof d, "%lld", (long long)v);
+    return ffi_bigint_from_digits(ctx, d);
+}
+
 // --- arguments ---------------------------------------------------------------
 // A pointer argument: a typed array or ArrayBuffer (its bytes), a number or
 // bigint (an address), or null/undefined.
@@ -43,7 +122,7 @@ static void *ffi_arg_ptr(JSContextRef ctx, JSValueRef v) {
         if (JSValueIsNumber(ctx, p)) return (void *)(uintptr_t)JSValueToNumber(ctx, p, NULL);
         return NULL;
     }
-    if (JSValueIsBigInt(ctx, v)) return (void *)(uintptr_t)JSValueToUInt64(ctx, v, NULL);
+    if (ffi_is_bigint(ctx, v)) return (void *)(uintptr_t)ffi_bigint_u64(ctx, v);
     return (void *)(uintptr_t)JSValueToNumber(ctx, v, NULL);
 }
 
@@ -58,7 +137,7 @@ static const char *ffi_arg_cstring(JSContextRef ctx, JSValueRef v, char **owned)
 }
 static uint64_t ffi_arg_u64(JSContextRef ctx, JSValueRef v) {
     if (!v) return 0;
-    if (JSValueIsBigInt(ctx, v)) return JSValueToUInt64(ctx, v, NULL);
+    if (ffi_is_bigint(ctx, v)) return ffi_bigint_u64(ctx, v);
     return (uint64_t)JSValueToNumber(ctx, v, NULL);
 }
 #define FFI_ARG(i) ((i) < argc ? argv[i] : NULL)
@@ -72,7 +151,7 @@ static JSValueRef ffi_ret_ptr(JSContextRef ctx, const void *p) {
 static JSValueRef ffi_ret_cstring(JSContextRef ctx, const char *p) {
     return p ? jsr_string(ctx, p) : JSValueMakeNull(ctx);
 }
-static JSValueRef ffi_ret_u64(JSContextRef ctx, uint64_t v) { return JSBigIntCreateWithUInt64(ctx, v, NULL); }
+static JSValueRef ffi_ret_u64(JSContextRef ctx, uint64_t v) { return ffi_bigint_from_u64(ctx, v); }
 
 // --- callbacks -----------------------------------------------------------------
 // Each JSCallback is a libffi closure (dynamic.inc) with a slot: the JS
