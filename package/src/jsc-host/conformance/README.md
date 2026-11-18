@@ -28,8 +28,8 @@ bun package/src/jsc-host/conformance/run.ts [out dir] [name filter]
 | `net.mjs` | `node:net` over unix sockets and TCP: listen/connect, line protocols, half-close and `allowHalfOpen`, 2 MB with backpressure, idle timeouts, ENOENT/ECONNREFUSED/EADDRINUSE, socket-file cleanup, `unref` |
 | `bun-socket.mjs` | `Bun.listen`/`Bun.connect` (unix and TCP): handlers, partial writes and `drain`, `end`, `stop`, `connectError`, `timeout` |
 | `fetch.mjs` | `fetch` against a local Bun server (`http-fixture.ts`): status, headers, bodies (string, bytes, params, Blob, streams), redirect modes, 3 MB and streamed responses, abort and timeout signals, refused connections; `Headers`, `Request`, `Response`, `Blob`, `AbortSignal`, `EventTarget`, `DOMException` |
-| `websocket.mjs` | `WebSocket` against the same server: subprotocols, `readyState`, handlers and listeners, text, UTF-8 and binary frames per `binaryType`, a 200 KB message, closes from either side, close-code rules, refused connections |
-| `spawn.mjs` | `child_process` (spawn, exec, execFile, sync forms: pipes, stdin, timeouts, kill, ENOENT, maxBuffer, detached), `Bun.spawn`/`spawnSync`/`which`, `process.kill` |
+| `websocket.mjs` | `WebSocket` against the same server: subprotocols, `readyState`, handlers and listeners, text, UTF-8 and binary frames per `binaryType`, a 200 KB message, closes from either side, close-code rules, refused connections; the same over `ws+unix://` (the fixture also serves a unix socket) |
+| `spawn.mjs` | `child_process` (spawn, exec, execFile, sync forms: pipes, stdin, timeouts, kill, ENOENT, maxBuffer, detached), `Bun.spawn`/`spawnSync`/`which`, `process.kill`; a non-executable file on PATH (ENOENT, as Bun) |
 | `zlib.mjs` | fixtures from Bun's zlib, round trips at each level and format, gzip members, error shapes, `crc32`, callbacks, streams through `pipeline`, `Bun.gzipSync` and co. |
 | `readline.mjs` | line endings (LF, CRLF split across chunks, lone CR), split UTF-8, the async iterator, `question`, close |
 | `secrets.mjs` | `Bun.secrets` get/set/delete on the real keychain (CI's macOS job only: `LIVEWIRE_KEYCHAIN_TEST`), argument errors everywhere |

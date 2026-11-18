@@ -24,6 +24,25 @@ async function main() {
 	const rfcKey = unhex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
 	for (const h of ["sha256", "sha384", "sha512"]) console.log("hmac", h, nc.createHmac(h, rfcKey).update("Hi There").digest("hex"));
 	console.log("hmac empty key", nc.createHmac("sha256", "").update("x").digest("hex"));
+	// Incremental: odd-sized updates across block boundaries, a copy that
+	// diverges from its source, and the errors once digest() has run.
+	const chunks = Array.from({ length: 300 }, (_, i) => Buffer.alloc(i % 131, i & 255));
+	for (const h of ["sha1", "sha256", "sha384", "sha512", "blake2b512"]) {
+		const x = nc.createHash(h);
+		for (const c of chunks) x.update(c);
+		const fork = x.copy().update("fork");
+		console.log("createHash chunks", h, x.digest("hex").slice(0, 32), fork.digest("hex").slice(0, 32), nc.createHash(h).update(Buffer.concat(chunks)).digest("hex").slice(0, 32));
+	}
+	for (const h of ["sha1", "sha256", "sha384", "sha512"]) {
+		const m = nc.createHmac(h, "key");
+		for (const c of chunks) m.update(c);
+		console.log("hmac chunks", h, m.digest("hex").slice(0, 32));
+	}
+	const spent = nc.createHash("sha256");
+	spent.digest();
+	for (const [what, fn] of [["digest", () => spent.digest()], ["update", () => spent.update("x")], ["copy", () => spent.copy()]]) {
+		try { fn(); console.log("after digest", what, "allowed"); } catch (e) { console.log("after digest", what, e.code ?? e.name); }
+	}
 	const hk = await subtle.importKey("raw", enc("key"), { name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
 	const mac = await subtle.sign("HMAC", hk, enc("The quick brown fox jumps over the lazy dog"));
 	console.log("subtle hmac", hex(mac), await subtle.verify("HMAC", hk, mac, enc("The quick brown fox jumps over the lazy dog")), await subtle.verify("HMAC", hk, mac, enc("x")));

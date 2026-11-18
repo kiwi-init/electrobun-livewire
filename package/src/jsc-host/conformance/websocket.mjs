@@ -109,6 +109,57 @@ step(async () => {
 	log("close(4000)", only.code, only.wasClean, JSON.stringify(only.reason));
 });
 
+// ws+unix:// (Codex's app-server control socket): the same server's
+// WebSocket on a unix socket.
+step(async () => {
+	const url = "ws+unix://" + process.env.LIVEWIRE_WS_UNIX;
+	const ws = new WebSocket(url, ["kiwi.v1"]);
+	log("unix new", ws.readyState, ws.url === url);
+	const welcome = nextMessage(ws);
+	await new Promise((resolve) => (ws.onopen = resolve));
+	log("unix open", ws.readyState, ws.protocol, await welcome);
+	ws.send(JSON.stringify({ id: 1, method: "initialize" }));
+	log("unix echo", await nextMessage(ws));
+	ws.send("unicode");
+	log("unix unicode", await nextMessage(ws));
+	ws.send("a\u0000b");
+	log("unix nul", JSON.stringify(await nextMessage(ws)));
+	ws.send(new Uint8Array([1, 2, 255]));
+	const buf = await nextMessage(ws);
+	log("unix binary", Buffer.isBuffer(buf), [...buf].join(","));
+	ws.send(new Uint8Array(70_000).fill(5));
+	log("unix 70 KB binary", (await nextMessage(ws)).length);
+	ws.send("big");
+	log("unix big", (await nextMessage(ws)).length);
+	const done = closed(ws);
+	ws.close(1000, "done");
+	log("unix closing", ws.readyState);
+	const e = await done;
+	log("unix client close", e.code, JSON.stringify(e.reason), e.wasClean, ws.readyState);
+});
+
+step(async () => {
+	const url = "ws+unix://" + process.env.LIVEWIRE_WS_UNIX;
+	const ws = new WebSocket(url);
+	await new Promise((resolve) => (ws.onopen = resolve));
+	log("unix no protocol", JSON.stringify(ws.protocol), await nextMessage(ws));
+	ws.send("close-me");
+	const e = await closed(ws);
+	log("unix server close", e.code, JSON.stringify(e.reason), e.wasClean, ws.readyState);
+	const quiet = new WebSocket(url);
+	await new Promise((resolve) => (quiet.onopen = resolve));
+	const bare = closed(quiet);
+	quiet.close();
+	const b = await bare;
+	log("unix close without code", b.code, b.wasClean);
+	const missing = new WebSocket("ws+unix://" + process.env.LIVEWIRE_WS_UNIX + ".missing");
+	const events = [];
+	missing.onopen = () => events.push("open");
+	missing.onerror = () => events.push("error");
+	const m = await closed(missing);
+	log("unix missing", events.join(","), m.code, m.wasClean, missing.readyState);
+});
+
 (async () => {
 	for (const fn of steps) await fn();
 	log("done");

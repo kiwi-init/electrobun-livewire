@@ -136,42 +136,41 @@ function hashName(algorithm) {
 	if (!name) throw new Error(`Digest method not supported: ${algorithm}`);
 	return name;
 }
-const digestOf = (name, data) => (name === "blake2b512" ? n.crypto.blake2b(data, 64) : n.crypto.hash(name, data));
-// Chunks are kept and hashed in digest(): the natives take one buffer.
+const finalized = () => Object.assign(new Error("Digest already called"), { code: "ERR_CRYPTO_HASH_FINALIZED" });
+// Each update goes straight into a native context (n.crypto.digest*).
 class Hash {
-	constructor(algorithm, chunks = []) { this._name = hashName(algorithm); this._chunks = chunks; this._done = false; }
+	constructor(algorithm, state) { this._name = hashName(algorithm); this._d = state ?? n.crypto.digestNew(this._name); this._done = false; }
 	update(data, encoding) {
-		if (this._done) throw new Error("Digest already called");
-		this._chunks.push(Buffer.from(bytesOf(data, encoding)));
+		if (this._done) throw finalized();
+		n.crypto.digestUpdate(this._d, bytesOf(data, encoding));
 		return this;
 	}
 	digest(encoding) {
-		if (this._done) throw new Error("Digest already called");
+		if (this._done) throw finalized();
 		this._done = true;
-		return out(digestOf(this._name, Buffer.concat(this._chunks)), encoding);
+		return out(n.crypto.digestFinal(this._d), encoding);
 	}
 	copy() {
-		if (this._done) throw new Error("Digest already called");
-		return new Hash(this._name, [...this._chunks]);
+		if (this._done) throw finalized();
+		return new Hash(this._name, n.crypto.digestCopy(this._d));
 	}
 }
 class Hmac {
 	constructor(algorithm, key) {
 		this._name = hashName(algorithm);
 		if (this._name === "blake2b512") throw new Error("Invalid digest: blake2b512");
-		this._key = Buffer.from(key instanceof KeyObject ? key.export() : bytesOf(key));
-		this._chunks = [];
+		this._d = n.crypto.digestNew(this._name, key instanceof KeyObject ? key.export() : bytesOf(key));
 		this._done = false;
 	}
 	update(data, encoding) {
-		if (this._done) throw new Error("Digest already called");
-		this._chunks.push(Buffer.from(bytesOf(data, encoding)));
+		if (this._done) throw finalized();
+		n.crypto.digestUpdate(this._d, bytesOf(data, encoding));
 		return this;
 	}
 	digest(encoding) {
-		if (this._done) throw new Error("Digest already called");
+		if (this._done) throw finalized();
 		this._done = true;
-		return out(n.crypto.hmac(this._name, this._key, Buffer.concat(this._chunks)), encoding);
+		return out(n.crypto.digestFinal(this._d), encoding);
 	}
 }
 export const createHash = (algorithm) => new Hash(algorithm);

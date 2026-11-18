@@ -56,12 +56,48 @@ const fromNative = (row) => {
 	return row;
 };
 
+// A statement nobody finalized is finalized once it's collected, as Bun's
+// are. db._statements maps each live handle to its statement's WeakRef: a
+// handle number is reused once freed, so the ref must still match.
+// FinalizationRegistry callbacks never run on WebKitGTK's JSC here (its
+// deferred work waits on a GLib context the host doesn't run), so
+// sweepStatements() also finalizes collected ones: soon after a prepare,
+// when the map has doubled, and on close.
+const unreachable = new FinalizationRegistry(({ live, h, ref }) => {
+	if (live.get(h) !== ref) return;
+	live.delete(h);
+	s.finalize(h);
+});
+function sweepStatements(db) {
+	for (const [h, ref] of db._statements) {
+		if (ref.deref()) continue;
+		db._statements.delete(h);
+		s.finalize(h);
+	}
+	db._sweepAt = Math.max(64, db._statements.size * 2);
+}
+// A second after the last prepare (the loop has gone idle and collected by
+// then), without keeping the process alive.
+function sweepSoon(db) {
+	if (db._sweepTimer) return;
+	db._sweepTimer = setTimeout(() => {
+		db._sweepTimer = null;
+		if (db._h) sweepStatements(db);
+	}, 1000);
+	db._sweepTimer.unref?.();
+}
+
 export class Statement {
 	constructor(db, sql, persistent) {
+		if (db._statements.size >= db._sweepAt) sweepStatements(db);
 		const p = wrap(() => s.prepare(db._handle(), sql, persistent));
 		if (!p.handle) throw new SQLiteError("Query contained no valid SQL statement; likely empty query.", { code: "SQLITE_MISUSE", errno: 21 });
 		this._db = db;
 		this._h = p.handle;
+		const ref = new WeakRef(this);
+		db._statements.set(p.handle, ref);
+		unreachable.register(this, { live: db._statements, h: p.handle, ref }, this);
+		sweepSoon(db);
 		this._params = p.params;
 		this.columnNames = p.columns;
 		this.paramsCount = p.params.length;
@@ -89,7 +125,13 @@ export class Statement {
 		this.get = (...a) => make(get(...a));
 		return this;
 	}
-	finalize() { if (this._h) { s.finalize(this._h); this._h = 0; this._db._statements.delete(this); } }
+	finalize() {
+		if (!this._h) return;
+		s.finalize(this._h);
+		this._db._statements.delete(this._h);
+		unreachable.unregister(this);
+		this._h = 0;
+	}
 	toString() { return this._h ? s.expanded(this._h) : this._sql; }
 }
 
@@ -108,7 +150,9 @@ export class Database {
 		this.filename = String(filename);
 		this._strict = !!options.strict;
 		this._safeIntegers = !!options.safeIntegers;
-		this._statements = new Set();
+		this._statements = new Map(); // handle -> WeakRef of its Statement
+		this._sweepAt = 64;
+		this._sweepTimer = null;
 		this._cache = new Map();
 		this._h = options._handle ?? wrap(() => s.open(this.filename, flags));
 	}
@@ -127,7 +171,6 @@ export class Database {
 	get inTransaction() { return this._h ? s.inTransaction(this._h) : false; }
 	prepare(sql, params) {
 		const stmt = new Statement(this, sql, false);
-		this._statements.add(stmt);
 		if (params !== undefined) {
 			const bound = Array.isArray(params) ? params : [params];
 			for (const m of ["run", "get", "all", "values"]) { const f = stmt[m].bind(stmt); stmt[m] = (...a) => f(...(a.length ? a : bound)); }
@@ -138,7 +181,6 @@ export class Database {
 		let stmt = this._cache.get(sql);
 		if (stmt && stmt._h) return stmt;
 		stmt = new Statement(this, sql, true);
-		this._statements.add(stmt);
 		this._cache.set(sql, stmt);
 		return stmt;
 	}
@@ -187,8 +229,11 @@ export class Database {
 	fileControl() { throw new Error("fileControl isn't available on the JSC runtime"); }
 	close(throwOnError = false) {
 		if (!this._h) return;
-		if (!throwOnError) for (const stmt of [...this._statements]) stmt.finalize();
+		sweepStatements(this); // collected ones can't be in use: close(true) too
+		if (!throwOnError) for (const [, ref] of [...this._statements]) ref.deref()?.finalize();
 		wrap(() => s.close(this._h, throwOnError));
+		if (this._sweepTimer) clearTimeout(this._sweepTimer);
+		this._sweepTimer = null;
 		this._h = 0;
 		this._cache.clear();
 	}

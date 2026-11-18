@@ -244,6 +244,173 @@ NATIVE(n_blake2b) {
     return make_u8(ctx, out, (size_t)size);
 }
 
+// --- incremental digests: node:crypto's Hash and Hmac ---------------------
+// digestNew(alg, key) -> a digest; alg is sha1/sha256/sha384/sha512 (an HMAC
+// when key is bytes) or blake2b512. digestUpdate(d, data) feeds it,
+// digestCopy(d) clones it, digestFinal(d) -> its bytes and ends it. Each
+// update goes straight into the native context: nothing is buffered in JS.
+typedef enum { DIGEST_HASH, DIGEST_HMAC, DIGEST_BLAKE2B } digest_kind;
+typedef struct {
+    digest_kind kind;
+    hash_alg alg;
+    bool done;
+    union {
+#ifdef __APPLE__
+        CC_SHA1_CTX sha1;
+        CC_SHA256_CTX sha256;
+        CC_SHA512_CTX sha512; // SHA-384 too
+        CCHmacContext hmac;
+#else
+        gcry_md_hd_t md; // a hash or an HMAC
+#endif
+        crypto_blake2b_ctx blake2b;
+    } u;
+} digest_state;
+
+static void digest_finalize(JSObjectRef o) {
+    digest_state *d = JSObjectGetPrivate(o);
+    if (!d) return;
+#ifndef __APPLE__
+    if (d->kind != DIGEST_BLAKE2B && d->u.md) gcry_md_close(d->u.md);
+#endif
+    free(d);
+}
+static JSClassRef g_digest_class;
+static void digest_class_create(void) {
+    JSClassDefinition def = kJSClassDefinitionEmpty;
+    def.className = "LivewireDigest";
+    def.finalize = digest_finalize;
+    g_digest_class = JSClassCreate(&def);
+}
+static JSClassRef digest_class(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, digest_class_create);
+    return g_digest_class;
+}
+static digest_state *digest_of(JSContextRef ctx, JSValueRef v, JSValueRef *exc) {
+    digest_state *d = JSValueIsObjectOfClass(ctx, v, digest_class()) ? JSObjectGetPrivate((JSObjectRef)v) : NULL;
+    if (!d) { throw_message(ctx, exc, "Not a digest"); return NULL; }
+    if (d->done) { throw_message(ctx, exc, "Digest already called"); return NULL; }
+    return d;
+}
+static size_t digest_size(const digest_state *d) {
+    return d->kind == DIGEST_BLAKE2B ? 64 : hash_size[d->alg];
+}
+
+NATIVE(n_digest_new) {
+    UNUSED_ARGS;
+    digest_state *d = calloc(1, sizeof *d);
+    char *name = jsr_to_utf8(ctx, ARG(0));
+    bool blake = name && !strcmp(name, "blake2b512");
+    free(name);
+    if (blake) {
+        d->kind = DIGEST_BLAKE2B;
+        crypto_blake2b_init(&d->u.blake2b, 64);
+        return JSObjectMake(ctx, digest_class(), d);
+    }
+    d->alg = hash_named(ctx, ARG(0));
+    if (d->alg == HASH_BAD) { free(d); return throw_message(ctx, exc, "Unsupported digest"); }
+    size_t key_len = 0;
+    const uint8_t *key = JSValueIsUndefined(ctx, ARG(1)) ? NULL : BYTES_OR_EMPTY(bytes_of(ctx, ARG(1), &key_len));
+    d->kind = key ? DIGEST_HMAC : DIGEST_HASH;
+#ifdef __APPLE__
+    if (key) {
+        static const CCHmacAlgorithm ids[] = {kCCHmacAlgSHA1, kCCHmacAlgSHA256, kCCHmacAlgSHA384, kCCHmacAlgSHA512};
+        CCHmacInit(&d->u.hmac, ids[d->alg], key, key_len);
+    } else switch (d->alg) {
+    case HASH_SHA1: CC_SHA1_Init(&d->u.sha1); break;
+    case HASH_SHA256: CC_SHA256_Init(&d->u.sha256); break;
+    case HASH_SHA384: CC_SHA384_Init(&d->u.sha512); break;
+    case HASH_SHA512: CC_SHA512_Init(&d->u.sha512); break;
+    case HASH_BAD: break;
+    }
+#else
+    gcry_ready();
+    // An empty HMAC key is valid: it's padded with zeros like any short key.
+    uint8_t zero_key[1] = {0};
+    if (gcry_md_open(&d->u.md, gcry_hash_id[d->alg], key ? GCRY_MD_FLAG_HMAC : 0) ||
+        (key && gcry_md_setkey(d->u.md, key_len ? key : zero_key, key_len ? key_len : 1))) {
+        if (d->u.md) gcry_md_close(d->u.md);
+        free(d);
+        return throw_message(ctx, exc, key ? "HMAC failed" : "Hash failed");
+    }
+#endif
+    return JSObjectMake(ctx, digest_class(), d);
+}
+
+NATIVE(n_digest_update) {
+    UNUSED_ARGS;
+    digest_state *d = digest_of(ctx, ARG(0), exc);
+    if (!d) return JSValueMakeUndefined(ctx);
+    size_t n;
+    const uint8_t *p = BYTES_OR_EMPTY(bytes_of(ctx, ARG(1), &n));
+    if (d->kind == DIGEST_BLAKE2B) {
+        crypto_blake2b_update(&d->u.blake2b, p, n);
+        return JSValueMakeUndefined(ctx);
+    }
+#ifdef __APPLE__
+    // CC_LONG is 32 bits: feed large inputs in 1 GB pieces.
+    for (size_t o = 0; o < n;) {
+        CC_LONG k = (CC_LONG)(n - o > (1u << 30) ? (1u << 30) : n - o);
+        if (d->kind == DIGEST_HMAC) CCHmacUpdate(&d->u.hmac, p + o, k);
+        else switch (d->alg) {
+        case HASH_SHA1: CC_SHA1_Update(&d->u.sha1, p + o, k); break;
+        case HASH_SHA256: CC_SHA256_Update(&d->u.sha256, p + o, k); break;
+        case HASH_SHA384: CC_SHA384_Update(&d->u.sha512, p + o, k); break;
+        case HASH_SHA512: CC_SHA512_Update(&d->u.sha512, p + o, k); break;
+        case HASH_BAD: break;
+        }
+        o += k;
+    }
+#else
+    gcry_md_write(d->u.md, p, n);
+#endif
+    return JSValueMakeUndefined(ctx);
+}
+
+NATIVE(n_digest_copy) {
+    UNUSED_ARGS;
+    digest_state *d = digest_of(ctx, ARG(0), exc);
+    if (!d) return JSValueMakeUndefined(ctx);
+    digest_state *c = malloc(sizeof *c);
+    *c = *d; // CommonCrypto and Monocypher contexts are plain structs
+#ifndef __APPLE__
+    if (d->kind != DIGEST_BLAKE2B && gcry_md_copy(&c->u.md, d->u.md)) {
+        free(c);
+        return throw_message(ctx, exc, "Hash copy failed");
+    }
+#endif
+    return JSObjectMake(ctx, digest_class(), c);
+}
+
+NATIVE(n_digest_final) {
+    UNUSED_ARGS;
+    digest_state *d = digest_of(ctx, ARG(0), exc);
+    if (!d) return JSValueMakeUndefined(ctx);
+    size_t size = digest_size(d);
+    uint8_t *out = malloc(size);
+    d->done = true;
+    if (d->kind == DIGEST_BLAKE2B) {
+        crypto_blake2b_final(&d->u.blake2b, out);
+        return make_u8(ctx, out, size);
+    }
+#ifdef __APPLE__
+    if (d->kind == DIGEST_HMAC) CCHmacFinal(&d->u.hmac, out);
+    else switch (d->alg) {
+    case HASH_SHA1: CC_SHA1_Final(out, &d->u.sha1); break;
+    case HASH_SHA256: CC_SHA256_Final(out, &d->u.sha256); break;
+    case HASH_SHA384: CC_SHA384_Final(out, &d->u.sha512); break;
+    case HASH_SHA512: CC_SHA512_Final(out, &d->u.sha512); break;
+    case HASH_BAD: break;
+    }
+#else
+    memcpy(out, gcry_md_read(d->u.md, 0), size);
+    gcry_md_close(d->u.md);
+    d->u.md = NULL;
+#endif
+    return make_u8(ctx, out, size);
+}
+
 static void crypto_install(JSContextRef ctx, JSObjectRef node) {
     JSObjectRef c = JSObjectMake(ctx, NULL, NULL);
     jsr_set_function(ctx, c, "hash", n_hash);
@@ -256,5 +423,9 @@ static void crypto_install(JSContextRef ctx, JSObjectRef node) {
     jsr_set_function(ctx, c, "ed25519Sign", n_ed25519_sign);
     jsr_set_function(ctx, c, "ed25519Verify", n_ed25519_verify);
     jsr_set_function(ctx, c, "blake2b", n_blake2b);
+    jsr_set_function(ctx, c, "digestNew", n_digest_new);
+    jsr_set_function(ctx, c, "digestUpdate", n_digest_update);
+    jsr_set_function(ctx, c, "digestCopy", n_digest_copy);
+    jsr_set_function(ctx, c, "digestFinal", n_digest_final);
     set_prop(ctx, node, "crypto", c);
 }

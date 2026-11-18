@@ -1,9 +1,29 @@
 // The HTTP and WebSocket server the fetch and WebSocket conformance tests
 // talk to, on both the reference runtime and the JSC host. run.ts starts it
 // and passes its origin as LIVEWIRE_HTTP. Prints the origin, then serves
-// until killed.
+// until killed. With a path argument, it also serves its WebSocket on that
+// unix socket (for ws+unix://), whatever the request path.
 const big = new Uint8Array(3 * 1024 * 1024).map((_, i) => i % 251);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function upgrade(req: Request, server: Bun.Server<{ protocol: string }>) {
+	const offered = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+	const protocol = offered[0] ?? "";
+	const headers: Record<string, string> = protocol ? { "Sec-WebSocket-Protocol": protocol } : {};
+	if (server.upgrade(req, { data: { protocol }, headers })) return undefined;
+	return new Response("not a websocket", { status: 400 });
+}
+const websocket: Bun.WebSocketHandler<{ protocol: string }> = {
+	open(ws) {
+		ws.send("welcome " + ws.data.protocol);
+	},
+	message(ws, message) {
+		if (message === "close-me") return void ws.close(4001, "bye");
+		if (message === "big") return void ws.send("x".repeat(200_000));
+		if (message === "unicode") return void ws.send("héllo 🌍 ✓");
+		ws.send(message);
+	},
+};
 
 const server = Bun.serve<{ protocol: string }, never>({
 	hostname: "127.0.0.1",
@@ -50,26 +70,13 @@ const server = Bun.serve<{ protocol: string }, never>({
 					}),
 					{ headers: { "content-type": "text/plain" } },
 				);
-			case "/ws": {
-				const offered = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-				const protocol = offered[0] ?? "";
-				const headers: Record<string, string> = protocol ? { "Sec-WebSocket-Protocol": protocol } : {};
-				if (server.upgrade(req, { data: { protocol }, headers })) return undefined;
-				return new Response("not a websocket", { status: 400 });
-			}
+			case "/ws":
+				return upgrade(req, server);
 		}
 		return new Response("unknown " + url.pathname, { status: 500 });
 	},
-	websocket: {
-		open(ws) {
-			ws.send("welcome " + ws.data.protocol);
-		},
-		message(ws, message) {
-			if (message === "close-me") return void ws.close(4001, "bye");
-			if (message === "big") return void ws.send("x".repeat(200_000));
-			if (message === "unicode") return void ws.send("héllo 🌍 ✓");
-			ws.send(message);
-		},
-	},
+	websocket,
 });
+const unix = process.argv[2];
+if (unix) Bun.serve<{ protocol: string }, never>({ unix, fetch: (req, s) => upgrade(req, s), websocket });
 console.log(`http://127.0.0.1:${server.port}`);
