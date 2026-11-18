@@ -11,6 +11,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __APPLE__
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 typedef struct worker_msg {
     char *json;
@@ -198,6 +203,13 @@ static void *worker_main(void *arg) {
     char name[64];
     snprintf(name, sizeof name, "w:%s", base ? base + 1 : w->path);
     jsr_name_thread(name);
+#ifndef __APPLE__
+    // LIVEWIRE_WORKER_NICE=<n>: Workers' threads run at that nice value, below
+    // the JS thread and GTK's (an experiment for T1290: does a Worker's startup
+    // compete with the page's load for CPU?).
+    const char *nice_to = getenv("LIVEWIRE_WORKER_NICE");
+    if (nice_to && *nice_to) setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), atoi(nice_to));
+#endif
     jsr_runtime *parent = w->parent;
     jsr_runtime *rt = jsr_create_worker(jsr_argc(parent), jsr_argv(parent), w);
     // From here the parent posts straight to this runtime; what it sent before
