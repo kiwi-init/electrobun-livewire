@@ -53,6 +53,7 @@ import {
 	macosNativeArchitecture,
 	macosZigTarget,
 } from "./scripts/macos-release.js";
+import { systemTarBinary } from "./scripts/windows-tar.mjs";
 import {
 	formatWindowsBatchCommand,
 	serializeNativeCompileFlags,
@@ -1199,7 +1200,7 @@ async function vendorZig() {
 		const zigArch = ZIG_HOST_ARCH === "arm64" ? "aarch64" : "x86_64";
 		const zigFolder = `zig-${zigArch}-windows-${ZIG_VERSION}`;
 		await $`rm -rf vendors/zig-temp vendors/zig.zip`;
-		await $`mkdir -p vendors/zig && curl -fL --retry 5 https://ziglang.org/download/${ZIG_VERSION}/${zigFolder}.zip -o vendors/zig.zip && powershell -ExecutionPolicy Bypass -Command Expand-Archive -Path vendors/zig.zip -DestinationPath vendors/zig-temp && mv vendors/zig-temp/${zigFolder}/zig.exe vendors/zig && mv vendors/zig-temp/${zigFolder}/lib vendors/zig/`;
+		await $`mkdir -p vendors/zig && curl -fL --retry 5 https://ziglang.org/download/${ZIG_VERSION}/${zigFolder}.zip -o vendors/zig.zip && mkdir -p vendors/zig-temp && ${systemTarBinary()} -xf vendors/zig.zip -C vendors/zig-temp && mv vendors/zig-temp/${zigFolder}/zig.exe vendors/zig && mv vendors/zig-temp/${zigFolder}/lib vendors/zig/`;
 		await $`rm -rf vendors/zig-temp vendors/zig.zip`;
 	} else if (OS === "linux") {
 		const zigArch = ARCH === "arm64" ? "aarch64" : "x86_64";
@@ -1343,7 +1344,7 @@ async function vendorGo() {
 		validateDownload(tempArchive, "go");
 
 		if (OS === "win") {
-			await $`powershell -ExecutionPolicy Bypass -Command Expand-Archive -Path "${tempArchive}" -DestinationPath vendors -Force`;
+			await $`${systemTarBinary()} -xf ${tempArchive} -C vendors`;
 		} else {
 			await $`tar -xzf "${tempArchive}" -C vendors`;
 		}
@@ -1438,7 +1439,7 @@ async function vendorOdin() {
 
 		mkdirSync(tempExtractDir, { recursive: true });
 		if (OS === "win") {
-			await $`powershell -ExecutionPolicy Bypass -Command Expand-Archive -Path "${tempArchive}" -DestinationPath "${tempExtractDir}" -Force`;
+			await $`${systemTarBinary()} -xf ${tempArchive} -C ${tempExtractDir}`;
 		} else {
 			await $`tar -xzf "${tempArchive}" -C "${tempExtractDir}"`;
 		}
