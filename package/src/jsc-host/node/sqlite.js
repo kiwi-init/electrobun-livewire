@@ -59,14 +59,26 @@ const fromNative = (row) => {
 // A statement nobody finalized is finalized once it's collected, as Bun's
 // are. db._statements maps each live handle to its statement's WeakRef: a
 // handle number is reused once freed, so the ref must still match.
+// FinalizationRegistry callbacks never run on WebKitGTK's JSC here (its
+// deferred work waits on a GLib context the host doesn't run), so
+// sweepStatements() also finalizes collected ones on prepare and close.
 const unreachable = new FinalizationRegistry(({ live, h, ref }) => {
 	if (live.get(h) !== ref) return;
 	live.delete(h);
 	s.finalize(h);
 });
+function sweepStatements(db) {
+	for (const [h, ref] of db._statements) {
+		if (ref.deref()) continue;
+		db._statements.delete(h);
+		s.finalize(h);
+	}
+	db._sweepAt = Math.max(64, db._statements.size * 2);
+}
 
 export class Statement {
 	constructor(db, sql, persistent) {
+		if (db._statements.size >= db._sweepAt) sweepStatements(db);
 		const p = wrap(() => s.prepare(db._handle(), sql, persistent));
 		if (!p.handle) throw new SQLiteError("Query contained no valid SQL statement; likely empty query.", { code: "SQLITE_MISUSE", errno: 21 });
 		this._db = db;
@@ -127,6 +139,7 @@ export class Database {
 		this._strict = !!options.strict;
 		this._safeIntegers = !!options.safeIntegers;
 		this._statements = new Map(); // handle -> WeakRef of its Statement
+		this._sweepAt = 64;
 		this._cache = new Map();
 		this._h = options._handle ?? wrap(() => s.open(this.filename, flags));
 	}
@@ -203,13 +216,8 @@ export class Database {
 	fileControl() { throw new Error("fileControl isn't available on the JSC runtime"); }
 	close(throwOnError = false) {
 		if (!this._h) return;
-		if (!throwOnError) {
-			for (const [h, ref] of [...this._statements]) {
-				const stmt = ref.deref();
-				if (stmt) stmt.finalize();
-				else { s.finalize(h); this._statements.delete(h); }
-			}
-		}
+		sweepStatements(this); // collected ones can't be in use: close(true) too
+		if (!throwOnError) for (const [, ref] of [...this._statements]) ref.deref()?.finalize();
 		wrap(() => s.close(this._h, throwOnError));
 		this._h = 0;
 		this._cache.clear();

@@ -1,7 +1,8 @@
 // expect: prepared 200
-// expect: live after idle true
+// expect: collected ones finalized true
 // expect: strict close ok
-// Statements nobody finalizes are finalized once collected (as on Bun):
+// Statements nobody finalizes are finalized once collected (as on Bun): by
+// the FinalizationRegistry where it runs, else by the sweep in prepare().
 // close(true), which fails while any statement is open, then succeeds.
 import { Database } from "bun:sqlite";
 
@@ -15,8 +16,10 @@ setTimeout(() => {
 	console.log("prepared", 200);
 }, 0);
 setTimeout(() => {
+	const kept = db.prepare("SELECT 1");
 	// JSC scans the stack conservatively: allow a few survivors.
-	console.log("live after idle", db._statements.size <= 20);
+	console.log("collected ones finalized", db._statements.size <= 21);
+	kept.finalize();
 	for (const [, ref] of db._statements) ref.deref()?.finalize();
 	try {
 		db.close(true);
