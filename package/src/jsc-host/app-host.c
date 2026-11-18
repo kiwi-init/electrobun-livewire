@@ -10,7 +10,7 @@
 // working directory, and Bun's own flags before the script ignored.
 #include "runtime.h"
 #include "node.h"
-#include "ffi/ffi.h"
+#include "ffi/glue.h"
 
 #include <dlfcn.h>
 #include <limits.h>

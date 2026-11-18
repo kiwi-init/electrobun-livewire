@@ -1,16 +1,39 @@
 // bun:ffi on the Livewire JSC runtime. App bundles import this in place of
-// Bun's module; the natives (__ffi) come from glue generated at build time, so
-// only libraries and callback signatures known at build time work here.
-const n = globalThis.__ffi;
-if (!n) throw new Error("bun:ffi: the Livewire JSC host's ffi glue isn't installed");
+// Bun's module. A symbol the build generated glue for (the SDK's libraries,
+// natives in __ffi from ffi/gen.ts) is called through that glue; any other
+// symbol, and a JSCallback signature without generated trampolines, goes
+// through libffi (ffi/dynamic.inc), bound at run time from its declared types.
+const missing = () => {
+	throw new Error("bun:ffi: the Livewire JSC host's ffi glue isn't installed");
+};
+// Lazily, so the build tools (ffi/extract-app.ts) can read the types under Bun.
+const n = globalThis.__ffi ?? new Proxy({}, { get: missing });
 
-const names = ["void", "bool", "char", "i8", "u8", "i16", "u16", "i32", "int", "u32", "i64", "i64_fast", "u64", "u64_fast", "f32", "f64", "float", "double", "ptr", "pointer", "cstring", "function", "callback", "buffer"];
+// Bun's FFIType names, each to itself (bundles use them as strings).
+const names = [
+	"void", "bool", "char", "i8", "u8", "i16", "u16", "i32", "int", "c_int", "u32", "c_uint", "i64", "i64_fast", "isize", "u64", "u64_fast", "usize",
+	"f32", "f64", "float", "double", "ptr", "pointer", "void*", "char*", "cstring", "function", "callback", "fn", "buffer",
+	"int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int64_t", "uint64_t", "napi_env", "napi_value",
+];
 export const FFIType = Object.fromEntries(names.map((name) => [name, name]));
 export const suffix = globalThis.process?.platform === "linux" ? "so" : "dylib";
 
-const canonical = { int: "i32", int32_t: "i32", uint32_t: "u32", pointer: "ptr", callback: "function", double: "f64", uint64_t: "u64" };
-const canon = (t) => canonical[String(t)] ?? String(t);
-const sigKey = (args, returns) => (args ?? []).map(canon).join(",") + "->" + canon(returns ?? "void");
+// One name per type: what the glue's signature keys and the libffi natives use.
+// A number is Bun's own FFIType value.
+const byNumber = ["i8", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f64", "f32", "bool", "ptr", "void", "cstring", "i64_fast", "u64_fast", "function", "napi_env", "napi_value", "buffer"];
+const aliases = {
+	char: "i8", int8_t: "i8", uint8_t: "u8", int16_t: "i16", uint16_t: "u16", int: "i32", c_int: "i32", int32_t: "i32", c_uint: "u32", uint32_t: "u32",
+	int64_t: "i64", isize: "i64", uint64_t: "u64", usize: "u64", float: "f32", double: "f64", pointer: "ptr", "void*": "ptr", "char*": "ptr",
+	callback: "function", fn: "function",
+};
+export const canonicalType = (t) => (typeof t === "number" ? (byNumber[t] ?? String(t)) : (aliases[String(t)] ?? String(t)));
+// The types the host calls and returns; an argument may also be a buffer (its
+// bytes' address). A JSCallback takes at most 8 arguments.
+export const SUPPORTED_TYPES = ["void", "bool", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i64_fast", "u64_fast", "f32", "f64", "ptr", "cstring", "function"];
+export const CALLBACK_MAX_ARGS = 8;
+const argType = (t) => (canonicalType(t) === "buffer" ? "ptr" : canonicalType(t));
+
+const sigKey = (args, returns) => (args ?? []).map(argType).join(",") + "->" + canonicalType(returns ?? "void");
 // An argument declared cstring is a pointer in Bun (its C type is the same),
 // and the glue's cstring slots take pointers: the two match as arguments.
 const looseKey = (sig) => {
@@ -20,17 +43,16 @@ const looseKey = (sig) => {
 const libraryKey = (path) => String(path).split("/").pop().replace(/^lib/, "").replace(/\.(dylib|so|dll)$/, "");
 
 export function dlopen(path, symbols) {
-	const key = libraryKey(path);
-	const known = n.signatures(key);
-	if (!known) throw new Error(`bun:ffi: ${key} has no generated glue in this build`);
+	const known = n.signatures(libraryKey(path)) ?? {};
 	const wanted = Object.keys(symbols);
+	const generated = wanted.filter((name) => known[name] !== undefined && looseKey(known[name]) === looseKey(sigKey(symbols[name].args, symbols[name].returns)));
+	const opened = generated.length ? n.open(libraryKey(path), String(path), generated) : {};
+	const out = {};
 	for (const name of wanted) {
-		const sig = sigKey(symbols[name].args, symbols[name].returns);
-		if (known[name] === undefined || looseKey(known[name]) !== looseKey(sig)) {
-			throw new Error(`bun:ffi: ${key}.${name} is declared as ${sig} but the build generated ${known[name] ?? "nothing"}`);
-		}
+		const { args, returns } = symbols[name] ?? {};
+		out[name] = opened[name] ?? n.bind(String(path), name, (args ?? []).map(argType), canonicalType(returns ?? "void"));
 	}
-	return { symbols: n.open(key, String(path), wanted), close() {} };
+	return { symbols: out, close() {} };
 }
 
 export class JSCallback {

@@ -55,6 +55,57 @@ const char *tl_str_via_thread(str_cb cb) {
     return job.out;
 }
 
+// Not in tests/ffi/decls.json, so the host binds these through libffi
+// (ffi/dynamic.inc), as it does an app's own library: every argument and
+// return type, more arguments than registers, callbacks of signatures the
+// glue has no trampolines for.
+int64_t tl_dyn_mix(int8_t a, uint8_t b, int16_t c, uint16_t d, int32_t e, uint32_t f, int64_t g, float h, double i, const char *s, int8_t j, uint16_t k) {
+    return a + b + c + d + e + (int64_t)f + g + (int64_t)(h * 4) + (int64_t)(i * 8) + (s ? (int64_t)strlen(s) : 0) + j * 1000 + k * 100000;
+}
+int8_t tl_dyn_i8(int32_t v) { return (int8_t)v; }
+uint16_t tl_dyn_u16(int32_t v) { return (uint16_t)v; }
+float tl_dyn_f32(float v) { return v * 2; }
+int64_t tl_dyn_i64(int64_t v) { return v - 1; }
+uint64_t tl_dyn_u64(uint64_t v) { return v; }
+bool tl_dyn_bool(uint16_t v) { return v > 1; }
+
+typedef double (*mix_cb)(int64_t, float, uint8_t, const char *);
+double tl_dyn_call_mix(mix_cb cb) { return cb(-5, 1.5f, 200, "mix") * 2; }
+
+typedef int8_t (*i8_cb)(int8_t);
+typedef struct { i8_cb cb; int8_t out; } i8_job;
+static void *run_i8_job(void *arg) {
+    i8_job *job = arg;
+    job->out = job->cb(-3);
+    return NULL;
+}
+// A sync callback from another thread while JS waits in this call.
+int32_t tl_dyn_i8_via_thread(i8_cb cb) {
+    i8_job job = {cb, 0};
+    pthread_t t;
+    pthread_create(&t, NULL, run_i8_job, &job);
+    pthread_join(t, NULL);
+    return job.out;
+}
+
+typedef void (*pair_cb)(int16_t, double);
+typedef struct { pair_cb cb; int16_t v; } pair_job;
+static void *run_pair_job(void *arg) {
+    pair_job *job = arg;
+    usleep(10 * 1000);
+    job->cb(job->v, 0.25);
+    free(job);
+    return NULL;
+}
+void tl_dyn_call_thread(pair_cb cb, int16_t v) {
+    pair_job *job = malloc(sizeof *job);
+    job->cb = cb;
+    job->v = v;
+    pthread_t t;
+    pthread_create(&t, NULL, run_pair_job, job);
+    pthread_detach(t);
+}
+
 typedef struct { event_cb cb; uint32_t delay_ms; } thread_job;
 static void *run_job(void *arg) {
     thread_job *job = arg;

@@ -196,7 +196,7 @@ cbs.forEach(([key, sig], s) => {
 	const p = "cb" + s;
 	const params = args.length ? args.map((t, j) => ctype(t) + " a" + j).join(", ") : "void";
 	c += "// " + key + "\nstatic ffi_slot " + p + "_slots[" + SLOTS + "];\n";
-	c += "static JSValueRef " + p + "_args(JSContextRef ctx, ffi_call *call, JSValueRef *out) {\n    (void)ctx; (void)call; (void)out;\n";
+	c += "static JSValueRef " + p + "_args(JSContextRef ctx, ffi_cb_call *call, JSValueRef *out) {\n    (void)ctx; (void)call; (void)out;\n";
 	args.forEach((t, j) => {
 		const v = "call->a[" + j + "]";
 		const make: Record<string, string> = {
@@ -210,7 +210,7 @@ cbs.forEach(([key, sig], s) => {
 	const wants = ret !== "void";
 	c += "static " + ctype(ret) + " " + p + "_invoke(int slot" + (args.length ? ", " + params : "") + ") {\n";
 	c += "    FFI_TRACE(\"callback " + p + "\");\n";
-	c += "    ffi_call *call = calloc(1, sizeof *call);\n    call->slot = &" + p + "_slots[slot];\n    call->argc = " + args.length + ";\n    call->make_args = " + p + "_args;\n";
+	c += "    ffi_cb_call *call = calloc(1, sizeof *call);\n    call->slot = &" + p + "_slots[slot];\n    call->argc = " + args.length + ";\n    call->make_args = " + p + "_args;\n";
 	args.forEach((t, j) => {
 		const field: Record<string, string> = { bool: "b", u32: "u32", i32: "i32", f64: "f64", u64: "u64", ptr: "p", function: "p" };
 		if (t === "cstring") c += "    call->a[" + j + "].s = a" + j + " ? strdup(a" + j + ") : NULL;\n    call->owns_string[" + j + "] = true;\n";

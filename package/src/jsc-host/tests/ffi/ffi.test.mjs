@@ -13,11 +13,22 @@
 // expect: ret cb 1
 // expect: str cb [str 3]
 // expect: str via thread [str 9] fast
+// expect: dyn mix -1095511334283 bigint
+// expect: dyn i8 -56 u16 65535 f32 2.5 bool true false
+// expect: dyn i64 -4611686018427387905 bigint
+// expect: dyn u64_fast 42 number 9223372036854775808 bigint
+// expect: dyn cb args bigint -5 1.5 200 mix
+// expect: dyn cb 21
+// expect: dyn cb via thread 106 fast
+// expect: callback past 16 slots 7 sync
+// expect: redeclared binds as declared -56
 // expect: sync cb 7 sync
 // expect: thread cb 20 from thread 20
 // expect: closed
-// expect: mismatch rejected
-// The bun:ffi shim over the generated glue, against tests/ffi/testlib.c.
+// expect: dyn thread cb 7 0.25
+// The bun:ffi shim over the generated glue, against tests/ffi/testlib.c, and
+// over libffi for what the glue doesn't have (the tl_dyn_* symbols, which
+// tests/ffi/decls.json leaves out, as an app's own library).
 import { dlopen, FFIType, JSCallback, CString, ptr, toArrayBuffer, read } from "../../ffi/bun-ffi.js";
 
 const lib = dlopen(process.env.LIVEWIRE_TESTLIB, {
@@ -73,19 +84,54 @@ const started = performance.now();
 const viaThread = lib.tl_str_via_thread(strCb).toString();
 console.log("str via thread", viaThread, performance.now() - started < 1000 ? "fast" : "slow");
 
+const dyn = dlopen(process.env.LIVEWIRE_TESTLIB, {
+	tl_dyn_mix: { args: ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "f32", "f64", "cstring", "char", "uint16_t"], returns: "i64" },
+	tl_dyn_i8: { args: ["int"], returns: "i8" },
+	tl_dyn_u16: { args: ["i32"], returns: "u16" },
+	tl_dyn_f32: { args: ["float"], returns: "f32" },
+	tl_dyn_i64: { args: ["i64"], returns: "i64" },
+	tl_dyn_u64: { args: ["u64"], returns: "u64_fast" },
+	tl_dyn_bool: { args: ["u16"], returns: "bool" },
+	tl_dyn_call_mix: { args: ["function"], returns: "f64" },
+	tl_dyn_i8_via_thread: { args: ["function"], returns: "i32" },
+	tl_dyn_call_thread: { args: ["callback", "i16"], returns: "void" },
+}).symbols;
+const mixed = dyn.tl_dyn_mix(-1, 255, -300, 65535, -70000, 4000000000, -(2n ** 40n), 0.5, -0.25, cstr("four"), -2, 3);
+console.log("dyn mix", String(mixed), typeof mixed);
+console.log("dyn i8", dyn.tl_dyn_i8(200), "u16", dyn.tl_dyn_u16(-1), "f32", dyn.tl_dyn_f32(1.25), "bool", dyn.tl_dyn_bool(2), dyn.tl_dyn_bool(1));
+console.log("dyn i64", String(dyn.tl_dyn_i64(-(2n ** 62n))), typeof dyn.tl_dyn_i64(5));
+console.log("dyn u64_fast", dyn.tl_dyn_u64(42), typeof dyn.tl_dyn_u64(42), String(dyn.tl_dyn_u64(2n ** 63n)), typeof dyn.tl_dyn_u64(2n ** 63n));
+// Callbacks of signatures the glue has no trampolines for: libffi closures.
+const mixCb = new JSCallback((a, b, c, s) => { console.log("dyn cb args", typeof a, String(a), b, c, String(s)); return 10.5; }, { args: ["i64", "f32", "u8", "cstring"], returns: "f64" });
+console.log("dyn cb", dyn.tl_dyn_call_mix(mixCb));
+const i8Cb = new JSCallback((v) => v * 50, { args: ["i8"], returns: "i8" });
+const i8Started = performance.now();
+const i8Out = dyn.tl_dyn_i8_via_thread(i8Cb.ptr);
+console.log("dyn cb via thread", i8Out, performance.now() - i8Started < 1000 ? "fast" : "slow");
+// A signature's 16 generated slots taken: the rest are libffi closures.
+const many = Array.from({ length: 20 }, (_, i) => new JSCallback((id, text) => console.log("callback past 16 slots", id, text), { args: ["u32", "cstring"], returns: "void" }));
+lib.tl_call_sync(many[19].ptr);
+for (const cb of many) cb.close();
+// A symbol the glue has under another signature is bound as declared, as Bun does.
+const redeclared = dlopen(process.env.LIVEWIRE_TESTLIB, { tl_add: { args: ["i32", "i32"], returns: "i8" } }).symbols;
+console.log("redeclared binds as declared", redeclared.tl_add(100, 100));
+
 const threadCb = new JSCallback(
 	(id, text) => {
 		console.log("thread cb", id, text);
 		threadCb.close();
 		console.log("closed");
-		try {
-			dlopen(process.env.LIVEWIRE_TESTLIB, { tl_add: { args: [FFIType.f64], returns: FFIType.i32 } });
-		} catch (e) {
-			console.log(String(e.message).includes("declared as f64->i32") ? "mismatch rejected" : e.message);
-		}
-		clearTimeout(keepAlive);
+		dyn.tl_dyn_call_thread(pairCb.ptr, 7);
 	},
 	{ args: ["u32", FFIType.cstring], returns: "void", threadsafe: true },
+);
+const pairCb = new JSCallback(
+	(v, x) => {
+		console.log("dyn thread cb", v, x);
+		pairCb.close();
+		clearTimeout(keepAlive);
+	},
+	{ args: ["i16", "f64"], returns: "void", threadsafe: true },
 );
 lib.tl_call_thread(threadCb.ptr, 20);
 const keepAlive = setTimeout(() => console.log("thread callback never came"), 2000);
