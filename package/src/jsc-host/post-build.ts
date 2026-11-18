@@ -16,7 +16,14 @@
 //     mac: { entitlements: { "com.apple.security.cs.allow-jit": true } },
 //   },
 //   scripts: { postBuild: ".hutch/devkit/api/jsc-host/post-build.ts" },
-// LIVEWIRE_JSC_ENTRYPOINT overrides the entry read from the config.
+// LIVEWIRE_JSC_ENTRYPOINT overrides the entry read from the config, whose
+// build.bun.define the bundle gets too.
+// Other scripts the app runs on its own main binary (a CLI it starts as
+// `MacOS/main script.js`) are named relative to the app's Resources, with
+// `--script kiwi.js` or LIVEWIRE_JSC_SCRIPTS="kiwi.js,more.js"; each is bundled
+// for the host in place. An app with its own postBuild runs this one from it
+// (`bun .hutch/devkit/api/jsc-host/post-build.ts --script ...`), after the
+// checks that need Bun and before anything that hashes the app's files.
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -48,17 +55,20 @@ function findApp(buildDir: string): AppLayout | undefined {
 	return undefined;
 }
 
-async function entrypoint(): Promise<string> {
-	const fromEnv = process.env["LIVEWIRE_JSC_ENTRYPOINT"];
-	if (fromEnv) return fromEnv;
+type BunBuild = { entrypoint?: string; define?: Record<string, string> };
+
+async function bunBuildConfig(): Promise<BunBuild> {
 	const configPath = join(projectDir, "electrobun.config.ts");
-	if (existsSync(configPath)) {
-		const loaded: unknown = (await import(configPath)).default;
-		const config: unknown = typeof loaded === "function" ? await loaded() : loaded;
-		const entry = (config as { build?: { bun?: { entrypoint?: string } } } | undefined)?.build?.bun?.entrypoint;
-		if (entry) return entry;
-	}
-	return "src/bun/index.ts";
+	if (!existsSync(configPath)) return {};
+	const loaded: unknown = (await import(configPath)).default;
+	const config: unknown = typeof loaded === "function" ? await loaded() : loaded;
+	return (config as { build?: { bun?: BunBuild } } | undefined)?.build?.bun ?? {};
+}
+
+function scriptsAsked(): string[] {
+	const fromArgs = process.argv.flatMap((arg, i) => (process.argv[i - 1] === "--script" ? [arg] : []));
+	const fromEnv = (process.env["LIVEWIRE_JSC_SCRIPTS"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+	return [...fromArgs, ...fromEnv];
 }
 
 const buildDir = process.env["ELECTROBUN_BUILD_DIR"] ?? fail("ELECTROBUN_BUILD_DIR isn't set: run this as a Hutch postBuild hook");
@@ -71,16 +81,30 @@ const host = join(here, "main");
 if (!existsSync(host)) fail("this devkit has no JSC host for " + os + " (" + host + ")");
 
 // 1. The main process, bundled for the JSC host against this devkit's SDK.
-const entry = await entrypoint();
+const bunBuild = await bunBuildConfig();
+const entry = process.env["LIVEWIRE_JSC_ENTRYPOINT"] || bunBuild.entrypoint || "src/bun/index.ts";
+const defines = Object.entries(bunBuild.define ?? {}).flatMap(([name, value]) => ["--define", name + "=" + value]);
 const aliases = Object.entries(ELECTROBUN_JAVASCRIPT_SDK_EXPORTS).flatMap(([subpath, path]) => [
 	"--alias",
 	"electrobun" + subpath.slice(1) + "=" + join(devkitRoot, path),
 ]);
 const bundled = Bun.spawnSync(
-	[process.execPath, join(here, "bundle.ts"), entry, join(app.resources, "app", "bun", "index.js"), "--minify", ...aliases, "--preload-dir", app.resources],
+	[process.execPath, join(here, "bundle.ts"), entry, join(app.resources, "app", "bun", "index.js"), "--minify", ...aliases, ...defines, "--preload-dir", app.resources],
 	{ cwd: projectDir, stdout: "inherit", stderr: "inherit" },
 );
 if (bundled.exitCode !== 0) fail("bundling " + entry + " failed");
+
+// 1c. Scripts the app runs as `MacOS/main script.js` (they are self-contained
+// Bun bundles, so they get the shims but no SDK aliases or preload).
+for (const rel of scriptsAsked()) {
+	const file = resolve(app.resources, rel);
+	if (!file.startsWith(app.resources + "/") || !existsSync(file)) fail("--script " + rel + ": no such file in " + app.resources);
+	const out = join(mkdtempSync(join(tmpdir(), "livewire-jsc-script-")), "script.js");
+	const script = Bun.spawnSync([process.execPath, join(here, "bundle.ts"), file, out, "--minify"], { cwd: projectDir, stdout: "inherit", stderr: "inherit" });
+	if (script.exitCode !== 0) fail("bundling the script " + rel + " failed");
+	copyFileSync(out, file);
+	rmSync(join(out, ".."), { recursive: true, force: true });
+}
 
 // 1b. Workers: any other script in app/bun (a `new Worker(file)` target the
 // app's build put there) is a Bun bundle too, so each is bundled again for the
