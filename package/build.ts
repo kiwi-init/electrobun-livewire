@@ -1056,6 +1056,7 @@ async function buildJscHost(libExt: ".dylib" | ".so") {
 	await $`sh src/jsc-host/build-host.sh ${join(out, "main")} --sdk src/sdks/main --check-lib ${"dist/libElectrobunCore" + libExt} --check-lib ${"dist/libNativeWrapper" + libExt}`.env({
 		...process.env,
 		BUN: process.execPath,
+		MACOSX_DEPLOYMENT_TARGET: MACOS_DEPLOYMENT_TARGET,
 	});
 	cpSync(join("src", "jsc-host", "node"), join(out, "node"), { recursive: true, force: true });
 	for (const name of ["bun-ffi.js", "extract-app.ts"]) cpSync(join("src", "jsc-host", "ffi", name), join(out, "ffi", name), { force: true });

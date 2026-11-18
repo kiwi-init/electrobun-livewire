@@ -92,8 +92,8 @@ NATIVE(n_read) {
     else if (!strcmp(kind, "i32")) v = JSValueMakeNumber(ctx, READ(int32_t));
     else if (!strcmp(kind, "f32")) v = JSValueMakeNumber(ctx, READ(float));
     else if (!strcmp(kind, "f64")) v = JSValueMakeNumber(ctx, READ(double));
-    else if (!strcmp(kind, "u64")) v = JSBigIntCreateWithUInt64(ctx, READ(uint64_t), NULL);
-    else if (!strcmp(kind, "i64")) v = JSBigIntCreateWithInt64(ctx, READ(int64_t), NULL);
+    else if (!strcmp(kind, "u64")) v = ffi_bigint_from_u64(ctx, READ(uint64_t));
+    else if (!strcmp(kind, "i64")) v = ffi_bigint_from_i64(ctx, READ(int64_t));
     else if (!strcmp(kind, "ptr") || !strcmp(kind, "intptr")) v = JSValueMakeNumber(ctx, (double)READ(uintptr_t));
     else v = NULL;
 #undef READ
