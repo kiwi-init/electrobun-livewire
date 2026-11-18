@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Stamps a Livewire release version everywhere the product version lives
-// (package, lockfile, Kitchen, npm bootstrap, Rust SDK), for the PR that
+// (package, lockfile, Kitchen, test apps, npm bootstrap, Rust SDK), for the PR that
 // precedes a release. No git operations: commit and open a PR.
 //
 //   node package/scripts/set-livewire-version.mjs 2026.10.0
@@ -12,7 +12,7 @@
 // Electrobun version in Hutch's per-version cache.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -36,6 +36,14 @@ export function nextLivewireVersion(current, now) {
 	if (!isLivewireVersion(current)) return `${month}.0`;
 	const [year, mon, patch] = current.split(".");
 	return `${year}.${mon}` === month ? `${month}.${Number(patch) + 1}` : `${month}.0`;
+}
+
+/** A test app's hutch.config.ts with its `electrobun: { version: "…" }` pin, if it has one, set to `version`. */
+export function updateTestAppPin(source, version) {
+	return source.replace(
+		/(electrobun:\s*\{\s*version:\s*")20\d\d\.\d+\.\d+(")/,
+		(_, before, after) => `${before}${version}${after}`,
+	);
 }
 
 export function setLivewireVersion(version, repoRoot) {
@@ -71,6 +79,14 @@ export function setLivewireVersion(version, repoRoot) {
 	writeFileSync(npmBootstrapPath, npmBootstrap);
 	writeFileSync(npmResolverPath, npmResolver);
 	for (const update of rustSdk) writeFileSync(update.path, update.source);
+	const testApps = join(packageDir, "test-apps");
+	for (const app of readdirSync(testApps)) {
+		const config = join(testApps, app, "hutch.config.ts");
+		if (!existsSync(config)) continue;
+		const source = readFileSync(config, "utf8");
+		const updated = updateTestAppPin(source, version);
+		if (updated !== source) writeFileSync(config, updated);
+	}
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
