@@ -1,10 +1,8 @@
-// bun:ffi through libffi, for what the generated glue doesn't have: an app's
-// own libraries and symbols (its dlopen tables), a symbol declared with another
-// signature than the SDK's, and JSCallback signatures without generated
-// trampolines (or with all 16 slots taken). Bound at run time from the declared
-// types, so a released host needs no rebuild for them (T1113). The system
-// libffi: macOS ships it; on Linux GLib depends on it.
-// Included by natives.inc, after support.h.
+// bun:ffi through libffi: every symbol (the SDK's and an app's own libraries)
+// and JSCallback is bound at run time from its declared types, so a released
+// host needs no rebuild for an app's libraries (T1113). The system libffi:
+// macOS ships it; on Linux GLib depends on it.
+// Included by natives.c, after support.h.
 #ifdef __APPLE__
 #include <ffi/ffi.h>
 #else
@@ -237,11 +235,10 @@ NATIVE(n_bind) {
 }
 
 // --- callbacks ---------------------------------------------------------------
-// A libffi closure per JSCallback, run through the same dispatch as the
-// generated trampolines (support.h). A closed one is kept for the next
-// callback of its signature instead of freed: native code may still hold its
-// address, and calling it then finds no function and returns 0, as a closed
-// generated slot does.
+// A libffi closure per JSCallback, run through support.h's dispatch. A closed
+// one is kept for the next callback of its signature instead of freed: native
+// code may still hold its address, and calling it then finds no function and
+// returns 0.
 typedef struct ffi_dyn_cb {
     ffi_slot slot; // first: make_args finds the callback from call->slot
     ffi_closure *closure;

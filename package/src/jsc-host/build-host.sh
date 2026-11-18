@@ -1,12 +1,12 @@
 #!/bin/sh
 # Builds the JSC host an app runs as its main process (MacOS/main): the C
-# runtime with its prelude, the Node natives, and bun:ffi glue generated from
-# an SDK and checked against the core libraries it will load. macOS
+# runtime with its prelude, the Node natives, and bun:ffi over the system
+# libffi, after checking an SDK's bun:ffi declarations against the types it
+# binds and the core libraries it will load (ffi/check.ts). macOS
 # (JavaScriptCore.framework, Foundation for NSURLSession) or Linux (WebKitGTK's
-# libjavascriptcoregtk, GLib, libgcrypt and libsoup). Both link the system
-# libffi, which binds what the glue doesn't have (an app's own libraries).
+# libjavascriptcoregtk, GLib, libgcrypt, libsoup and libffi).
 #   build-host.sh <out file> --sdk <sdks/main dir> [--check-lib <core lib>]...
-# BUN names the Bun that runs the generator (default: bun).
+# BUN names the Bun that runs the check (default: bun).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=$1
@@ -16,10 +16,10 @@ trap 'rm -rf "$GEN"' EXIT
 cp "$HERE/prelude.js" "$GEN/jsr_prelude_js"
 printf '\0' >> "$GEN/jsr_prelude_js"
 (cd "$GEN" && xxd -i jsr_prelude_js) > "$GEN/prelude.h"
-"${BUN:-bun}" "$HERE/ffi/gen.ts" "$GEN" "$@"
+"${BUN:-bun}" "$HERE/ffi/check.ts" "$@"
 mkdir -p "$(dirname "$OUT")"
 CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$GEN -I$HERE -I$HERE/ffi"
-SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $HERE/vendor/monocypher/monocypher.c $HERE/vendor/monocypher/monocypher-ed25519.c $GEN/ffi_glue.c $HERE/app-host.c"
+SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $HERE/vendor/monocypher/monocypher.c $HERE/vendor/monocypher/monocypher-ed25519.c $HERE/ffi/natives.c $HERE/app-host.c"
 if [ "$(uname -s)" = "Darwin" ]; then
   # shellcheck disable=SC2086
   clang $CFLAGS -fobjc-arc -framework JavaScriptCore -framework CoreFoundation -framework Foundation -framework Security -lz -lsqlite3 -lffi -Wl,-rpath,@executable_path \

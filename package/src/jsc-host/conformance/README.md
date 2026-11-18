@@ -24,7 +24,7 @@ bun package/src/jsc-host/conformance/run.ts [out dir] [name filter]
 | `fs.mjs` | sync, promise and error shapes (code, syscall, errno, message) for the fs calls the SDK and Channels use |
 | `socket.mjs` | `net.Socket({fd})` over a FIFO: data, chunks, destroy, close |
 | `crypto.mjs` | NIST GCM vectors, seeded AES-GCM up to 256 KB, tamper and tag-length rejection, randomness |
-| `ffi.mjs` | `bun:ffi` calls and callbacks, through the generated glue and through libffi (every type, symbols the glue doesn't have), including threadsafe ones from another thread |
+| `ffi.mjs` | `bun:ffi` calls and callbacks over libffi: every number type, more arguments than registers, threadsafe callbacks from another thread |
 | `net.mjs` | `node:net` over unix sockets and TCP: listen/connect, line protocols, half-close and `allowHalfOpen`, 2 MB with backpressure, idle timeouts, ENOENT/ECONNREFUSED/EADDRINUSE, socket-file cleanup, `unref` |
 | `bun-socket.mjs` | `Bun.listen`/`Bun.connect` (unix and TCP): handlers, partial writes and `drain`, `end`, `stop`, `connectError`, `timeout` |
 | `fetch.mjs` | `fetch` against a local Bun server (`http-fixture.ts`): status, headers, bodies (string, bytes, params, Blob, streams), redirect modes, 3 MB and streamed responses, abort and timeout signals, refused connections; `Headers`, `Request`, `Response`, `Blob`, `AbortSignal`, `EventTarget`, `DOMException` |

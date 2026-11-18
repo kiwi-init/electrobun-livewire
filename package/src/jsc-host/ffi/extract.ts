@@ -1,6 +1,6 @@
 // Records the SDK's bun:ffi declarations (proc/native.ts) as JSON: run with
-// Bun at build time. The JSC host's ffi glue is generated from this file, so
-// a symbol the SDK adds or changes can't drift from the glue.
+// Bun at build time. check.ts checks these against the types the JSC host
+// binds (and the core libraries' exports), so drift fails the build.
 //   bun package/src/jsc-host/ffi/extract.ts [sdks/main dir] > ffi-decls.json
 import type { OnLoadArgs, PluginBuilder } from "bun";
 import { join } from "node:path";

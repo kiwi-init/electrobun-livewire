@@ -1,10 +1,8 @@
 // bun:ffi on the Livewire JSC runtime. App bundles import this in place of
-// Bun's module. A symbol the build generated glue for (the SDK's libraries,
-// natives in __ffi from ffi/gen.ts) is called through that glue; any other
-// symbol, and a JSCallback signature without generated trampolines, goes
-// through libffi (ffi/dynamic.inc), bound at run time from its declared types.
+// Bun's module. Every symbol and JSCallback goes through libffi (ffi/natives.c,
+// ffi/dynamic.inc), bound at run time from its declared types.
 const missing = () => {
-	throw new Error("bun:ffi: the Livewire JSC host's ffi glue isn't installed");
+	throw new Error("bun:ffi: the Livewire JSC host's ffi natives aren't installed");
 };
 // Lazily, so the build tools (ffi/extract-app.ts) can read the types under Bun.
 const n = globalThis.__ffi ?? new Proxy({}, { get: missing });
@@ -18,7 +16,7 @@ const names = [
 export const FFIType = Object.fromEntries(names.map((name) => [name, name]));
 export const suffix = globalThis.process?.platform === "linux" ? "so" : "dylib";
 
-// One name per type: what the glue's signature keys and the libffi natives use.
+// One name per type: what the natives take.
 // A number is Bun's own FFIType value.
 const byNumber = ["i8", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f64", "f32", "bool", "ptr", "void", "cstring", "i64_fast", "u64_fast", "function", "napi_env", "napi_value", "buffer"];
 const aliases = {
@@ -34,23 +32,12 @@ export const CALLBACK_MAX_ARGS = 8;
 const argType = (t) => (canonicalType(t) === "buffer" ? "ptr" : canonicalType(t));
 
 const sigKey = (args, returns) => (args ?? []).map(argType).join(",") + "->" + canonicalType(returns ?? "void");
-// An argument declared cstring is a pointer in Bun (its C type is the same),
-// and the glue's cstring slots take pointers: the two match as arguments.
-const looseKey = (sig) => {
-	const [args, returns] = String(sig).split("->");
-	return args.split(",").map((t) => (t === "cstring" ? "ptr" : t)).join(",") + "->" + returns;
-};
-const libraryKey = (path) => String(path).split("/").pop().replace(/^lib/, "").replace(/\.(dylib|so|dll)$/, "");
 
 export function dlopen(path, symbols) {
-	const known = n.signatures(libraryKey(path)) ?? {};
-	const wanted = Object.keys(symbols);
-	const generated = wanted.filter((name) => known[name] !== undefined && looseKey(known[name]) === looseKey(sigKey(symbols[name].args, symbols[name].returns)));
-	const opened = generated.length ? n.open(libraryKey(path), String(path), generated) : {};
 	const out = {};
-	for (const name of wanted) {
+	for (const name of Object.keys(symbols)) {
 		const { args, returns } = symbols[name] ?? {};
-		out[name] = opened[name] ?? n.bind(String(path), name, (args ?? []).map(argType), canonicalType(returns ?? "void"));
+		out[name] = n.bind(String(path), name, (args ?? []).map(argType), canonicalType(returns ?? "void"));
 	}
 	return { symbols: out, close() {} };
 }

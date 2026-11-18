@@ -38,7 +38,7 @@ console.log("pair", x[0], y[0]);
 const p = ptr(buf);
 console.log("ptr echo", lib.tl_echo_ptr(p) === p && read.u8(p, 1) === 3 && new Uint8Array(toArrayBuffer(p, 0, 4))[3] === 9 ? "ok" : "bad");
 
-// Symbols the host has no generated glue for: bound through libffi.
+// Every number type, more arguments than registers, odd callback signatures.
 const dyn = dlopen(process.env.LIVEWIRE_TESTLIB, {
 	tl_dyn_mix: { args: ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "f32", "f64", "cstring", "char", "uint16_t"], returns: "i64" },
 	tl_dyn_i8: { args: ["int"], returns: "i8" },

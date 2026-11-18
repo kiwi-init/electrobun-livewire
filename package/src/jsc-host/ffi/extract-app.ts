@@ -1,5 +1,5 @@
 // Records an app's own bun:ffi declarations from its Bun bundles, for the JSC
-// host's glue (gen.ts --extra): every dlopen(path, symbols) and JSCallback
+// host's build checks (check.ts --extra): every dlopen(path, symbols) and JSCallback
 // signature the bundles contain. It reads the code instead of running it, so a
 // declaration inside a function or behind a platform check counts too.
 //   bun extract-app.ts [--os macos|linux] [--libs <dir>] [--sdk <sdks/main>] <bundle.js>... > app-ffi.json

@@ -1,6 +1,6 @@
-// Hand-written support for the generated bun:ffi glue (ffi_glue.c): value
-// conversions with Bun's semantics, and the callback slots native code calls
-// into. Included once, by the generated file.
+// Support for bun:ffi's natives (natives.c, dynamic.inc): value conversions
+// with Bun's semantics, and the dispatch of a JSCallback native code calls
+// into. Included once, by natives.c.
 #pragma once
 #include "../runtime.h"
 
@@ -75,8 +75,8 @@ static JSValueRef ffi_ret_cstring(JSContextRef ctx, const char *p) {
 static JSValueRef ffi_ret_u64(JSContextRef ctx, uint64_t v) { return JSBigIntCreateWithUInt64(ctx, v, NULL); }
 
 // --- callbacks -----------------------------------------------------------------
-// Each signature gets a fixed set of generated trampolines ("slots"). A
-// JSCallback takes a free slot; native code calls the slot's trampoline.
+// Each JSCallback is a libffi closure (dynamic.inc) with a slot: the JS
+// function it runs, or none once closed; native code calls the closure.
 // A threadsafe callback is always queued to the JS thread and returns 0 at
 // once, even when called on the JS thread (Bun's behaviour). One that isn't
 // is direct on the JS thread, and from another thread waits for the JS
@@ -140,7 +140,7 @@ static bool ffi_waiter_wait_ms(ffi_waiter *w, int64_t timeout_ms) {
 }
 
 typedef struct ffi_cb_call {
-    _Atomic int refs;          // the trampoline and the queued task; the last frees it
+    _Atomic int refs;          // the closure and the queued task; the last frees it
     _Atomic int claimed;       // 0 until a thread starts running it (exactly once)
     ffi_slot *slot;
     int argc;
@@ -191,7 +191,7 @@ static void ffi_run_borrowed(ffi_cb_call *call) {
     JSValueRef args[8];
     call->make_args(ctx, call, args);
     call->result = call->slot->fn ? jsr_call(g_ffi_rt, call->slot->fn, NULL, (size_t)call->argc, args) : NULL;
-    if (call->result) JSValueProtect(ctx, call->result); // released by the trampoline
+    if (call->result) JSValueProtect(ctx, call->result); // released by the closure
     t_ffi_borrowed--;
     pthread_mutex_unlock(&g_ffi_borrow_lock);
 }
