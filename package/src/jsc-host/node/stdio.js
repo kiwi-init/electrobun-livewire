@@ -12,9 +12,10 @@ const ttySize = (fd) => (n.ttySize ? n.ttySize(fd) : undefined);
 let reader = null;
 const open = () => (reader ??= new FdReadable(0));
 
-// Reads that open fd 0; the rest are plain EventEmitter calls on the stdin
-// object until then, and forward once it's open.
-const starts = new Set(["data", "readable", "end", "close"]);
+// Listeners that start reading fd 0, as in Node: only "data" and "readable"
+// (or resume(), pipe(), iteration). An "end" or "close" listener alone waits on
+// the stdin object, and is forwarded to once something opens it.
+const starts = new Set(["data", "readable"]);
 export class Stdin extends EventEmitter {
 	constructor() {
 		super();

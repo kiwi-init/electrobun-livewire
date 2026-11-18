@@ -103,6 +103,20 @@ if (proc) {
 }
 
 // Bun.deepEquals(a, b, strict): structural equality, as Bun's.
+// Bun.sleepSync(ms): blocks this thread, as Bun's does. Atomics.wait on a
+// SharedArrayBuffer nobody notifies (runtime.c turns SharedArrayBuffer on).
+const sleepCell = typeof SharedArrayBuffer === "function" ? new Int32Array(new SharedArrayBuffer(4)) : null;
+const sleepSync = (ms) => {
+	const wait = Math.max(0, Number(ms) || 0);
+	if (sleepCell) {
+		Atomics.wait(sleepCell, 0, 0, wait);
+		return;
+	}
+	// JSC_useSharedArrayBuffer=false: spin, so it still blocks.
+	const end = Date.now() + wait;
+	while (Date.now() < end);
+};
+
 const deepEquals = (a, b, strict = false, seen = new Map()) => {
 	if (Object.is(a, b)) return true;
 	if (!strict && a == null && b == null) return true;
@@ -175,7 +189,7 @@ if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	deflateSync: zlibCall(true, -15),
 	inflateSync: zlibCall(false, -15),
 	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms instanceof Date ? ms.getTime() - Date.now() : Number(ms) || 0)),
-	sleepSync: (ms) => globalThis.__node.sleepSync?.(Number(ms) || 0),
+	sleepSync,
 	deepEquals,
 	main: mainPath,
 	stdin: bunStdin,
