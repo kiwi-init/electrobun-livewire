@@ -73,7 +73,7 @@ PLIST
 
 if [ "$OS" = "Darwin" ]; then APP="$OUT/JSC SDK.app"; else APP="$OUT/JSC SDK"; fi
 make_app "$APP" "JSC SDK" "dev.livewire.jsc-sdk" "zig"   # the launcher runs <bin>/main for native main processes
-HOST_SOURCES="$HOST/runtime.c $HOST/worker.c $HOST/node.c $HOST/sqlite.c $WORK/gen/ffi_glue.c $HOST/app-host.c"
+HOST_SOURCES="$HOST/runtime.c $HOST/worker.c $HOST/node.c $HOST/sqlite.c $HOST/vendor/monocypher/monocypher.c $HOST/vendor/monocypher/monocypher-ed25519.c $WORK/gen/ffi_glue.c $HOST/app-host.c"
 HOST_CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$WORK/gen -I$HOST -I$HOST/ffi"
 if [ "$OS" = "Darwin" ]; then
   # shellcheck disable=SC2086

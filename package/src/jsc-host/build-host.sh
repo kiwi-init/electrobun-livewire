@@ -18,7 +18,7 @@ printf '\0' >> "$GEN/jsr_prelude_js"
 "${BUN:-bun}" "$HERE/ffi/gen.ts" "$GEN" "$@"
 mkdir -p "$(dirname "$OUT")"
 CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$GEN -I$HERE -I$HERE/ffi"
-SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $GEN/ffi_glue.c $HERE/app-host.c"
+SOURCES="$HERE/runtime.c $HERE/worker.c $HERE/node.c $HERE/sqlite.c $HERE/vendor/monocypher/monocypher.c $HERE/vendor/monocypher/monocypher-ed25519.c $GEN/ffi_glue.c $HERE/app-host.c"
 if [ "$(uname -s)" = "Darwin" ]; then
   # shellcheck disable=SC2086
   clang $CFLAGS -framework JavaScriptCore -framework CoreFoundation -framework Security -lz -lsqlite3 -Wl,-rpath,@executable_path -o "$OUT" $SOURCES
