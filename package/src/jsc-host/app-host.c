@@ -25,6 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef __APPLE__
+#include <glib.h>
+#include <time.h>
+#endif
 
 static char g_exe_dir[PATH_MAX];
 static int g_argc;
@@ -112,6 +116,48 @@ static int run_script(int argc, const char **argv, int at) {
     return jsr_exit_code(rt);
 }
 
+#ifndef __APPLE__
+// LIVEWIRE_MAIN_PROBE=<path>: a thread asks GTK's main context to run a no-op
+// every 5 ms, at default and at idle priority, and appends each wait of 15 ms
+// or more to <path> with the wall-clock time (performance.timeOrigin's
+// clock). An experiment for T1290: does the GTK thread stall while a page loads?
+typedef struct { GMutex lock; GCond done; bool ran; } probe_ping;
+static gboolean probe_ran(gpointer data) {
+    probe_ping *p = data;
+    g_mutex_lock(&p->lock);
+    p->ran = true;
+    g_cond_signal(&p->done);
+    g_mutex_unlock(&p->lock);
+    return G_SOURCE_REMOVE;
+}
+static double probe_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (double)t.tv_sec * 1e3 + (double)t.tv_nsec / 1e6;
+}
+static void *probe_main(void *arg) {
+    FILE *out = fopen(arg, "a");
+    if (!out) return NULL;
+    probe_ping p;
+    g_mutex_init(&p.lock);
+    g_cond_init(&p.done);
+    for (int n = 0; n < 2400; n++) { // 12 s of startup, at most
+        int priority = n % 2 ? G_PRIORITY_DEFAULT_IDLE : G_PRIORITY_DEFAULT;
+        double from = probe_now();
+        p.ran = false;
+        g_main_context_invoke_full(g_main_context_default(), priority, probe_ran, &p, NULL);
+        g_mutex_lock(&p.lock);
+        while (!p.ran) g_cond_wait(&p.done, &p.lock);
+        g_mutex_unlock(&p.lock);
+        double waited = probe_now() - from;
+        if (waited >= 15) { fprintf(out, "%.1f %d gtk main waited %.1f ms (%s priority)\n", from, (int)getpid(), waited, n % 2 ? "idle" : "default"); fflush(out); }
+        usleep(5000);
+    }
+    fclose(out);
+    return NULL;
+}
+#endif
+
 int main(int argc, const char **argv) {
     int script = script_index(argc, argv);
     if (script) return run_script(argc, argv, script);
@@ -155,6 +201,13 @@ int main(int argc, const char **argv) {
     pthread_t thread;
     pthread_create(&thread, &attr, js_main, NULL);
     pthread_detach(thread);
+#ifndef __APPLE__
+    const char *probe_to = getenv("LIVEWIRE_MAIN_PROBE");
+    if (probe_to && *probe_to) {
+        pthread_t probe;
+        if (pthread_create(&probe, NULL, probe_main, (void *)probe_to) == 0) pthread_detach(probe);
+    }
+#endif
 
     int status = run_main_thread(identifier, name, channel, 0);
     if (status != 0) fprintf(stderr, "[jsc-host] ElectrobunCore failed: %s\n", last_error());
