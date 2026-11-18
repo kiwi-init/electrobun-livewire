@@ -83,13 +83,44 @@ function declaration(src: string, name: string): string | undefined {
 	return src.slice(at, balancedEnd(src, at, ",;\n"));
 }
 
-// An object literal of FFI types: any name it reads (FFIType, an alias, a
-// namespace) stands for a value whose members are their own names.
+// An object literal of FFI types, read for the target platform: process.platform
+// is that platform's, a name the bundle declares (const mac = process.platform
+// === "darwin") is its declaration's value, and any other name (FFIType, an
+// alias, a namespace) stands for a value whose members are their own names.
 const typeOf = new Proxy({}, { get: (_, member) => String(member) });
-const scope = new Proxy({}, { has: (_, key) => key !== "JSON", get: (_, key) => (key === Symbol.unscopables ? undefined : typeOf) });
+const platformProcess = { platform: os === "macos" ? "darwin" : "linux", arch: process.arch };
+function scopeFor(src: string): object {
+	const values = new Map<string, unknown>();
+	const reading = new Set<string>();
+	const scope: object = new Proxy({}, {
+		has: (_, key) => key !== "JSON",
+		get: (_, key) => {
+			if (key === Symbol.unscopables || typeof key !== "string") return undefined;
+			if (key === "process") return platformProcess;
+			if (values.has(key)) return values.get(key);
+			const init = reading.has(key) ? undefined : declaration(src, key);
+			let value: unknown = typeOf;
+			if (init && !/\bfunction\b|=>|\(/.test(init.replace(/process\.platform/g, ""))) {
+				reading.add(key);
+				try {
+					value = new Function("scope", "with (scope) { return (" + init + "); }")(scope);
+				} catch {
+					// not a plain value after all (it reads something only the app has at run time)
+					value = typeOf;
+				}
+				reading.delete(key);
+			}
+			values.set(key, value);
+			return value;
+		},
+	});
+	return scope;
+}
+const scopes = new Map<string, object>();
 function literal(src: string, file: string, expression: string): unknown {
 	const named = /^[\w$]+$/.test(expression) ? declaration(src, expression) : undefined;
 	const text = named ?? expression;
+	const scope = scopes.get(src) ?? scopes.set(src, scopeFor(src)).get(src)!;
 	try {
 		return new Function("scope", "with (scope) { return (" + text + "); }")(scope);
 	} catch (error) {
