@@ -11,6 +11,12 @@ export const suffix = globalThis.process?.platform === "linux" ? "so" : "dylib";
 const canonical = { int: "i32", int32_t: "i32", uint32_t: "u32", pointer: "ptr", callback: "function", double: "f64", uint64_t: "u64" };
 const canon = (t) => canonical[String(t)] ?? String(t);
 const sigKey = (args, returns) => (args ?? []).map(canon).join(",") + "->" + canon(returns ?? "void");
+// An argument declared cstring is a pointer in Bun (its C type is the same),
+// and the glue's cstring slots take pointers: the two match as arguments.
+const looseKey = (sig) => {
+	const [args, returns] = String(sig).split("->");
+	return args.split(",").map((t) => (t === "cstring" ? "ptr" : t)).join(",") + "->" + returns;
+};
 const libraryKey = (path) => String(path).split("/").pop().replace(/^lib/, "").replace(/\.(dylib|so|dll)$/, "");
 
 export function dlopen(path, symbols) {
@@ -20,7 +26,7 @@ export function dlopen(path, symbols) {
 	const wanted = Object.keys(symbols);
 	for (const name of wanted) {
 		const sig = sigKey(symbols[name].args, symbols[name].returns);
-		if (known[name] !== sig) {
+		if (known[name] === undefined || looseKey(known[name]) !== looseKey(sig)) {
 			throw new Error(`bun:ffi: ${key}.${name} is declared as ${sig} but the build generated ${known[name] ?? "nothing"}`);
 		}
 	}

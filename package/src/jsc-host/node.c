@@ -45,6 +45,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -612,7 +614,7 @@ static void stop_watch(jsr_runtime *rt, fd_watch *w, bool close_fd) {
     if (w->closed) { if (close_fd && w->fd >= 0) { close(w->fd); w->fd = -1; } return; }
     w->closed = true;
 #ifdef __APPLE__
-    dispatch_source_cancel(w->source);
+    if (w->source) dispatch_source_cancel(w->source);
 #else
     if (w->source) { g_source_destroy(w->source); g_source_unref(w->source); w->source = NULL; }
 #endif
@@ -633,6 +635,25 @@ static void deliver_fd_event(jsr_runtime *rt, void *data) {
     }
     free(ev->bytes);
     free(ev);
+}
+// A regular file (stdin redirected from one) is always readable, and the
+// kernel's readiness sources don't report it as a pipe: it is read on the JS
+// thread instead, a chunk per posted task, until EOF or unwatchFd.
+static void read_file_step(jsr_runtime *rt, void *data) {
+    int id = (int)(intptr_t)data;
+    fd_watch *w = find_watch(id);
+    if (!w || w->closed) return;
+    uint8_t *buf = malloc(65536);
+    ssize_t n = read(w->fd, buf, 65536);
+    if (n < 0 && errno == EINTR) { free(buf); jsr_post(rt, read_file_step, data); return; }
+    fd_event *ev = calloc(1, sizeof *ev);
+    ev->id = id;
+    ev->len = n;
+    ev->err = n < 0 ? errno : 0;
+    ev->bytes = n > 0 ? buf : NULL;
+    if (n <= 0) free(buf);
+    deliver_fd_event(rt, ev); // stops the watch at EOF or on an error
+    if (n > 0) jsr_post(rt, read_file_step, data);
 }
 #ifndef __APPLE__
 // Linux: the fd source runs on the JS thread, so it reads and delivers in place.
@@ -657,7 +678,9 @@ NATIVE(n_watch_fd) {
     UNUSED_ARGS;
     int fd = (int)num(ctx, ARG(0));
     if (fd < 0 || !JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "watchFd(fd, fn)");
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    struct stat st;
+    bool regular = fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+    if (!regular) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     fd_watch *w = calloc(1, sizeof *w);
     w->fd = fd;
     w->fn = (JSObjectRef)ARG(1);
@@ -670,6 +693,10 @@ NATIVE(n_watch_fd) {
     jsr_runtime *rt = jsr_from_context(ctx);
     jsr_ref(rt);
     int id = w->id;
+    if (regular) {
+        jsr_post(rt, read_file_step, (void *)(intptr_t)id);
+        return JSValueMakeNumber(ctx, id);
+    }
 #ifdef __APPLE__
     w->source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, dispatch_get_global_queue(0, 0));
     dispatch_source_set_event_handler(w->source, ^{
@@ -1963,6 +1990,60 @@ NATIVE(n_ws_close) {
     return JSValueMakeUndefined(ctx);
 }
 
+// umask(mask?) -> the old mask; ppid().
+NATIVE(n_umask) {
+    UNUSED_ARGS; (void)exc;
+    mode_t old;
+    if (JSValueIsNumber(ctx, ARG(0))) old = umask((mode_t)num(ctx, ARG(0)));
+    else { old = umask(0); umask(old); }
+    return JSValueMakeNumber(ctx, (double)old);
+}
+NATIVE(n_ppid) {
+    UNUSED_ARGS; (void)exc; (void)argc; (void)argv;
+    return JSValueMakeNumber(ctx, (double)getppid());
+}
+
+// --- tty -----------------------------------------------------------------------
+// isatty(fd); ttySize(fd) -> [columns, rows] or undefined; setRawMode(fd, on),
+// with the terminal's own mode put back at exit.
+NATIVE(n_isatty) {
+    UNUSED_ARGS; (void)exc;
+    return JSValueMakeBoolean(ctx, isatty((int)num(ctx, ARG(0))) == 1);
+}
+NATIVE(n_tty_size) {
+    UNUSED_ARGS; (void)exc;
+    struct winsize ws;
+    if (ioctl((int)num(ctx, ARG(0)), TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0) return JSValueMakeUndefined(ctx);
+    JSValueRef v[2] = {JSValueMakeNumber(ctx, ws.ws_col), JSValueMakeNumber(ctx, ws.ws_row)};
+    return JSObjectMakeArray(ctx, 2, v, NULL);
+}
+static struct termios g_cooked;
+static int g_cooked_fd = -1;
+static void restore_tty(void) {
+    if (g_cooked_fd >= 0) tcsetattr(g_cooked_fd, TCSANOW, &g_cooked);
+}
+NATIVE(n_set_raw_mode) {
+    UNUSED_ARGS;
+    int fd = (int)num(ctx, ARG(0));
+    if (g_cooked_fd < 0) {
+        if (tcgetattr(fd, &g_cooked) != 0) return throw_message(ctx, exc, "setRawMode: not a terminal");
+        g_cooked_fd = fd;
+        atexit(restore_tty);
+    }
+    struct termios t = g_cooked;
+    if (JSValueToBoolean(ctx, ARG(1))) {
+        // As libuv's UV_TTY_MODE_RAW.
+        t.c_iflag &= ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+        t.c_oflag |= ONLCR;
+        t.c_cflag |= CS8;
+        t.c_lflag &= ~(tcflag_t)(ECHO | ICANON | IEXTEN | ISIG);
+        t.c_cc[VMIN] = 1;
+        t.c_cc[VTIME] = 0;
+    }
+    tcsetattr(fd, TCSADRAIN, &t);
+    return JSValueMakeUndefined(ctx);
+}
+
 void node_install(jsr_runtime *rt) {
     JSContextRef ctx = jsr_context(rt);
     JSObjectRef node = JSObjectMake(ctx, NULL, NULL);
@@ -2025,6 +2106,11 @@ void node_install(jsr_runtime *rt) {
     jsr_set_function(ctx, node, "wsSend", n_ws_send);
     jsr_set_function(ctx, node, "wsClose", n_ws_close);
     jsr_set_function(ctx, node, "which", n_which);
+    jsr_set_function(ctx, node, "isatty", n_isatty);
+    jsr_set_function(ctx, node, "umask", n_umask);
+    jsr_set_function(ctx, node, "ppid", n_ppid);
+    jsr_set_function(ctx, node, "ttySize", n_tty_size);
+    jsr_set_function(ctx, node, "setRawMode", n_set_raw_mode);
     set_prop(ctx, node, "signals", signal_names(ctx));
     // As in Node and Bun: a write to a closed pipe fails with EPIPE instead of
     // killing the process.

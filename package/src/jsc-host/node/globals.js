@@ -6,13 +6,15 @@ import { getRandomValues, randomUUID } from "./crypto.js";
 import { spawn, spawnSync, which } from "./bun-spawn.js";
 import { kill } from "./spawn-common.js";
 import { listen, connect } from "./bun-socket.js";
-import { ReadableStream } from "./web-streams.js";
+import { ReadableStream, WritableStream, TransformStream, CompressionStream, DecompressionStream } from "./web-streams.js";
 import { Worker, structuredClone } from "./worker.js";
 import { subtle, CryptoKey, SubtleCrypto } from "./webcrypto.js";
 import * as events from "./web-events.js";
 import { DOMException } from "./web-events.js";
 import { Blob, File, Headers, Request, Response, fetch } from "./fetch.js";
 import { WebSocket } from "./websocket.js";
+import { Stdin, bunStdin, decorateOutput } from "./stdio.js";
+import * as TOML from "./toml.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
@@ -83,7 +85,7 @@ class BunFile {
 }
 // The system JavaScriptCore has no web streams, events, fetch or WebSocket.
 const web = {
-	ReadableStream, Blob, File, Headers, Request, Response, fetch, WebSocket,
+	ReadableStream, WritableStream, TransformStream, CompressionStream, DecompressionStream, Blob, File, Headers, Request, Response, fetch, WebSocket,
 	Event: events.Event, EventTarget: events.EventTarget, DOMException: events.DOMException, AbortController: events.AbortController,
 	AbortSignal: events.AbortSignal, MessageEvent: events.MessageEvent, CloseEvent: events.CloseEvent, ErrorEvent: events.ErrorEvent,
 };
@@ -92,9 +94,51 @@ for (const [name, value] of Object.entries(web)) if (typeof globalThis[name] !==
 const proc = globalThis["process"];
 if (proc) {
 	proc.kill = kill;
-	proc.stdout.fd = 1;
-	proc.stderr.fd = 2;
+	proc.umask = (mask) => globalThis.__node.umask(typeof mask === "string" ? parseInt(mask, 8) : mask);
+	Object.defineProperty(proc, "ppid", { get: () => globalThis.__node.ppid(), configurable: true, enumerable: true });
+	decorateOutput(proc.stdout, 1);
+	decorateOutput(proc.stderr, 2);
+	let stdin;
+	Object.defineProperty(proc, "stdin", { get: () => (stdin ??= new Stdin()), configurable: true, enumerable: true });
 }
+
+// Bun.deepEquals(a, b, strict): structural equality, as Bun's.
+// Bun.sleepSync(ms): blocks this thread, as Bun's does. Atomics.wait on a
+// SharedArrayBuffer nobody notifies (runtime.c turns SharedArrayBuffer on).
+const sleepCell = typeof SharedArrayBuffer === "function" ? new Int32Array(new SharedArrayBuffer(4)) : null;
+const sleepSync = (ms) => {
+	const wait = Math.max(0, Number(ms) || 0);
+	if (sleepCell) {
+		Atomics.wait(sleepCell, 0, 0, wait);
+		return;
+	}
+	// JSC_useSharedArrayBuffer=false: spin, so it still blocks.
+	const end = Date.now() + wait;
+	while (Date.now() < end);
+};
+
+const deepEquals = (a, b, strict = false, seen = new Map()) => {
+	if (Object.is(a, b)) return true;
+	if (!strict && a == null && b == null) return true;
+	if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+	if (seen.get(a) === b) return true;
+	seen.set(a, b);
+	if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+	if (a instanceof Date) return a.getTime() === b.getTime();
+	if (a instanceof RegExp) return String(a) === String(b);
+	if (ArrayBuffer.isView(a)) return a.byteLength === b.byteLength && new Uint8Array(a.buffer, a.byteOffset, a.byteLength).every((x, k) => x === new Uint8Array(b.buffer, b.byteOffset, b.byteLength)[k]);
+	if (a instanceof Map) return a.size === b.size && [...a].every(([k, v]) => b.has(k) && deepEquals(v, b.get(k), strict, seen));
+	if (a instanceof Set) return a.size === b.size && [...a].every((v) => b.has(v));
+	const keys = (o) => Object.keys(o).filter((k) => strict || o[k] !== undefined);
+	const ka = keys(a), kb = keys(b);
+	if (ka.length !== kb.length) return false;
+	return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEquals(a[k], b[k], strict, seen));
+};
+const mainPath = (() => {
+	const script = proc?.argv?.[1];
+	if (!script) return "";
+	return script.startsWith("/") ? script : (proc.cwd() + "/" + script).replace(/\/\.\//g, "/");
+})();
 
 const secretOptions = (method, args, withValue) => {
 	const [options] = args;
@@ -144,6 +188,12 @@ if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	gunzipSync: zlibCall(false, 31),
 	deflateSync: zlibCall(true, -15),
 	inflateSync: zlibCall(false, -15),
+	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms instanceof Date ? ms.getTime() - Date.now() : Number(ms) || 0)),
+	sleepSync,
+	deepEquals,
+	main: mainPath,
+	stdin: bunStdin,
+	TOML,
 	env: proc?.env ?? {},
 	version: "0.0.0-livewire-jsc",
 });

@@ -4,6 +4,10 @@
 // a JS thread runs the app's bundled main process (Resources/app/bun/index.js)
 // on the system JavaScriptCore, with the runtime, the Node shims and the
 // generated bun:ffi glue installed.
+// Run as `main [--bun-flag ...] script.js [args...]`, it is a plain script
+// runner instead, as the app's Bun is for scripts an app runs with
+// process.execPath (Channels' kiwi CLI): no core, no windows, the caller's
+// working directory, and Bun's own flags before the script ignored.
 #include "runtime.h"
 #include "node.h"
 #include "ffi/ffi.h"
@@ -75,7 +79,33 @@ static void *read_version(void *arg) {
     return NULL;
 }
 
+// The script in `main [--flags] script.js [args]`, or 0 when this is the app.
+static int script_index(int argc, const char **argv) {
+    int i = 1;
+    while (i < argc && strncmp(argv[i], "--", 2) == 0 && strcmp(argv[i], "--") != 0) i++;
+    if (i < argc && strcmp(argv[i], "--") == 0) i++;
+    if (i >= argc) return 0;
+    size_t len = strlen(argv[i]);
+    bool js = (len > 3 && strcmp(argv[i] + len - 3, ".js") == 0) || (len > 4 && strcmp(argv[i] + len - 4, ".mjs") == 0);
+    return js && access(argv[i], R_OK) == 0 ? i : 0;
+}
+
+static int run_script(int argc, const char **argv, int at) {
+    // process.argv is [execPath, script, args...], as under Bun.
+    const char **args = calloc((size_t)(argc - at + 2), sizeof *args);
+    int n = 0;
+    args[n++] = argv[0];
+    for (int i = at; i < argc; i++) args[n++] = argv[i];
+    jsr_set_runtime_init(install_natives);
+    jsr_runtime *rt = jsr_create(n, args);
+    install_natives(rt);
+    if (jsr_eval_file(rt, args[1])) jsr_run(rt, true);
+    return jsr_exit_code(rt);
+}
+
 int main(int argc, const char **argv) {
+    int script = script_index(argc, argv);
+    if (script) return run_script(argc, argv, script);
     g_argc = argc;
     g_argv = argv;
     char real[PATH_MAX];
