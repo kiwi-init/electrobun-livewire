@@ -6,6 +6,7 @@ import { EventEmitter } from "events";
 import { Buffer } from "buffer";
 import { errnoCode } from "./errors.js";
 import { errnos } from "./spawn-common.js";
+import { ACCEPT_RETRY_MS } from "./bun-socket.js";
 
 const n = globalThis.__node;
 const nextTick = (fn, ...args) => queueMicrotask(() => fn(...args));
@@ -496,10 +497,19 @@ export class Server extends EventEmitter {
 		while (true) {
 			const fd = n.sockAccept(this._fd);
 			if (fd === -errnos.EAGAIN) break;
-			if (fd < 0) {
-				if (fd === -errnos.EMFILE || fd === -errnos.ENFILE) this.emit("error", socketError(fd, "accept"));
-				break;
+			if (fd === -errnos.EMFILE || fd === -errnos.ENFILE) {
+				// Out of fds: watching the listener again now would spin on the
+				// waiting connection (Linux) or never fire (macOS). Try accept
+				// again on a timer until one goes through or none is waiting.
+				this._retry = setTimeout(() => {
+					this._retry = null;
+					this._accept();
+				}, ACCEPT_RETRY_MS);
+				if (!this._refed) this._retry.unref();
+				this.emit("error", socketError(fd, "accept"));
+				return;
 			}
+			if (fd < 0) break;
 			const socket = new Socket({ allowHalfOpen: this.allowHalfOpen });
 			socket.server = this;
 			socket._attach(fd, true, true);
@@ -526,6 +536,8 @@ export class Server extends EventEmitter {
 		if (this._fd >= 0) {
 			if (this._wait) n.cancelWritable(this._wait);
 			this._wait = 0;
+			if (this._retry) clearTimeout(this._retry);
+			this._retry = null;
 			n.fs.close(this._fd);
 			this._fd = -1;
 			if (this._path) {
@@ -560,6 +572,7 @@ export class Server extends EventEmitter {
 		if (!this._refed) {
 			this._refed = true;
 			if (this._wait) n.refWait(this._wait, true);
+			this._retry?.ref();
 		}
 		return this;
 	}
@@ -567,6 +580,7 @@ export class Server extends EventEmitter {
 		if (this._refed) {
 			this._refed = false;
 			if (this._wait) n.refWait(this._wait, false);
+			this._retry?.unref();
 		}
 		return this;
 	}

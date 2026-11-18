@@ -141,7 +141,9 @@ NATIVE(n_fstat) {
 NATIVE(n_open) {
     UNUSED_ARGS;
     char *path = jsr_to_utf8(ctx, ARG(0));
-    int fd = open(path, (int)num(ctx, ARG(1)), (mode_t)(argc > 2 ? num(ctx, ARG(2)) : 0666));
+    // Close-on-exec always, so a child never inherits it: glibc < 2.34 has no
+    // closefrom() to close strays in the child.
+    int fd = open(path, (int)num(ctx, ARG(1)) | O_CLOEXEC, (mode_t)(argc > 2 ? num(ctx, ARG(2)) : 0666));
     JSValueRef r = fd >= 0 ? JSValueMakeNumber(ctx, fd) : throw_errno(ctx, exc, errno, "open", path);
     free(path);
     return r;

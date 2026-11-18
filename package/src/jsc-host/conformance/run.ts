@@ -19,7 +19,8 @@ const scratch = mkdtempSync(join(tmpdir(), "jsc-conf-"));
 const fifo = join(scratch, "fifo");
 if (Bun.spawnSync(["mkfifo", fifo]).exitCode !== 0) throw new Error("mkfifo failed");
 // The fetch and WebSocket tests' server, in its own process: the runs below block this one.
-const fixture = Bun.spawn([process.execPath, join(here, "http-fixture.ts")], { stdout: "pipe", stderr: "inherit" });
+const wsUnix = join(scratch, "ws.sock");
+const fixture = Bun.spawn([process.execPath, join(here, "http-fixture.ts"), wsUnix], { stdout: "pipe", stderr: "inherit" });
 const fixtureReader = fixture.stdout.getReader();
 let origin = "";
 while (!origin.includes("\n")) {
@@ -27,7 +28,7 @@ while (!origin.includes("\n")) {
 	if (done) throw new Error("http-fixture.ts exited before it listened");
 	origin += new TextDecoder().decode(value);
 }
-const env = { ...process.env, LIVEWIRE_TESTLIB: join(out, "libjsctest." + libExt), LIVEWIRE_FIFO: fifo, LIVEWIRE_SCRATCH: scratch, LIVEWIRE_HTTP: origin.trim() };
+const env = { ...process.env, LIVEWIRE_TESTLIB: join(out, "libjsctest." + libExt), LIVEWIRE_FIFO: fifo, LIVEWIRE_SCRATCH: scratch, LIVEWIRE_HTTP: origin.trim(), LIVEWIRE_WS_UNIX: wsUnix };
 
 type Run = { code: number | null; text: string };
 const run = (cmd: string[]): Run => {

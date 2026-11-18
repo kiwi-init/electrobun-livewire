@@ -238,6 +238,19 @@ step("Bun.spawnSync", async () => {
 		log("Bun.spawnSync ENOENT", e.code, e.syscall, e.path);
 	}
 });
+// A file of that name on PATH that isn't executable: Bun reports ENOENT (Node
+// gives EACCES), and Bun.which skips it.
+step("not executable on PATH", async () => {
+	const dir = join(scratch, "noexec");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "lw-noexec"), "#!/bin/sh\necho ran\n");
+	chmodSync(join(dir, "lw-noexec"), 0o644);
+	const r = spawnSync("lw-noexec", [], { env: { PATH: dir } });
+	log("spawnSync not executable", r.status, errShape(r.error));
+	const error = await new Promise((resolve) => spawn("lw-noexec", [], { env: { PATH: dir } }).on("error", resolve));
+	log("spawn not executable", errShape(error));
+	log("Bun.which not executable", Bun.which("lw-noexec", { PATH: dir }));
+});
 step("Bun.which", async () => {
 	log("Bun.which", Bun.which("sh") === realpathSync(Bun.which("sh")) || Bun.which("sh").endsWith("/sh"), Bun.which("no-such-program-livewire"), Bun.which("lw-only-here", { PATH: join(scratch, "bin") }) === join(scratch, "bin", "lw-only-here"));
 });

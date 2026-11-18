@@ -56,12 +56,24 @@ const fromNative = (row) => {
 	return row;
 };
 
+// A statement nobody finalized is finalized once it's collected, as Bun's
+// are. db._statements maps each live handle to its statement's WeakRef: a
+// handle number is reused once freed, so the ref must still match.
+const unreachable = new FinalizationRegistry(({ live, h, ref }) => {
+	if (live.get(h) !== ref) return;
+	live.delete(h);
+	s.finalize(h);
+});
+
 export class Statement {
 	constructor(db, sql, persistent) {
 		const p = wrap(() => s.prepare(db._handle(), sql, persistent));
 		if (!p.handle) throw new SQLiteError("Query contained no valid SQL statement; likely empty query.", { code: "SQLITE_MISUSE", errno: 21 });
 		this._db = db;
 		this._h = p.handle;
+		const ref = new WeakRef(this);
+		db._statements.set(p.handle, ref);
+		unreachable.register(this, { live: db._statements, h: p.handle, ref }, this);
 		this._params = p.params;
 		this.columnNames = p.columns;
 		this.paramsCount = p.params.length;
@@ -89,7 +101,13 @@ export class Statement {
 		this.get = (...a) => make(get(...a));
 		return this;
 	}
-	finalize() { if (this._h) { s.finalize(this._h); this._h = 0; this._db._statements.delete(this); } }
+	finalize() {
+		if (!this._h) return;
+		s.finalize(this._h);
+		this._db._statements.delete(this._h);
+		unreachable.unregister(this);
+		this._h = 0;
+	}
 	toString() { return this._h ? s.expanded(this._h) : this._sql; }
 }
 
@@ -108,7 +126,7 @@ export class Database {
 		this.filename = String(filename);
 		this._strict = !!options.strict;
 		this._safeIntegers = !!options.safeIntegers;
-		this._statements = new Set();
+		this._statements = new Map(); // handle -> WeakRef of its Statement
 		this._cache = new Map();
 		this._h = options._handle ?? wrap(() => s.open(this.filename, flags));
 	}
@@ -127,7 +145,6 @@ export class Database {
 	get inTransaction() { return this._h ? s.inTransaction(this._h) : false; }
 	prepare(sql, params) {
 		const stmt = new Statement(this, sql, false);
-		this._statements.add(stmt);
 		if (params !== undefined) {
 			const bound = Array.isArray(params) ? params : [params];
 			for (const m of ["run", "get", "all", "values"]) { const f = stmt[m].bind(stmt); stmt[m] = (...a) => f(...(a.length ? a : bound)); }
@@ -138,7 +155,6 @@ export class Database {
 		let stmt = this._cache.get(sql);
 		if (stmt && stmt._h) return stmt;
 		stmt = new Statement(this, sql, true);
-		this._statements.add(stmt);
 		this._cache.set(sql, stmt);
 		return stmt;
 	}
@@ -187,7 +203,13 @@ export class Database {
 	fileControl() { throw new Error("fileControl isn't available on the JSC runtime"); }
 	close(throwOnError = false) {
 		if (!this._h) return;
-		if (!throwOnError) for (const stmt of [...this._statements]) stmt.finalize();
+		if (!throwOnError) {
+			for (const [h, ref] of [...this._statements]) {
+				const stmt = ref.deref();
+				if (stmt) stmt.finalize();
+				else { s.finalize(h); this._statements.delete(h); }
+			}
+		}
 		wrap(() => s.close(this._h, throwOnError));
 		this._h = 0;
 		this._cache.clear();
