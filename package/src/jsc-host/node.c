@@ -614,7 +614,7 @@ static void stop_watch(jsr_runtime *rt, fd_watch *w, bool close_fd) {
     if (w->closed) { if (close_fd && w->fd >= 0) { close(w->fd); w->fd = -1; } return; }
     w->closed = true;
 #ifdef __APPLE__
-    dispatch_source_cancel(w->source);
+    if (w->source) dispatch_source_cancel(w->source);
 #else
     if (w->source) { g_source_destroy(w->source); g_source_unref(w->source); w->source = NULL; }
 #endif
@@ -635,6 +635,25 @@ static void deliver_fd_event(jsr_runtime *rt, void *data) {
     }
     free(ev->bytes);
     free(ev);
+}
+// A regular file (stdin redirected from one) is always readable, and the
+// kernel's readiness sources don't report it as a pipe: it is read on the JS
+// thread instead, a chunk per posted task, until EOF or unwatchFd.
+static void read_file_step(jsr_runtime *rt, void *data) {
+    int id = (int)(intptr_t)data;
+    fd_watch *w = find_watch(id);
+    if (!w || w->closed) return;
+    uint8_t *buf = malloc(65536);
+    ssize_t n = read(w->fd, buf, 65536);
+    if (n < 0 && errno == EINTR) { free(buf); jsr_post(rt, read_file_step, data); return; }
+    fd_event *ev = calloc(1, sizeof *ev);
+    ev->id = id;
+    ev->len = n;
+    ev->err = n < 0 ? errno : 0;
+    ev->bytes = n > 0 ? buf : NULL;
+    if (n <= 0) free(buf);
+    deliver_fd_event(rt, ev); // stops the watch at EOF or on an error
+    if (n > 0) jsr_post(rt, read_file_step, data);
 }
 #ifndef __APPLE__
 // Linux: the fd source runs on the JS thread, so it reads and delivers in place.
@@ -659,7 +678,9 @@ NATIVE(n_watch_fd) {
     UNUSED_ARGS;
     int fd = (int)num(ctx, ARG(0));
     if (fd < 0 || !JSValueIsObject(ctx, ARG(1))) return throw_message(ctx, exc, "watchFd(fd, fn)");
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    struct stat st;
+    bool regular = fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+    if (!regular) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     fd_watch *w = calloc(1, sizeof *w);
     w->fd = fd;
     w->fn = (JSObjectRef)ARG(1);
@@ -672,6 +693,10 @@ NATIVE(n_watch_fd) {
     jsr_runtime *rt = jsr_from_context(ctx);
     jsr_ref(rt);
     int id = w->id;
+    if (regular) {
+        jsr_post(rt, read_file_step, (void *)(intptr_t)id);
+        return JSValueMakeNumber(ctx, id);
+    }
 #ifdef __APPLE__
     w->source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, dispatch_get_global_queue(0, 0));
     dispatch_source_set_event_handler(w->source, ^{

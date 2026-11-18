@@ -44,10 +44,6 @@ const shims: Record<string, string> = {
 	util: join(here, "node/util.js"),
 };
 const shimFor = (specifier: string) => shims[specifier.replace(/^node:/, "")];
-// For target "bun", builtins never reach a plugin's onResolve, so imports
-// are rewritten in the source as it loads.
-const importPattern = /(from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)(["'])((?:node:)?[a-z_/]+|bun:ffi|bun:sqlite)\2/g;
-
 // Bun's own bundles (target "bun") require builtins from CommonJS code with
 // import.meta.require, which a script can't do at run time; each literal one
 // becomes a static import of the shim (or Bun's browser fallback).
@@ -105,11 +101,9 @@ export const appEnginePageScript = "";`,
 				build.onLoad({ filter: /\.(ts|tsx|js|mjs)$/ }, async (args: OnLoadArgs) => {
 					const source = await Bun.file(args.path).text();
 					if (Object.values(shims).includes(args.path)) return { contents: source, loader: "js" };
+					// Builtins reach onResolve above; source text (a template string
+					// holding code, say) is left as written.
 					const contents = source
-						.replace(importPattern, (match: string, lead: string, quote: string, specifier: string) => {
-							const shim = shimFor(specifier);
-							return shim ? lead + quote + shim + quote : match;
-						})
 						// A browser build makes import.meta.main false; the app's entry is
 						// the main module here, as when Bun runs it.
 						.replace(/\bimport\.meta\.main\b/g, args.path === resolve(entry) ? "true" : "false");

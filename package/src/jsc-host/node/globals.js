@@ -6,7 +6,7 @@ import { getRandomValues, randomUUID } from "./crypto.js";
 import { spawn, spawnSync, which } from "./bun-spawn.js";
 import { kill } from "./spawn-common.js";
 import { listen, connect } from "./bun-socket.js";
-import { ReadableStream } from "./web-streams.js";
+import { ReadableStream, WritableStream, TransformStream, CompressionStream, DecompressionStream } from "./web-streams.js";
 import { Worker, structuredClone } from "./worker.js";
 import { subtle, CryptoKey, SubtleCrypto } from "./webcrypto.js";
 import * as events from "./web-events.js";
@@ -85,7 +85,7 @@ class BunFile {
 }
 // The system JavaScriptCore has no web streams, events, fetch or WebSocket.
 const web = {
-	ReadableStream, Blob, File, Headers, Request, Response, fetch, WebSocket,
+	ReadableStream, WritableStream, TransformStream, CompressionStream, DecompressionStream, Blob, File, Headers, Request, Response, fetch, WebSocket,
 	Event: events.Event, EventTarget: events.EventTarget, DOMException: events.DOMException, AbortController: events.AbortController,
 	AbortSignal: events.AbortSignal, MessageEvent: events.MessageEvent, CloseEvent: events.CloseEvent, ErrorEvent: events.ErrorEvent,
 };

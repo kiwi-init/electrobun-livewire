@@ -765,11 +765,17 @@ static jsr_runtime *create_runtime(int argc, const char **argv, struct jsr_worke
 #endif
 
     // JSC reads its options once, when the first VM is made: polling traps let
-    // the watchdog stop a Worker's JIT code (see worker_should_terminate).
+    // the watchdog stop a Worker's JIT code (see worker_should_terminate), and
+    // SharedArrayBuffer is on, as in Bun (Atomics.wait on one is how scripts
+    // sleep synchronously).
     bool set_traps = g_main_runtime == rt && !getenv("JSC_usePollingTraps");
+    bool set_sab = g_main_runtime == rt && !getenv("JSC_useSharedArrayBuffer");
     if (set_traps) setenv("JSC_usePollingTraps", "true", 0);
+    if (set_sab) setenv("JSC_useSharedArrayBuffer", "true", 0);
     rt->ctx = JSGlobalContextCreate(NULL); // its own context group: a VM per thread
-    if (set_traps) unsetenv("JSC_usePollingTraps"); // not passed on to child processes
+    // Not passed on to child processes.
+    if (set_traps) unsetenv("JSC_usePollingTraps");
+    if (set_sab) unsetenv("JSC_useSharedArrayBuffer");
     pthread_mutex_lock(&g_runtimes_lock);
     rt->next_runtime = g_runtimes;
     g_runtimes = rt;
