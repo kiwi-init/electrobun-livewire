@@ -21,6 +21,9 @@ jsr_runtime *jsr_main_runtime(void);
 // The calling thread's runtime, else the main one.
 jsr_runtime *jsr_current(void);
 JSGlobalContextRef jsr_context(jsr_runtime *rt);
+// Names the calling thread for ps, top and profilers (at most 15 bytes are
+// kept on Linux): the JS thread is "js", a Worker's "w:" and its script's name.
+void jsr_name_thread(const char *name);
 
 // Evaluates a classic script. Returns false (and reports) on an uncaught error.
 bool jsr_eval(jsr_runtime *rt, const char *source, const char *url);

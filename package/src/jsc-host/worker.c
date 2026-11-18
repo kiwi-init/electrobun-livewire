@@ -194,6 +194,10 @@ static void terminate(jsr_worker *w) {
 // --- the worker's thread ---------------------------------------------------------
 static void *worker_main(void *arg) {
     jsr_worker *w = arg;
+    const char *base = strrchr(w->path, '/');
+    char name[64];
+    snprintf(name, sizeof name, "w:%s", base ? base + 1 : w->path);
+    jsr_name_thread(name);
     jsr_runtime *parent = w->parent;
     jsr_runtime *rt = jsr_create_worker(jsr_argc(parent), jsr_argv(parent), w);
     // From here the parent posts straight to this runtime; what it sent before

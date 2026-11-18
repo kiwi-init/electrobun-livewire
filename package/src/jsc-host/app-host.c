@@ -40,6 +40,7 @@ static void install_natives(jsr_runtime *rt) {
 
 static void *js_main(void *arg) {
     (void)arg;
+    jsr_name_thread("js");
     char app[PATH_MAX + 64];
     snprintf(app, sizeof app, "%s/../Resources/app/bun/index.js", g_exe_dir);
     // process.argv is [execPath, index.js, args...], as for a script, so

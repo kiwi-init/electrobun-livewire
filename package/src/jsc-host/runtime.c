@@ -15,6 +15,7 @@
 #else
 #include <glib.h>
 #include <glib-unix.h>
+#include <sys/prctl.h>
 #endif
 #include <dlfcn.h>
 #include <errno.h>
@@ -934,4 +935,14 @@ static jsr_runtime *create_runtime(int argc, const char **argv, struct jsr_worke
     JSStringRelease(on_name);
     if (set_rejection && JSValueIsObject(ctx, on_rejection)) set_rejection(rt->ctx, (JSObjectRef)on_rejection, NULL);
     return rt;
+}
+
+void jsr_name_thread(const char *name) {
+    char kept[16];
+    snprintf(kept, sizeof kept, "%s", name);
+#ifdef __APPLE__
+    pthread_setname_np(kept);
+#else
+    prctl(PR_SET_NAME, kept, 0, 0, 0);
+#endif
 }
