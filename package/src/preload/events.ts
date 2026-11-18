@@ -6,25 +6,62 @@
 
 import "./globals.d.ts";
 
+// Post a webview event to native code now.
+export function postWebviewEvent(eventName: string, detail: string) {
+	// Prefer eventBridge (available on all webviews), fall back to internalBridge
+	// (for backwards compatibility until native code adds eventBridge handler)
+	const bridge =
+		window.__electrobunEventBridge || window.__electrobunInternalBridge;
+	bridge?.postMessage(
+		JSON.stringify({
+			id: "webviewEvent",
+			type: "message",
+			payload: {
+				id: window.__electrobunWebviewId,
+				eventName,
+				detail,
+			},
+		}),
+	);
+}
+
 // Emit a webview event to native code
 export function emitWebviewEvent(eventName: string, detail: string) {
 	// setTimeout works around a race condition with Bun FFI
-	setTimeout(() => {
-		// Prefer eventBridge (available on all webviews), fall back to internalBridge
-		// (for backwards compatibility until native code adds eventBridge handler)
-		const bridge =
-			window.__electrobunEventBridge || window.__electrobunInternalBridge;
-		bridge?.postMessage(
-			JSON.stringify({
-				id: "webviewEvent",
-				type: "message",
-				payload: {
-					id: window.__electrobunWebviewId,
-					eventName,
-					detail,
-				},
-			}),
-		);
+	setTimeout(() => postWebviewEvent(eventName, detail));
+}
+
+type DomReadyTarget = Pick<Window, "addEventListener" | "top" | "document">;
+
+// dom-ready goes out once every load listener has run, ahead of the tasks
+// queued behind the load event: from a microtask that pageshow queues, as
+// pageshow fires right after load in the same task. A setTimeout(0) alone waits
+// behind whatever the host queued meanwhile, such as a push the page then
+// renders: ~150 ms in most launches of a Linux app on the JSC host, and in some
+// under Bun, all with the window still hidden (T1290). The timer stays as the
+// fallback for an engine whose pageshow comes later; the first to run sends it,
+// once per load.
+export function initDomReady(
+	target: DomReadyTarget = window,
+	send: (href: string) => void = (href) => postWebviewEvent("dom-ready", href),
+	later: (fn: () => void) => void = (fn) => setTimeout(fn),
+	soon: (fn: () => void) => void = queueMicrotask,
+) {
+	let sent = true;
+	const once = () => {
+		if (sent) return;
+		sent = true;
+		send(target.document.location.href);
+	};
+	target.addEventListener("load", () => {
+		if (target !== target.top) return;
+		sent = false;
+		later(once);
+	});
+	target.addEventListener("pageshow", (event) => {
+		// A page restored from the back/forward cache gets no load, so no dom-ready.
+		if (target !== target.top || (event as PageTransitionEvent).persisted) return;
+		soon(once);
 	});
 }
 
@@ -40,11 +77,7 @@ export function initHostMessageBridge(
 // Set up standard lifecycle event listeners
 export function initLifecycleEvents() {
 	// Emit dom-ready when page loads (top-level window only)
-	window.addEventListener("load", () => {
-		if (window === window.top) {
-			emitWebviewEvent("dom-ready", document.location.href);
-		}
-	});
+	initDomReady();
 
 	// Track in-page navigation
 	window.addEventListener("popstate", () => {
