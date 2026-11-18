@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <unistd.h>
 #include <stdatomic.h>
 #include <time.h>
 #include <stdbool.h>
