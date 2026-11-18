@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	initDomReady,
 	initHostMessageBridge,
 	initOverscrollPrevention,
 	shouldApplyOverscrollPrevention,
@@ -21,6 +22,73 @@ describe("host message bridge", () => {
 				detail: '{"type":"ready","count":2}',
 			},
 		]);
+	});
+});
+
+describe("dom-ready", () => {
+	function page(top = true) {
+		const listeners: Record<string, Array<(event: Event) => void>> = {};
+		const target = {
+			addEventListener(type: string, fn: (event: Event) => void) {
+				(listeners[type] ??= []).push(fn);
+			},
+			document: { location: { href: "views://main/index.html" } },
+		} as unknown as Window;
+		(target as { top: unknown }).top = top ? target : {};
+		const fire = (type: string, persisted = false) => {
+			for (const fn of listeners[type] ?? []) fn({ type, persisted } as unknown as Event);
+		};
+		return { target, fire };
+	}
+
+	test("goes out from pageshow's microtask, ahead of the timer, once", () => {
+		const { target, fire } = page();
+		const sent: string[] = [];
+		const timers: Array<() => void> = [];
+		const microtasks: Array<() => void> = [];
+		initDomReady(target, (href) => sent.push(href), (fn) => timers.push(fn), (fn) => microtasks.push(fn));
+		fire("load");
+		fire("pageshow");
+		expect(sent).toEqual([]);
+		for (const fn of microtasks) fn();
+		expect(sent).toEqual(["views://main/index.html"]);
+		for (const fn of timers) fn();
+		expect(sent).toEqual(["views://main/index.html"]);
+	});
+
+	test("the timer sends it when pageshow doesn't come", () => {
+		const { target, fire } = page();
+		const sent: string[] = [];
+		const timers: Array<() => void> = [];
+		initDomReady(target, (href) => sent.push(href), (fn) => timers.push(fn), () => {});
+		fire("load");
+		for (const fn of timers) fn();
+		expect(sent).toEqual(["views://main/index.html"]);
+	});
+
+	test("not for a page restored from the back/forward cache, nor a frame", () => {
+		const restored = page();
+		const frame = page(false);
+		const sent: string[] = [];
+		const run = (fn: () => void) => fn();
+		initDomReady(restored.target, (href) => sent.push(href), run, run);
+		initDomReady(frame.target, (href) => sent.push(href), run, run);
+		restored.fire("pageshow", true);
+		frame.fire("load");
+		frame.fire("pageshow");
+		expect(sent).toEqual([]);
+	});
+
+	test("again for the next load", () => {
+		const { target, fire } = page();
+		const sent: string[] = [];
+		const run = (fn: () => void) => fn();
+		initDomReady(target, (href) => sent.push(href), () => {}, run);
+		fire("load");
+		fire("pageshow");
+		fire("load");
+		fire("pageshow");
+		expect(sent).toHaveLength(2);
 	});
 });
 
