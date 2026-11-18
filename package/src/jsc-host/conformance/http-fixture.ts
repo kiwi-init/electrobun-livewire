@@ -6,7 +6,7 @@
 const big = new Uint8Array(3 * 1024 * 1024).map((_, i) => i % 251);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function upgrade(req: Request, server: Bun.Server) {
+function upgrade(req: Request, server: Bun.Server<{ protocol: string }>) {
 	const offered = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 	const protocol = offered[0] ?? "";
 	const headers: Record<string, string> = protocol ? { "Sec-WebSocket-Protocol": protocol } : {};
