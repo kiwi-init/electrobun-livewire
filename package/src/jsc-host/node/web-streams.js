@@ -1,7 +1,6 @@
-// The slice of web streams Bun.spawn's pipes need on the system
-// JavaScriptCore, which has no ReadableStream or Response: a ReadableStream
-// fed by a controller (readers, async iteration) and a Response that reads a
-// body to text, JSON or bytes. Installed only where the engine lacks them.
+// The slice of web streams the system JavaScriptCore lacks and Bun.spawn's
+// pipes and fetch's bodies need: a ReadableStream fed by a controller
+// (readers, async iteration). Installed only where the engine lacks it.
 export class ReadableStream {
 	constructor(source = {}) {
 		this._source = source;
@@ -90,57 +89,5 @@ export class ReadableStream {
 	}
 	[Symbol.asyncIterator]() {
 		return this.values();
-	}
-}
-
-const encoder = new TextEncoder();
-async function bodyBytes(body) {
-	if (body === null || body === undefined) return new Uint8Array(0);
-	if (typeof body === "string") return encoder.encode(body);
-	if (body instanceof ArrayBuffer) return new Uint8Array(body);
-	if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-	if (typeof body.getReader === "function") {
-		const chunks = [];
-		let length = 0;
-		for await (const chunk of body) {
-			const bytes = typeof chunk === "string" ? encoder.encode(chunk) : new Uint8Array(chunk.buffer ?? chunk, chunk.byteOffset ?? 0, chunk.byteLength);
-			chunks.push(bytes);
-			length += bytes.length;
-		}
-		const all = new Uint8Array(length);
-		let at = 0;
-		for (const bytes of chunks) {
-			all.set(bytes, at);
-			at += bytes.length;
-		}
-		return all;
-	}
-	return encoder.encode(String(body));
-}
-export class Response {
-	constructor(body = null, init = {}) {
-		this.body = body;
-		this.status = init.status ?? 200;
-		this.statusText = init.statusText ?? "";
-		this.ok = this.status >= 200 && this.status < 300;
-		this.bodyUsed = false;
-	}
-	_take() {
-		if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
-		this.bodyUsed = true;
-		return bodyBytes(this.body);
-	}
-	async bytes() {
-		return this._take();
-	}
-	async arrayBuffer() {
-		const bytes = await this._take();
-		return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-	}
-	async text() {
-		return new TextDecoder().decode(await this._take());
-	}
-	async json() {
-		return JSON.parse(await this.text());
 	}
 }

@@ -18,7 +18,16 @@ const libExt = process.platform === "darwin" ? "dylib" : "so";
 const scratch = mkdtempSync(join(tmpdir(), "jsc-conf-"));
 const fifo = join(scratch, "fifo");
 if (Bun.spawnSync(["mkfifo", fifo]).exitCode !== 0) throw new Error("mkfifo failed");
-const env = { ...process.env, LIVEWIRE_TESTLIB: join(out, "libjsctest." + libExt), LIVEWIRE_FIFO: fifo, LIVEWIRE_SCRATCH: scratch };
+// The fetch and WebSocket tests' server, in its own process: the runs below block this one.
+const fixture = Bun.spawn([process.execPath, join(here, "http-fixture.ts")], { stdout: "pipe", stderr: "inherit" });
+const fixtureReader = fixture.stdout.getReader();
+let origin = "";
+while (!origin.includes("\n")) {
+	const { value, done } = await fixtureReader.read();
+	if (done) throw new Error("http-fixture.ts exited before it listened");
+	origin += new TextDecoder().decode(value);
+}
+const env = { ...process.env, LIVEWIRE_TESTLIB: join(out, "libjsctest." + libExt), LIVEWIRE_FIFO: fifo, LIVEWIRE_SCRATCH: scratch, LIVEWIRE_HTTP: origin.trim() };
 
 type Run = { code: number | null; text: string };
 const run = (cmd: string[]): Run => {
@@ -54,6 +63,7 @@ for (const test of tests) {
 		console.log(`  line ${i + 1}\n    ${oracle}: ${a[i] ?? "(none)"}\n    jsc:  ${b[i] ?? "(none)"}`);
 	}
 }
+fixture.kill();
 rmSync(scratch, { recursive: true, force: true });
 const skip = skipped ? `, ${skipped} skipped` : "";
 console.log(failed ? `${failed} of ${tests.length} differ from the reference${skip}` : `${tests.length - skipped} of ${tests.length} match the reference${skip}`);

@@ -77,13 +77,13 @@ HOST_SOURCES="$HOST/runtime.c $HOST/worker.c $HOST/node.c $HOST/sqlite.c $HOST/v
 HOST_CFLAGS="-O2 -Wall -Wextra -Werror -std=gnu11 -I$WORK/gen -I$HOST -I$HOST/ffi"
 if [ "$OS" = "Darwin" ]; then
   # shellcheck disable=SC2086
-  clang $HOST_CFLAGS -framework JavaScriptCore -framework CoreFoundation -framework Security -lz -lsqlite3 -Wl,-rpath,@executable_path \
-    -o "$(bin_dir "$APP")/main" $HOST_SOURCES
+  clang $HOST_CFLAGS -fobjc-arc -framework JavaScriptCore -framework CoreFoundation -framework Foundation -framework Security -lz -lsqlite3 -Wl,-rpath,@executable_path \
+    -o "$(bin_dir "$APP")/main" $HOST_SOURCES "$HOST/http-darwin.m"
 else
   # shellcheck disable=SC2086
-  ${CC:-cc} $HOST_CFLAGS $(pkg-config --cflags javascriptcoregtk-4.1 glib-2.0 sqlite3) -Wl,-rpath,'$ORIGIN' \
-    -o "$(bin_dir "$APP")/main" $HOST_SOURCES \
-    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0 sqlite3) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -lz -ldl -lpthread
+  ${CC:-cc} $HOST_CFLAGS $(pkg-config --cflags javascriptcoregtk-4.1 glib-2.0 sqlite3 libsoup-3.0) -Wl,-rpath,'$ORIGIN' \
+    -o "$(bin_dir "$APP")/main" $HOST_SOURCES "$HOST/http-linux.c" \
+    $(pkg-config --libs javascriptcoregtk-4.1 glib-2.0 sqlite3 libsoup-3.0) $(libgcrypt-config --libs 2>/dev/null || echo -lgcrypt) -lz -ldl -lpthread
 fi
 (cd "$WORK" && bun "$HOST/bundle.ts" src/bun/index.ts "$(res_dir "$APP")/app/bun/index.js" --minify \
   --alias "electrobun/bun=$CORE/api/sdks/main/index.ts" --preload-dir "$CORE")
