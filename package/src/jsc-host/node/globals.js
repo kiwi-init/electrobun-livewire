@@ -190,6 +190,10 @@ if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	inflateSync: zlibCall(false, -15),
 	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms instanceof Date ? ms.getTime() - Date.now() : Number(ms) || 0)),
 	sleepSync,
+	gc: () => {
+		globalThis.__rt?.gc?.();
+		return 0;
+	},
 	deepEquals,
 	main: mainPath,
 	stdin: bunStdin,

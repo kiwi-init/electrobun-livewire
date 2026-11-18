@@ -40,11 +40,19 @@ static void install_natives(jsr_runtime *rt) {
 
 static void *js_main(void *arg) {
     (void)arg;
-    jsr_set_runtime_init(install_natives);
-    jsr_runtime *rt = jsr_create(g_argc, g_argv);
-    install_natives(rt);
     char app[PATH_MAX + 64];
     snprintf(app, sizeof app, "%s/../Resources/app/bun/index.js", g_exe_dir);
+    // process.argv is [execPath, index.js, args...], as for a script, so
+    // Bun.main and the bundle's import.meta.dir name the app's bundle
+    // (Channels starts its workers from import.meta.dir).
+    const char **args = calloc((size_t)g_argc + 2, sizeof *args);
+    int n = 0;
+    args[n++] = g_argv[0];
+    args[n++] = app;
+    for (int i = 1; i < g_argc; i++) args[n++] = g_argv[i];
+    jsr_set_runtime_init(install_natives);
+    jsr_runtime *rt = jsr_create(n, args);
+    install_natives(rt);
     if (jsr_eval_file(rt, app)) jsr_run(rt, false);
     // process.exit(), or an app that failed to load: the whole app ends, as
     // when Bun's worker exits.

@@ -343,6 +343,13 @@ static void loop_wake(jsr_runtime *rt) {
 typedef void (*jsr_sync_gc_fn)(JSContextRef);
 static jsr_sync_gc_fn g_sync_gc;
 
+// __rt.gc(), Bun.gc: a full collection now.
+static JSValueRef rt_gc(JSContextRef ctx, JSObjectRef f, JSObjectRef self, size_t argc, const JSValueRef argv[], JSValueRef *exc) {
+    (void)f; (void)self; (void)argc; (void)argv; (void)exc;
+    if (g_sync_gc) g_sync_gc(ctx); else JSGarbageCollect(ctx);
+    return JSValueMakeUndefined(ctx);
+}
+
 static double monotonic_s(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -807,6 +814,7 @@ static jsr_runtime *create_runtime(int argc, const char **argv, struct jsr_worke
     jsr_set_function(ctx, rt->internal, "fatal", rt_fatal);
     jsr_set_function(ctx, rt->internal, "setExitCode", rt_set_exit_code);
     jsr_set_function(ctx, rt->internal, "now", rt_now);
+    jsr_set_function(ctx, rt->internal, "gc", rt_gc);
     {
         struct utsname u;
         set_value(ctx, rt->internal, "arch", jsr_string(ctx, uname(&u) == 0 && !strcmp(u.machine, "x86_64") ? "x64" : "arm64"));
