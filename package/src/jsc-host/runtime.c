@@ -1,5 +1,6 @@
 // See runtime.h. The loop is the JS thread's CFRunLoop on macOS and its own
-// GMainContext on Linux: timers are CFRunLoopTimers / GLib timeout sources,
+// GMainContext on Linux: timers are CFRunLoopTimers / one GLib source running
+// a deadline-ordered queue (immediates have a source each),
 // cross-thread work is a CFRunLoopSource / an idle source, and JSC drains
 // promise jobs when each outermost API call into JS returns, so a callback that
 // resolves a promise runs its continuations before the loop moves on.
@@ -42,7 +43,10 @@ typedef struct jsr_timer {
 #ifdef __APPLE__
     CFRunLoopTimerRef cf;
 #else
-    GSource *source;
+    GSource *source;           // an immediate's own source
+    GSequenceIter *queued;     // a timeout's or interval's place in rt->timer_queue
+    gint64 due;                // monotonic microseconds
+    gint64 interval;           // microseconds
 #endif
     bool repeat;
     bool refed;
@@ -59,6 +63,12 @@ struct jsr_runtime {
 #else
     GMainContext *gctx;
     bool drain_scheduled;      // an idle source for drain_tasks is attached (under lock)
+    // Timeouts and intervals by deadline, then creation: GLib dispatches ready
+    // sources of one priority in the order they were attached, so a timeout
+    // source each would fire overdue timers by creation (T1126). One source
+    // runs them instead, ready at the first deadline.
+    GSequence *timer_queue;
+    GSource *timer_source;
 #endif
     pthread_t thread;
     pthread_mutex_t lock;
@@ -420,6 +430,13 @@ void jsr_stop(jsr_runtime *rt) {
 }
 
 // --- timers ------------------------------------------------------------------
+#ifndef __APPLE__
+// The queue's source is ready at its first deadline, or never when it's empty.
+static void timer_queue_rearm(jsr_runtime *rt) {
+    jsr_timer *first = g_sequence_is_empty(rt->timer_queue) ? NULL : g_sequence_get(g_sequence_get_begin_iter(rt->timer_queue));
+    g_source_set_ready_time(rt->timer_source, first ? first->due : -1);
+}
+#endif
 static jsr_timer *find_timer(jsr_runtime *rt, uint32_t id, jsr_timer ***link_out) {
     jsr_timer **link = &rt->timers;
     while (*link && (*link)->id != id) link = &(*link)->next;
@@ -436,13 +453,28 @@ static void free_timer(jsr_runtime *rt, uint32_t id) {
     CFRunLoopTimerInvalidate(t->cf);
     CFRelease(t->cf);
 #else
-    g_source_destroy(t->source);
-    g_source_unref(t->source);
+    if (t->source) {
+        g_source_destroy(t->source);
+        g_source_unref(t->source);
+    }
+    if (t->queued) {
+        g_sequence_remove(t->queued);
+        timer_queue_rearm(rt);
+    }
 #endif
     JSValueUnprotect(rt->ctx, t->fn);
     if (t->refed) jsr_unref(rt);
     free(t);
 }
+
+#ifndef __APPLE__
+static gint timer_order(gconstpointer a, gconstpointer b, gpointer unused) {
+    (void)unused;
+    const jsr_timer *x = a, *y = b;
+    if (x->due != y->due) return x->due < y->due ? -1 : 1;
+    return x->id < y->id ? -1 : x->id > y->id;
+}
+#endif
 
 static void timer_fired_id(uint32_t id) {
     jsr_runtime *rt = t_runtime; // timers fire on their runtime's thread
@@ -466,6 +498,28 @@ static gboolean timer_fired(gpointer info) {
     timer_fired_id((uint32_t)(uintptr_t)info);
     return G_SOURCE_CONTINUE;
 }
+
+// One pass, as Node's timers phase: every timer due when the loop woke runs,
+// by deadline, then creation. One made during the pass is due after it (at
+// least 1 ms on), so it waits for a later turn, after the immediates. An
+// interval is due again an interval after the pass started.
+static gboolean timer_queue_dispatch(GSource *source, GSourceFunc unused, gpointer unused_data) {
+    (void)unused; (void)unused_data;
+    jsr_runtime *rt = t_runtime;
+    gint64 start = g_source_get_time(source);
+    while (rt && !rt->dead && !rt->stopped && !g_sequence_is_empty(rt->timer_queue)) {
+        jsr_timer *t = g_sequence_get(g_sequence_get_begin_iter(rt->timer_queue));
+        if (t->due > start) break;
+        if (t->repeat) {
+            t->due = start + t->interval;
+            g_sequence_sort_changed(t->queued, timer_order, NULL);
+        }
+        timer_fired_id(t->id); // a timeout is freed (and dequeued) before it runs
+    }
+    if (rt && !rt->dead) timer_queue_rearm(rt);
+    return G_SOURCE_CONTINUE;
+}
+static GSourceFuncs timer_queue_funcs = {NULL, NULL, timer_queue_dispatch, NULL, NULL, NULL};
 #endif
 
 // __rt.setTimer(fn, ms, repeat, immediate) -> id. An immediate is due at once
@@ -492,10 +546,17 @@ static JSValueRef rt_set_timer(JSContextRef ctx, JSObjectRef f, JSObjectRef self
     t->cf = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent() + seconds, repeat ? seconds : 0, 0, 0, timer_fired, &tctx);
     CFRunLoopAddTimer(rt->loop, t->cf, kCFRunLoopCommonModes);
 #else
-    t->source = g_timeout_source_new((guint)(ms > (double)G_MAXUINT ? G_MAXUINT : ms));
-    if (immediate) g_source_set_priority(t->source, G_PRIORITY_DEFAULT - 1);
-    g_source_set_callback(t->source, timer_fired, (void *)(uintptr_t)t->id, NULL);
-    g_source_attach(t->source, rt->gctx);
+    if (immediate) {
+        t->source = g_timeout_source_new(0);
+        g_source_set_priority(t->source, G_PRIORITY_DEFAULT - 1);
+        g_source_set_callback(t->source, timer_fired, (void *)(uintptr_t)t->id, NULL);
+        g_source_attach(t->source, rt->gctx);
+    } else {
+        t->interval = (gint64)(ms > (double)G_MAXUINT ? G_MAXUINT : ms) * 1000; // the cap a GLib timeout had
+        t->due = g_get_monotonic_time() + t->interval;
+        t->queued = g_sequence_insert_sorted(rt->timer_queue, t, timer_order, NULL);
+        timer_queue_rearm(rt);
+    }
 #endif
     t->next = rt->timers;
     rt->timers = t;
@@ -721,6 +782,9 @@ void jsr_destroy(jsr_runtime *rt) {
     CFRunLoopSourceInvalidate(rt->source);
 #else
     if (rt->gc_source) { g_source_destroy(rt->gc_source); g_source_unref(rt->gc_source); rt->gc_source = NULL; }
+    g_source_destroy(rt->timer_source);
+    g_source_unref(rt->timer_source);
+    g_sequence_free(rt->timer_queue); // empty: the timers went first
 #endif
     if (rt->dispatch_fn) JSValueUnprotect(rt->ctx, rt->dispatch_fn);
     JSValueUnprotect(rt->ctx, rt->internal);
@@ -762,6 +826,10 @@ static jsr_runtime *create_runtime(int argc, const char **argv, struct jsr_worke
     // loop (under Bun this thread has no default context). Every runtime
     // source is attached to rt->gctx explicitly.
     rt->gctx = g_main_context_new();
+    rt->timer_queue = g_sequence_new(NULL);
+    rt->timer_source = g_source_new(&timer_queue_funcs, sizeof(GSource));
+    g_source_set_ready_time(rt->timer_source, -1);
+    g_source_attach(rt->timer_source, rt->gctx);
 #endif
 
     // JSC reads its options once, when the first VM is made: polling traps let
