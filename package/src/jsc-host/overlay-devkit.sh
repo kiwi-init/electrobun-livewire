@@ -25,6 +25,7 @@ if [ "${1:-}" = --launcher ]; then LAUNCHER=1; shift; fi
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 # <out> is wiped: never the devkit, a folder inside it, one holding it, or /.
+[ "$OUT" != / ] || { echo "overlay-devkit: <out> is /" >&2; exit 1; }
 case "$OUT/" in "$DEVKIT/"*) echo "overlay-devkit: <out> $OUT is inside the devkit $DEVKIT" >&2; exit 1 ;; esac
 case "$DEVKIT/" in "$OUT/"*) echo "overlay-devkit: <out> $OUT holds the devkit $DEVKIT" >&2; exit 1 ;; esac
 rm -rf "$OUT/api"
