@@ -132,14 +132,17 @@ if (!output) {
 	process.exit(1);
 }
 let code = await output.text();
-if (topLevelAwait) {
-	// A module's import.meta, for the bundle's file (Bun.main).
-	const meta = `const __livewireImportMeta = (() => {
+// A module's import.meta, for the bundle's file (Bun.main): a script has none,
+// so references to it (Bun's own bundles use import.meta.dir and .url) read
+// this object instead.
+const usesImportMeta = /\bimport\.meta\b/.test(code);
+const meta = `const __livewireImportMeta = (() => {
 	const path = globalThis.Bun?.main ?? "";
 	const dir = path.slice(0, path.lastIndexOf("/")) || "/";
 	const require = (id) => { throw new Error("import.meta.require(" + JSON.stringify(id) + ") isn't available on the JSC host"); };
 	return { url: "file://" + path, path, filename: path, dir, dirname: dir, file: path.slice(dir.length + 1), main: true, require, resolve: (s) => s, env: globalThis.process?.env ?? {} };
 })();\n`;
-	code = meta + "(async () => {\n" + code.replace(/^\s*export\s*\{\s*\};?\s*$/m, "").replace(/\bimport\.meta\b/g, "__livewireImportMeta") + "\n})();\n";
-}
+if (usesImportMeta) code = code.replace(/\bimport\.meta\b/g, "__livewireImportMeta");
+if (topLevelAwait) code = "(async () => {\n" + code.replace(/^\s*export\s*\{\s*\};?\s*$/m, "") + "\n})();\n";
+if (usesImportMeta) code = meta + code;
 await Bun.write(outfile, code);
