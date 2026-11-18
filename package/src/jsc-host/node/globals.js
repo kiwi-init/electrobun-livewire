@@ -15,6 +15,7 @@ import { Blob, File, Headers, Request, Response, fetch } from "./fetch.js";
 import { WebSocket } from "./websocket.js";
 import { Stdin, bunStdin, decorateOutput } from "./stdio.js";
 import * as TOML from "./toml.js";
+import { userInfo } from "./os.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
@@ -92,6 +93,11 @@ const web = {
 for (const [name, value] of Object.entries(web)) if (typeof globalThis[name] !== "function") defineGlobal(name, value);
 
 const proc = globalThis["process"];
+// process.getuid and friends, which Node and Bun have on POSIX.
+if (proc && typeof proc.getuid !== "function") {
+	proc.getuid = proc.geteuid = () => userInfo().uid;
+	proc.getgid = proc.getegid = () => userInfo().gid;
+}
 if (proc) {
 	proc.kill = kill;
 	proc.umask = (mask) => globalThis.__node.umask(typeof mask === "string" ? parseInt(mask, 8) : mask);
@@ -190,6 +196,10 @@ if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	inflateSync: zlibCall(false, -15),
 	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms instanceof Date ? ms.getTime() - Date.now() : Number(ms) || 0)),
 	sleepSync,
+	gc: () => {
+		globalThis.__rt?.gc?.();
+		return 0;
+	},
 	deepEquals,
 	main: mainPath,
 	stdin: bunStdin,
