@@ -75,6 +75,7 @@
 #include "../shared/accelerator_parser.h"
 #include "../shared/chromium_flags.h"
 #include "../shared/webview2_permissions.h"
+#include "../shared/webview2_guards.h"
 #include "../shared/webview2_window.h"
 #include "../shared/cache_migration.h"
 #include "../shared/views_url.h"
@@ -641,6 +642,26 @@ static std::atomic<bool> g_cef_initialized{false};
 static CefRefPtr<CefApp> g_cef_app;
 static electrobun::ChromiumFlagConfig g_userChromiumFlags;
 static electrobun::AutoGrantPermissionSet g_autoGrantPermissions;
+
+// Guards an app turns on through the webview2* exports. Each only ever
+// tightens, so nothing turns one off again.
+static std::atomic<bool> g_webview2DenyPermissions{false};
+static std::atomic<bool> g_webview2OwnDownloadsOnly{false};
+static std::mutex g_webview2GuardMutex;
+static bool g_webview2KeepWebSecurity = false;
+static bool g_webview2EnvironmentRequested = false;
+static std::string g_webview2OnlyPage;
+static std::map<uint32_t, std::string> g_webview2CommittedUrls;
+
+static bool webView2GuardAllowsNavigation(const std::string& url) {
+    std::lock_guard<std::mutex> lock(g_webview2GuardMutex);
+    return g_webview2OnlyPage.empty() || electrobun::isAllowedPageUrl(g_webview2OnlyPage, url);
+}
+
+static bool webView2GuardBlocksNewWindows() {
+    std::lock_guard<std::mutex> lock(g_webview2GuardMutex);
+    return !g_webview2OnlyPage.empty();
+}
 static HANDLE g_job_object = nullptr;  // Job object to track all child processes
 
 static void loadWebView2PermissionPolicy() {
@@ -7106,6 +7127,55 @@ static bool isCurrentWebView2Container(WebView2View* view, ContainerView* contai
     return current != g_containerViews.end() && current->second.get() == container;
 }
 
+// Guards an app turns on before it opens a WebView2 view, by calling these
+// exports itself (bun:ffi on this library). Each one only ever tightens.
+
+// From now on a permission request the app didn't auto-grant is refused, with
+// no dialog and no cached answer.
+extern "C" ELECTROBUN_EXPORT bool webview2DenyPermissions() {
+    g_webview2DenyPermissions.store(true);
+    return true;
+}
+
+// From now on only a download the page made itself (a blob: or data: URL) is
+// saved; one from the network is cancelled.
+extern "C" ELECTROBUN_EXPORT bool webview2OwnDownloadsOnly() {
+    g_webview2OwnDownloadsOnly.store(true);
+    return true;
+}
+
+// From now on every view shows only this page (with any fragment) and opens no
+// browser window of its own.
+extern "C" ELECTROBUN_EXPORT bool webview2AllowOnly(const char* page) {
+    if (!page || !*page) return false;
+    std::lock_guard<std::mutex> lock(g_webview2GuardMutex);
+    g_webview2OnlyPage = page;
+    return true;
+}
+
+// Leaves --disable-web-security, --allow-insecure-localhost and the SmartScreen
+// opt-out off the browser arguments. False once an environment exists that was
+// started with them: call it before the first view.
+extern "C" ELECTROBUN_EXPORT bool webview2KeepWebSecurity() {
+    std::lock_guard<std::mutex> lock(g_webview2GuardMutex);
+    if (g_webview2EnvironmentRequested) return g_webview2KeepWebSecurity;
+    g_webview2KeepWebSecurity = true;
+    return true;
+}
+
+// The URL the view's main frame last committed, read where WebView2 reports it
+// rather than from anything the page can send. Its length, or 0 when the view
+// committed nothing or the URL doesn't fit.
+extern "C" ELECTROBUN_EXPORT uint32_t webview2CommittedUrl(uint32_t webviewId, char* output, uint32_t capacity) {
+    if (!output || capacity == 0) return 0;
+    output[0] = '\0';
+    std::lock_guard<std::mutex> lock(g_webview2GuardMutex);
+    const auto found = g_webview2CommittedUrls.find(webviewId);
+    if (found == g_webview2CommittedUrls.end() || found->second.size() >= capacity) return 0;
+    memcpy(output, found->second.c_str(), found->second.size() + 1);
+    return static_cast<uint32_t>(found->second.size());
+}
+
 // Private native regression seam, not an SDK API. Holding exactly one selected
 // controller lets Kitchen prove pre-ready updates without depending on VM speed.
 // Stable apps cannot arm it accidentally; release test processes must opt in.
@@ -7702,6 +7772,12 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                             }
                                         }
 
+                                        // A view locked to one page (webview2AllowOnly) goes nowhere else,
+                                        // whatever its navigation rules say.
+                                        if (shouldAllow && !webView2GuardAllowsNavigation(uri)) {
+                                            shouldAllow = false;
+                                        }
+
                                         // Fire will-navigate event with allowed status
                                         if (capturedHandler) {
                                             // Escape URL for JSON
@@ -7747,6 +7823,11 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                             CoTaskMemFree(uriWStr);
                                         }
 
+                                        {
+                                            std::lock_guard<std::mutex> lock(g_webview2GuardMutex);
+                                            g_webview2CommittedUrls[capturedWebviewId] = uri;
+                                        }
+
                                         if (capturedHandler && !uri.empty()) {
                                             std::string escapedUrl;
                                             for (char c : uri) {
@@ -7758,6 +7839,45 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                             }
                                             std::string eventData = "{\"url\":\"" + escapedUrl + "\"}";
                                             capturedHandler(capturedWebviewId, _strdup("did-commit-navigation"), _strdup(eventData.c_str()));
+                                        }
+
+                                        return S_OK;
+                                    }).Get(),
+                                nullptr);
+
+                            // A view locked to one page opens no browser window of its own
+                            // (window.open, target=_blank, Ctrl+N): the request goes to the
+                            // app as new-window-open, as a Ctrl+click does.
+                            webview->add_NewWindowRequested(
+                                Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+                                    [capturedWebviewId, capturedHandler](ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                                        if (!webView2GuardBlocksNewWindows()) {
+                                            return S_OK;
+                                        }
+                                        args->put_Handled(TRUE);
+
+                                        wchar_t* uriWStr = nullptr;
+                                        args->get_Uri(&uriWStr);
+                                        std::string uri;
+                                        if (uriWStr) {
+                                            if (!electrobun::wideToUtf8(uriWStr, uri)) {
+                                                ::log("[WebView2] New window URI is not valid UTF-16");
+                                            }
+                                            CoTaskMemFree(uriWStr);
+                                        }
+
+                                        if (capturedHandler && !uri.empty()) {
+                                            std::string escapedUrl;
+                                            for (char c : uri) {
+                                                switch (c) {
+                                                    case '"': escapedUrl += "\\\""; break;
+                                                    case '\\': escapedUrl += "\\\\"; break;
+                                                    default: escapedUrl += c; break;
+                                                }
+                                            }
+                                            std::string eventData = "{\"url\":\"" + escapedUrl +
+                                                                   "\",\"isCmdClick\":false,\"modifierFlags\":0}";
+                                            capturedHandler(capturedWebviewId, _strdup("new-window-open"), _strdup(eventData.c_str()));
                                         }
 
                                         return S_OK;
@@ -7878,6 +7998,14 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                                 return S_OK;
                                             }
 
+                                            // An app that denies permissions gets no dialog and no cached
+                                            // answer: whatever it didn't auto-grant is refused.
+                                            if (g_webview2DenyPermissions.load()) {
+                                                printf("WebView2: Denying %s for %s, as the app asked\n", permissionName.c_str(), origin.c_str());
+                                                args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                                                return S_OK;
+                                            }
+
                                             // Check cache first
                                             PermissionStatus cachedStatus = getPermissionFromCache(origin, permType);
                                             
@@ -7948,6 +8076,28 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                         Callback<ICoreWebView2DownloadStartingEventHandler>(
                                             [](ICoreWebView2* sender, ICoreWebView2DownloadStartingEventArgs* args) -> HRESULT {
                                                 printf("WebView2: Download starting\n");
+
+                                                // An app that takes only its page's own files refuses every
+                                                // download that comes from the network, before any path is chosen.
+                                                if (g_webview2OwnDownloadsOnly.load()) {
+                                                    Microsoft::WRL::ComPtr<ICoreWebView2DownloadOperation> guardedDownload;
+                                                    args->get_DownloadOperation(&guardedDownload);
+                                                    wchar_t* guardedUriWStr = nullptr;
+                                                    if (guardedDownload) guardedDownload->get_Uri(&guardedUriWStr);
+                                                    std::string guardedUri;
+                                                    if (guardedUriWStr) {
+                                                        if (!electrobun::wideToUtf8(guardedUriWStr, guardedUri)) {
+                                                            guardedUri.clear();
+                                                        }
+                                                        CoTaskMemFree(guardedUriWStr);
+                                                    }
+                                                    if (!electrobun::isOwnDownloadUrl(guardedUri)) {
+                                                        args->put_Cancel(TRUE);
+                                                        args->put_Handled(TRUE);
+                                                        printf("WebView2: Refused a download the page didn't make itself\n");
+                                                        return S_OK;
+                                                    }
+                                                }
 
                                                 // Get the download operation
                                                 Microsoft::WRL::ComPtr<ICoreWebView2DownloadOperation> downloadOp;
@@ -8112,7 +8262,16 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
         // Create WebView2 environment with custom scheme support
         try {
             auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
-            options->put_AdditionalBrowserArguments(L"--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --allow-insecure-localhost --disable-web-security");
+            // An app that keeps web security (webview2KeepWebSecurity) gets the
+            // same-origin policy and SmartScreen; the choice is fixed here, with the
+            // first environment, because every later one must use the same arguments.
+            bool keepWebSecurity = false;
+            {
+                std::lock_guard<std::mutex> lock(g_webview2GuardMutex);
+                g_webview2EnvironmentRequested = true;
+                keepWebSecurity = g_webview2KeepWebSecurity;
+            }
+            options->put_AdditionalBrowserArguments(electrobun::webView2BrowserArguments(keepWebSecurity));
 
             // Get the interface that supports custom scheme registration
             Microsoft::WRL::ComPtr<ICoreWebView2EnvironmentOptions4> options4;
