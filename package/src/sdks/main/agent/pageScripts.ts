@@ -70,7 +70,7 @@ export function wrapEval(source: string, token: string): string {
 		// Only the signed wrapper (pages on the view's bridgeOrigins) reaches the
 		// host; CEF also puts a raw, unsigned bridge on other pages, which the core drops.
 		const bridge = window.__electrobunInternalBridge;
-		if (bridge && bridge.__electrobunSigned) {
+		if (bridge && typeof bridge !== "function" && bridge.__electrobunSigned === true) {
 			bridge.postMessage(JSON.stringify([JSON.stringify({ type: "message", id: "agentEvalResult", payload })]));
 			return;
 		}
