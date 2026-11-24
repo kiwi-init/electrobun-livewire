@@ -1856,7 +1856,7 @@ fn buildElectrobunPreload(
         \\window.__electrobunBunBridge = window.__electrobunBunBridge || window.webkit?.messageHandlers?.bunBridge || window.bunBridge || window.chrome?.webview?.hostObjects?.bunBridge;
         \\(function (token) {{
         \\  function sign(bridge) {{
-        \\    if (!bridge || bridge.__electrobunSigned) return bridge;
+        \\    if (!bridge || (typeof bridge !== "function" && bridge.__electrobunSigned === true)) return bridge;
         \\    var signed = {{ postMessage: function (message) {{ bridge.postMessage(token + message); }} }};
         \\    Object.defineProperty(signed, "__electrobunSigned", {{ value: true }});
         \\    return signed;
