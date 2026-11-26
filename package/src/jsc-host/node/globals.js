@@ -16,6 +16,7 @@ import { WebSocket } from "./websocket.js";
 import { Stdin, bunStdin, decorateOutput } from "./stdio.js";
 import * as TOML from "./toml.js";
 import { userInfo } from "./os.js";
+import { satisfies } from "./semver.js";
 
 // Defined, not assigned: the package typecheck reads this file (allowJs), and
 // an assignment to globalThis.Bun or .Buffer would redeclare those globals' types.
@@ -204,6 +205,7 @@ if (!("Bun" in globalThis)) defineGlobal("Bun", {
 	main: mainPath,
 	stdin: bunStdin,
 	TOML,
+	semver: { satisfies },
 	env: proc?.env ?? {},
 	version: "0.0.0-livewire-jsc",
 });
